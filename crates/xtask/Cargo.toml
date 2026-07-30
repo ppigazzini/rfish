@@ -1,0 +1,18 @@
+[package]
+name = "xtask"
+description = "The rfish build driver and gate battery. Run via `cargo xtask <step>`."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# The gate driver has no dependencies either: it shells out to cargo and to the
+# engine binary, and reads text files. A gate that needs a crate to decide
+# whether the engine is correct has a second thing that can be wrong.
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,7 @@
+# Formatting-only revisions, ignored by git blame.
+#
+# Enable with:  git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Add a line here for every commit that is exclusively `cargo fmt` output or an
+# exclusively mechanical `cargo clippy --fix` sweep. A commit that mixes formatting with a
+# behaviour change does NOT belong here -- split it instead.

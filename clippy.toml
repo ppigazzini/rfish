@@ -1,0 +1,12 @@
+# Upstream's search body is one large function by design: splitting it moves
+# live ranges and changes what the register allocator does, which is a perf
+# change nobody asked for in the middle of a faithfulness port.
+too-many-lines-threshold = 400
+cognitive-complexity-threshold = 200
+# Engine constants are written the way upstream writes them so a reviewer can
+# diff the two side by side.
+literal-representation-threshold = 16384
+# `Position` and `SearchWorker` are large by construction -- they hold the state
+# upstream keeps in a class. Passing them by value is the bug clippy should
+# still catch, so keep a threshold, just one sized for this tree.
+trivial-copy-size-limit = 16

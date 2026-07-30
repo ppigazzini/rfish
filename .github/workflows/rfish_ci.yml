@@ -1,0 +1,154 @@
+name: CI
+
+# Every lane below runs a gate that also exists locally, and nothing local is weaker than
+# what runs here: a contributor who sees a green `cargo xtask parity` should not be
+# surprised by the merge gate. See docs/09-tooling-ci.md.
+#
+# Every action is pinned BY COMMIT SHA, with the tag in a trailing comment. A tag is a
+# mutable pointer -- the owner can move `v7` to anything -- so a tag-pinned action is an
+# unreviewed dependency that can change under a merge gate. These are the same pins the
+# sibling ports (`../zfish`, `../mcfish`) and `../valgebra` carry, so a bump is decided once
+# and applied across all four.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Keyed by event too, so a push to main does not share a group with a scheduled run and
+  # cancel it mid-flight.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # Formatting first: it is the cheapest gate and it blocks everything after it, so a
+      # whitespace mistake is reported in seconds rather than after a two-minute bench.
+      - run: cargo xtask fmt
+      - run: cargo xtask clippy
+      # The port's defining constraint, asserted from outside the manifest that enforces it.
+      - run: cargo xtask unsafe-lint
+      - run: cargo xtask docs-lint
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # The `gate` profile: release code generation PLUS the debug assertions the search
+      # states its invariants with. A release-only run turns a violated invariant into a
+      # plausible wrong number instead of a failure.
+      - run: cargo xtask test
+
+  gates:
+    name: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # The network is a runtime input, not a build product, and the signature is measured
+      # WITH it. Keyed by the module that names it: a net never changes content under a
+      # name, so a hit is always valid and a miss only happens on an upstream net swap.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: resources/*.nnue
+          key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
+      - run: cargo xtask net
+      # perft counts are facts about chess; golden pins the UCI surface byte for byte;
+      # signature is the anchor. Each exits 2 if it could not run, which fails the step --
+      # a skipped gate must never read as a pass.
+      - run: cargo xtask perft
+      - run: cargo xtask golden
+      - run: cargo xtask signature
+      # `nnue-check` and `tb` are deliberately NOT steps here. Both need a pristine upstream
+      # BUILD as well as their data files, and a gate that can only SKIP in CI teaches
+      # contributors to ignore a skip. They run locally, and `cargo xtask parity` names them
+      # when it could not run them.
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Read the version from the manifest rather than repeating it here. A second copy is a
+      # second thing to forget.
+      - name: Read MSRV from the workspace manifest
+        id: msrv
+        run: |
+          version=$(grep -m1 -oP 'rust-version\s*=\s*"\K[^"]+' Cargo.toml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "MSRV is $version"
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # `cargo +<version>`, NOT a bare `cargo`. This repository has a rust-toolchain.toml,
+      # and it OVERRIDES whatever toolchain the action just installed -- so a bare `cargo`
+      # silently tests stable and the lane proves nothing while looking green. The explicit
+      # `+toolchain` is the only thing that beats the file.
+      - run: cargo +${{ steps.msrv.outputs.version }} build --workspace --locked
+
+  cross-build:
+    name: cross-build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-unknown-linux-gnu, x86_64-pc-windows-gnu]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # `check`, not `build`: the runner has no cross LINKER for either target, so a build
+      # fails at the link step having already proven everything this lane is for. What it is
+      # for is catching a `cfg` sneaking into engine code -- the engine's only real platform
+      # differences are the SyzygyPath separator and the binary's extension.
+      - run: cargo check --workspace --all-targets --target ${{ matrix.target }}

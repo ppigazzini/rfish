@@ -1,0 +1,66 @@
+# Pre-commit hooks: file hygiene, Python lint/format, and the fast half of the gate
+# battery. Install once with `pre-commit install`; run everything with
+# `pre-commit run --all-files`.
+#
+# CI does not run pre-commit -- the workflow's own gates stay the authority. This catches
+# the same classes before the commit exists.
+minimum_pre_commit_version: "4.0.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      # Never touch byte-exact comparison inputs: the goldens are matched against engine
+      # output verbatim, and perft.table is a gate input.
+      - id: end-of-file-fixer
+        exclude: '\.(golden|table|fens|epd|nnue)$'
+      - id: trailing-whitespace
+        exclude: '\.(golden|table|fens|epd|nnue)$'
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: '\.(golden|table|fens|epd|nnue)$'
+
+  # Python lint and format for the scripts under tools/, if any are added.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # The repo's own gates, run through cargo xtask so they are byte-identical to CI's.
+  # Whole-workspace rather than staged-file scoped: the checks take seconds, and a
+  # staged-file scope would miss a caller the change broke.
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo xtask fmt
+        entry: cargo xtask fmt
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo xtask clippy
+        entry: cargo xtask clippy
+        language: system
+        types: [rust]
+        pass_filenames: false
+      # The port's defining constraint. Cheap, and the one thing that must never reach CI.
+      - id: unsafe-lint
+        name: cargo xtask unsafe-lint
+        entry: cargo xtask unsafe-lint
+        language: system
+        types: [rust]
+        pass_filenames: false
+      # Docs are part of the change (AGENTS.md): a doc edit that breaks a link or names a
+      # dead path should fail here, not in CI.
+      - id: docs-lint
+        name: cargo xtask docs-lint
+        entry: cargo xtask docs-lint
+        language: system
+        files: '\.md$'
+        pass_filenames: false

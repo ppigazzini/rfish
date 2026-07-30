@@ -1,0 +1,19 @@
+# The golden files are compared byte-for-byte against the engine's LF output by
+# `cargo xtask golden`. Pin them to LF so a Windows checkout (core.autocrlf)
+# cannot rewrite them to CRLF and fail the gate. The harness also strips CR on
+# read, so this is defence in depth and keeps local diffs clean.
+tools/*.golden    text eol=lf
+tools/*.table     text eol=lf
+tools/*.baseline  text eol=lf
+tools/cases/*     text eol=lf
+tools/upstream/*  text eol=lf
+
+# Cargo.lock is committed: the workspace ships a binary, and a gate result is
+# only reproducible if the dependency graph is. Mark it generated so it collapses
+# in review rather than burying a real diff.
+Cargo.lock linguist-generated=true
+
+# rfish is 100% safe Rust with no C, C++ or assembly anywhere. Pin the language
+# stats to that fact so a vendored golden or a build script cannot make the bar
+# claim otherwise.
+*.rs linguist-language=Rust

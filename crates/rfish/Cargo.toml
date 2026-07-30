@@ -1,0 +1,23 @@
+[package]
+name = "rfish"
+description = "UCI shell for the rfish engine: transport, option model, benchmark."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rfish-engine.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+# The binary is `stockfish`, NOT `rfish`. Every GUI, every test harness and
+# fishtest itself invoke a UCI engine by that name, and a port that renames it
+# stops being a drop-in replacement for the thing it reproduces.
+name = "stockfish"
+path = "src/main.rs"
+bench = false

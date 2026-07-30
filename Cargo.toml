@@ -1,0 +1,96 @@
+[workspace]
+members = ["crates/rfish-engine", "crates/rfish", "crates/xtask"]
+# Resolver 3 is the edition-2024 default and is MSRV-aware.
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+repository = "https://github.com/ppigazzini/rfish"
+authors = ["The rfish developers (see AUTHORS)"]
+
+[workspace.dependencies]
+rfish-engine = { path = "crates/rfish-engine" }
+
+# The engine has NO runtime dependencies. Every crate below is a workspace
+# member; nothing is pulled from crates.io into the shipped binary. That is a
+# deliberate property, not an accident of scope: a chess engine that reproduces
+# upstream's node count byte for byte must own every line that can move it, and
+# a transitive dependency bump is a behaviour change nobody reviewed.
+
+# Lints are configured once here and each crate opts in with `[lints] workspace
+# = true`. CI runs `cargo clippy -- -D warnings`, so every `warn` below is a hard
+# failure there.
+[workspace.lints.rust]
+# THE defining constraint of this port: rfish is 100% safe Rust. `forbid` (not
+# `deny`) so no module can re-enable it with a local `#[allow]`. Everything the
+# C++ does with raw pointers -- the TT cluster array, the accumulator stack, the
+# Syzygy table mapping, the shared search state -- is expressed with slices,
+# indices, atomics and scoped threads instead. See docs/08-idiomatic-rust.md.
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+rust_2024_compatibility = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# The port mirrors upstream's integer semantics exactly, and upstream indexes
+# tables with values whose range is proven by the caller. These would fire on
+# nearly every faithful line and hide the lints that mean something.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+similar_names = "allow"
+many_single_char_names = "allow"
+module_name_repetitions = "allow"
+too_many_arguments = "allow"
+too_many_lines = "allow"
+missing_panics_doc = "allow"
+missing_errors_doc = "allow"
+inline_always = "allow"
+# An arithmetic overflow in a release build wraps silently and moves the node
+# count; make the debug/test build trap on it instead of matching upstream by
+# luck. `overflow-checks` below is what enforces it.
+verbose_bit_mask = "allow"
+
+[profile.dev]
+# The engine is debugged through gates that run the binary, not a native
+# debugger, and full debuginfo dominates link time on a workspace this size.
+debug = 1
+# Trap on overflow in every unoptimised build: upstream relies on wrapping in a
+# handful of places, and each one must be spelled `wrapping_*` rather than
+# inherited from the profile. A silent wrap here is a bench-signature bug.
+overflow-checks = true
+
+[profile.test]
+overflow-checks = true
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+# Deliberately OFF in release. Upstream is `-O3 -fno-exceptions` with wrapping
+# semantics; every place rfish depends on wrapping says so in the source.
+overflow-checks = false
+
+# Release-grade optimisation with symbols retained, for `perf`/callgrind work.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = true
+panic = "unwind"
+
+# The gate profile: release code generation plus the debug assertions the search
+# uses to state its invariants. `cargo xtask test` builds here, so a violated
+# invariant fails a gate instead of producing a plausible wrong number.
+[profile.gate]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+lto = "thin"
+codegen-units = 16

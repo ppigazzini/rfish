@@ -1,0 +1,16 @@
+# Pin the toolchain so a gate result is reproducible: the bench node signature is
+# a property of the ENGINE, but the instruction mix, the autovectoriser output
+# and therefore every perf measurement are properties of the compiler. A perf
+# number measured on a different toolchain is not comparable to one in the
+# ledger.
+#
+# STABLE, on purpose. rfish uses no nightly feature: not `portable_simd`, not
+# `allocator_api`, not `stdarch` intrinsics. The NNUE kernels are ordinary loops
+# over fixed-size arrays that LLVM vectorises under `-C target-cpu`; see
+# docs/03-engine-eval.md. Reaching for nightly would trade the port's central
+# property -- it builds on the compiler everyone has -- for a constant factor
+# that has not been measured yet.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

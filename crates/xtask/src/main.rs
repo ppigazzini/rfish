@@ -1,0 +1,150 @@
+//! The rfish build driver and gate battery.
+//!
+//! `cargo xtask <step>` is the single entry point for every build and every gate. There is
+//! no Makefile and no shell driver: the gates are Rust, in the workspace, type-checked and
+//! clippy-linted by the same CI lane that checks the engine — so a gate cannot rot in a way
+//! the compiler would have caught.
+//!
+//! **Check a gate's EXIT CODE, never a piped fragment.** `cargo xtask parity | tail -1`
+//! reads `0` from `tail` while the gate is red. That has laundered red gates in both
+//! sibling ports. Run it unpiped, or redirect and test `$?`.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
+
+mod gates;
+mod net;
+mod runner;
+
+use runner::Outcome;
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let step = args.first().map_or("help", String::as_str);
+    let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+
+    match dispatch(step, &rest) {
+        Ok(Outcome::Pass) => {
+            println!("\x1b[32mPASS\x1b[0m {step}");
+            ExitCode::SUCCESS
+        }
+        Ok(Outcome::Skipped(why)) => {
+            // A SKIPPED gate proves nothing, and must never read as a pass to a script.
+            // Both sibling ports learned this the hard way: a missing tool exited 0 and a
+            // whole campaign reported green.
+            eprintln!("\x1b[33mSKIPPED\x1b[0m {step}: {why}");
+            eprintln!("A skipped gate proves nothing. Install the tool before relying on it.");
+            ExitCode::from(2)
+        }
+        Ok(Outcome::Fail(why)) => {
+            eprintln!("\x1b[31mFAIL\x1b[0m {step}: {why}");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("\x1b[31mERROR\x1b[0m {step}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
+    match step {
+        "help" | "--help" | "-h" => {
+            print_help();
+            Ok(Outcome::Pass)
+        }
+        "build" => gates::build(args),
+        "test" => gates::test(),
+        "fmt" => gates::fmt(false),
+        "fmt-fix" => gates::fmt(true),
+        "clippy" => gates::clippy(),
+        "bench" => gates::bench(args),
+        "signature" => gates::signature(false),
+        "signature-update" => gates::signature(true),
+        "perft" => gates::perft(),
+        "golden" => gates::golden(false),
+        "golden-update" => gates::golden(true),
+        "docs-lint" => gates::docs_lint(),
+        "unsafe-lint" => gates::unsafe_lint(),
+        "net" => net::fetch(args),
+        "parity" => gates::parity(),
+        other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
+    }
+}
+
+fn print_help() {
+    print!(
+        "\
+cargo xtask <step> — the rfish build driver
+
+  Build and run
+    build [--profile P] [--arch TIER]  build the engine binary
+    net [NAME]                         fetch the NNUE network into resources/
+    bench [ARGS...]                    run the benchmark
+
+  Gates — a behaviour-changing edit is not done until one of these says so
+    parity                the aggregate; run it before calling anything done
+    signature             bench reproduces tools/signature.golden
+    perft                 the reference counts in tools/perft.table match
+    golden                the UCI case outputs match tools/*.golden
+    test                  the unit and property suite
+    fmt / fmt-fix         cargo fmt --check / cargo fmt
+    clippy                cargo clippy -D warnings
+    docs-lint             no dead doc links, no named paths that do not exist
+    unsafe-lint           no `unsafe` and no allow(unsafe_code) anywhere
+
+  Regenerate a golden — DANGEROUS, read CONTRIBUTING.md first
+    signature-update      re-derive tools/signature.golden
+    golden-update         re-derive tools/*.golden
+
+Exit codes: 0 pass, 1 fail, 2 SKIPPED (tool missing — proves nothing).
+"
+    );
+}
+
+/// The workspace root, found from this crate's manifest rather than the working directory,
+/// so a gate behaves the same wherever it is invoked from.
+#[must_use]
+pub(crate) fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("xtask lives two levels below the workspace root")
+        .to_path_buf()
+}
+
+/// Where the gates run the engine from.
+///
+/// `resources/` holds every runtime input — the net, the tablebases, an opening book — and
+/// the engine looks for its net relative to the working directory, so running it from
+/// anywhere else finds no net and produces an unrelated number.
+#[must_use]
+pub(crate) fn resources_dir() -> PathBuf {
+    workspace_root().join("resources")
+}
+
+/// Run a command and return its captured stdout, or an error naming the failure.
+pub(crate) fn capture(cmd: &mut Command) -> Result<String, String> {
+    let out = cmd.stderr(Stdio::inherit()).output().map_err(|e| format!("{cmd:?}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("{cmd:?} exited with {}", out.status));
+    }
+    String::from_utf8(out.stdout).map_err(|e| format!("{cmd:?}: output is not UTF-8: {e}"))
+}
+
+/// Run a command for its exit status alone.
+pub(crate) fn run(cmd: &mut Command) -> Result<(), String> {
+    let status = cmd.status().map_err(|e| format!("{cmd:?}: {e}"))?;
+    if status.success() { Ok(()) } else { Err(format!("{cmd:?} exited with {status}")) }
+}
+
+/// True when `tool` is on the path.
+#[must_use]
+pub(crate) fn have(tool: &str) -> bool {
+    Command::new(tool)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}

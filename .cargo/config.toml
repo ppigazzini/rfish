@@ -1,0 +1,16 @@
+# `cargo xtask <gate>` is the single entry point for every build step and gate.
+# There is no Makefile and no shell driver: the gates are Rust, in the workspace,
+# type-checked and clippy-linted by the same CI lane that checks the engine.
+# `cargo xtask help` lists every step.
+[alias]
+xtask = "run --quiet --package xtask --profile gate --"
+
+[build]
+# Nothing here sets `-C target-cpu`. The DEFAULT build must run on any x86-64,
+# because the bench anchor has to be reproducible on a stranger's machine, and
+# `target-cpu=native` silently changes which vector width the NNUE loops
+# autovectorise to. `cargo xtask build --arch <tier>` sets it per tier instead,
+# and `cargo xtask arch-determinism` proves every tier agrees on the anchor.
+
+[term]
+color = "always"

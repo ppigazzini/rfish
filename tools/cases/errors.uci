@@ -1,0 +1,6 @@
+notacommand
+setoption name NoSuchOption value 1
+position fen this is not a fen at all
+d
+position startpos moves e2e5
+go depth 1

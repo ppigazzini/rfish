@@ -1,0 +1,9 @@
+# `cargo fmt --check` is CI's first gate and blocks every gate after it, so keep
+# this minimal: an option rustfmt does not implement on stable silently disables
+# the whole run, which reads as "formatting is clean".
+edition = "2024"
+# House style wraps at 100, matching the prose width the sibling ports use for
+# comments. Upstream's C++ is formatted at 100 too, so a ported function keeps
+# its line breaks and the diff against the golden stays readable.
+max_width = 100
+use_small_heuristics = "Max"

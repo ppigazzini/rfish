@@ -1,0 +1,20 @@
+[package]
+name = "rfish-engine"
+description = "The rfish chess engine: board, search, evaluation, tablebases. No I/O, no UCI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# No dependencies. Not "few" -- none. See the note in the workspace manifest.
+[dependencies]
+
+[lints]
+workspace = true
+
+[lib]
+# `bench` shadows the harness the engine does not use; the gates drive the binary
+# and `cargo bench` would only add a second, unmeasured path to the same code.
+bench = false

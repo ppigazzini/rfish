@@ -1,0 +1,71 @@
+# Cargo build output. `cargo xtask` puts every binary it builds here too, under
+# the profile it used -- there is no second output tree to guard.
+/target/
+
+# The NNUE net. A RUNTIME INPUT, not a build product: `cargo xtask net` reports
+# where it must be and fetches it on demand, so a clean build never touches the
+# network. It is ~106 MiB and changes with upstream, which is reason enough --
+# but the deciding one is that committing it would make the bench anchor look
+# like a property of this repository rather than of a file fetched separately.
+**/*.nnue
+
+# External runtime inputs the engine CONSUMES: the net, the Syzygy tables that
+# `cargo xtask tb-fetch` downloads, and an opening book if one is ever added.
+# `cargo xtask` runs the engine from here.
+/resources/
+*.rtbw
+*.rtbz
+
+# Dev-only scratch: the contract, the operator prompt, the port map, milestone
+# notes and user-requested reports. Internal surface, never part of the repo.
+__DEV/
+
+# Python tooling under tools/
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.ty_cache/
+
+# Profiler and memcheck output from the local-only tools in tools/ (see
+# docs/09-tooling-ci.md). `perf_callgrind.sh` writes into the CURRENT directory
+# unless OUT= names one, and that file is routinely larger than the whole
+# repository -- it is measurement, never a result to keep.
+callgrind.out*
+cachegrind.out*
+callgrind.annotate*
+massif.out*
+vgcore.*
+perf.data*
+*.profraw
+*.profdata
+/flamegraph.svg
+/perf.svg
+
+# fastchess resume state, not configuration. The harness autosaves it into its
+# CWD so a killed Elo match can resume, and the file carries that run's engine
+# paths, TC and W/L/D. At a few KiB the large-file hook waves it through, so name
+# it explicitly.
+/config.json
+
+# A binary built outside target/. `cargo xtask arch-determinism` lands one per
+# ISA tier and callers redirect with --out; guard the plain names at the root.
+/rfish
+/rfish-*
+/stockfish
+/stockfish-*
+
+# Throwaway checkouts made for isolated agent runs; never part of the tree.
+/.claude/worktrees/
+
+# Local, per-machine instruction budget (`cargo xtask perf-budget`). Not shared:
+# the retired-instruction count is toolchain- and CPU-specific, so each
+# developer records their own rather than diffing against someone else's box.
+/tools/instr_budget.golden
+
+# Editor and OS
+/.vscode/settings.json
+/.idea/
+*.swp
+*~
+.DS_Store

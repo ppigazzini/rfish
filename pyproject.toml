@@ -1,0 +1,31 @@
+# Python tooling config for any repo-owned scripts under tools/.
+#
+# There is no Python package to build, and the gates are Rust rather than Python -- unlike
+# the sibling ports, where a shell driver needed helper scripts. This file exists so ruff
+# and pre-commit share one config, and so a measurement or analysis script added later
+# lands under a linted configuration rather than establishing a second style.
+
+[project]
+name = "rfish-internal-python-tools"
+version = "0.0.0"
+requires-python = ">=3.14"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.1",
+    "ruff>=0.16.0",
+]
+
+[tool.ruff]
+target-version = "py314"
+src = ["tools"]
+# House style wraps prose-heavy tool comments at 100, not ruff's default 88, matching the
+# Rust side's `max_width`.
+line-length = 100
+
+[tool.ruff.lint]
+# A curated GATING set, deliberately not ALL. These would be operator tools: `print` IS
+# their output (T201), `subprocess` IS their job (S603/S607), and annotation or docstring
+# ceremony (ANN/D) buys nothing an operator reads. A rule family the tools violate by
+# design would force `--exit-zero`, and an advisory hook is a laundered gate.
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF"]
