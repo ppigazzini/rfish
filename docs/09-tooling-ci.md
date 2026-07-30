@@ -35,7 +35,7 @@ Listed in the order `parity` runs them. See [CONTRIBUTING.md](../CONTRIBUTING.md
 each asserts.
 
 `fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `test` → `perft` → `golden` → `nnue-check`
-→ `signature`
+→ `tb` → `signature`
 
 Cheap and structural first, so a formatting mistake is reported in seconds rather than
 after a two-minute bench.
@@ -83,6 +83,16 @@ SKIPPED for either. **It is deliberately not a CI step**: a gate that can only s
 teaches contributors to ignore a skip. `parity` names it when it could not run.
 
 Positions in check are excluded, because upstream's `eval` refuses to score one.
+
+### `tb`
+
+Syzygy discovery against real tables: a path holding them is recognised, and an empty path
+leaves the search untouched.
+
+The prober is not written, so this gates the half that exists **and** the property that makes
+the other half's absence safe — with no path set the cardinality is zero, the search's
+tablebase step never enters, and the signature is unaffected. SKIPs without a
+`resources/syzygy/` directory.
 
 ### `docs-lint`
 

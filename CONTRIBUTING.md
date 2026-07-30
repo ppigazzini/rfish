@@ -57,6 +57,8 @@ In the order `parity` runs them:
 | `test` | the unit and property suite, under the `gate` profile's debug assertions |
 | `perft` | the reference counts in `tools/perft.table` match |
 | `golden` | the UCI case outputs match `tools/*.golden` |
+| `nnue-check` | the network's raw output equals a pristine upstream build's, position by position |
+| `tb` | Syzygy discovery finds the tables, and an empty path changes nothing |
 | `signature` | `bench` reproduces `tools/signature.golden` |
 
 A gate whose **tool** is missing reports SKIPPED and exits **2**, never 0. A skipped gate

@@ -42,7 +42,13 @@ is in the operating system's contract, not in the wrapper.
 The prober will read with ordinary positioned file reads behind a block cache — which is
 what upstream's mapping effectively provides anyway, with the page cache doing the caching.
 
-**Gate, when it lands:** discovery and the root probe's score and tbhits over a 3-man
-battery, diffed against a golden derived from the oracle. The cursed-win and blessed-loss
-branches need 5-man tables and get their own local leg, deliberately kept out of `parity` —
-a gate that is usually skipped stops being read.
+## The gate that exists today
+
+`cargo xtask tb` checks discovery against a real 3-man table set in `resources/syzygy/`, and
+checks the property that makes the missing prober safe: an empty `SyzygyPath` reports
+nothing, so the search is unaffected and the bench signature cannot move.
+
+**Gate, when the prober lands:** the root probe's score and tbhits over a 3-man battery,
+diffed against a golden derived from the oracle. The cursed-win and blessed-loss branches
+need 5-man tables and should get their own local leg, deliberately kept out of `parity` — a
+gate that is usually skipped stops being read.

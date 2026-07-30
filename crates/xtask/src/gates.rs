@@ -384,6 +384,37 @@ fn markdown_link_targets(line: &str) -> Vec<&str> {
     out
 }
 
+/// Syzygy discovery: a path holding real tables must be recognised, and one that does not
+/// must leave the search untouched.
+///
+/// The PROBER is not written — see `docs/05-tablebases.md` — so this gate checks the half
+/// that exists, and checks the property that makes the other half's absence safe: with no
+/// path set the cardinality is zero, the search's tablebase step never enters, and the
+/// signature is unaffected.
+pub(crate) fn tb() -> Result<Outcome, String> {
+    let engine = build_engine(GATE_PROFILE)?;
+    let dir = resources_dir().join("syzygy");
+    if !dir.is_dir() {
+        return Ok(Outcome::Skipped(format!(
+            "{} is absent; fetch the 3-man set into it",
+            dir.display()
+        )));
+    }
+
+    let set = format!("setoption name SyzygyPath value {}", dir.display());
+    let out = drive(&engine, &[&set, "isready"])?;
+    let found = out.lines().find(|l| l.contains("Found tablebases up to"));
+    let Some(line) = found else {
+        return Ok(Outcome::Fail(format!("no tablebases discovered in {}", dir.display())));
+    };
+    println!("tb: {}", line.trim());
+
+    // And the property that makes the missing prober safe: no path, no effect.
+    let empty = drive(&engine, &["setoption name SyzygyPath value <empty>", "isready"])?;
+    let quiet = !empty.contains("Found tablebases");
+    Ok(Outcome::check(quiet, "an empty SyzygyPath still reported tablebases"))
+}
+
 /// The differential NNUE gate: rfish's raw network output must equal upstream's, exactly.
 ///
 /// This is the gate that says the evaluation is a PORT rather than an approximation. It
@@ -555,6 +586,7 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         ("perft", perft),
         ("golden", || golden(false)),
         ("nnue-check", nnue_check),
+        ("tb", tb),
         ("signature", || signature(false)),
     ];
 
