@@ -19,7 +19,7 @@ use rfish_engine::eval::nnue;
 use rfish_engine::platform::syzygy::TableRegistry;
 use rfish_engine::platform::threads::ThreadPool;
 use rfish_engine::search::tt::TranspositionTable;
-use rfish_engine::search::worker::{DepthReport, InfoSink, score_to_uci};
+use rfish_engine::search::worker::{DepthReport, InfoSink};
 use rfish_engine::state::{Limits, SearchOptions};
 
 use crate::bench::{BenchEntry, BenchSpec, parse_entry};
@@ -43,7 +43,7 @@ impl<W: Write> InfoSink for UciSink<W> {
             r.depth,
             r.sel_depth.max(r.depth),
             r.multi_pv,
-            score_to_uci(r.score)
+            r.score.to_uci()
         );
         match r.bound {
             Some(true) => line.push_str(" lowerbound"),
@@ -51,9 +51,8 @@ impl<W: Write> InfoSink for UciSink<W> {
             None => {}
         }
         if self.show_wdl {
-            // Without a trained win-rate model there is no honest WDL to report, so say
-            // "unknown" rather than inventing three numbers a GUI would display as fact.
-            line.push_str(" wdl 0 1000 0");
+            let [w, d, l] = r.wdl;
+            let _ = write!(line, " wdl {w} {d} {l}");
         }
         let _ = write!(
             line,

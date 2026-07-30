@@ -5,6 +5,7 @@
 
 pub mod history;
 pub mod movepick;
+pub mod score;
 pub mod skill;
 pub mod timeman;
 pub mod tt;

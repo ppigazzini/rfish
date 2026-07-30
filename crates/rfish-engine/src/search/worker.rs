@@ -33,6 +33,7 @@ use crate::state::{
 
 use super::history::{Histories, stat_bonus, stat_malus};
 use super::movepick::{ContKey, MovePicker, continuation_to};
+use super::score::Score;
 use super::skill::{Prng, Skill};
 use super::tt::{TranspositionTable, value_from_tt, value_to_tt};
 
@@ -74,7 +75,9 @@ pub struct DepthReport<'a> {
     pub depth: i32,
     pub sel_depth: i32,
     pub multi_pv: usize,
-    pub score: Value,
+    pub score: Score,
+    /// Win, draw and loss chances in per mille, for `UCI_ShowWDL`.
+    pub wdl: [i32; 3],
     /// True when the score is a lower bound (fail high), false for an upper bound; `None`
     /// for an exact score.
     pub bound: Option<bool>,
@@ -1454,7 +1457,8 @@ impl SearchWorker {
             depth,
             sel_depth: self.sel_depth,
             multi_pv: self.pv_index + 1,
-            score,
+            score: Score::new(score, &self.pos),
+            wdl: super::score::wdl(score, &self.pos),
             bound,
             nodes,
             nps: nodes * 1000 / elapsed,
@@ -1502,17 +1506,8 @@ fn reduction(depth: i32, move_count: i32) -> i32 {
 
 /// Mate score to `mate in N` in full moves, as the UCI `score mate` field wants it.
 #[must_use]
-pub fn score_to_uci(v: Value) -> String {
-    if v >= VALUE_MATE_IN_MAX_PLY {
-        format!("mate {}", (VALUE_MATE - v + 1) / 2)
-    } else if v <= VALUE_MATED_IN_MAX_PLY {
-        format!("mate {}", (-VALUE_MATE - v) / 2)
-    } else {
-        // Upstream normalises the centipawn scale so that "100" means "about one pawn" for
-        // the current network. The classical scaffolding is already in pawn units, so the
-        // scale factor is 1 until NNUE lands.
-        format!("cp {v}")
-    }
+pub fn score_to_uci(v: Value, pos: &Position) -> String {
+    Score::new(v, pos).to_uci()
 }
 
 /// The colour whose clock a search reads.
@@ -1562,7 +1557,8 @@ mod tests {
         let r = search_fen("6k1/5ppp/8/8/8/8/8/R3K3 w - - 0 1", 6);
         assert_eq!(format!("{:?}", r.best_move), "a1a8");
         assert!(r.score >= VALUE_MATE - 3, "score {} is not a mate score", r.score);
-        assert_eq!(score_to_uci(r.score), "mate 1");
+        let pos = Position::from_fen("6k1/5ppp/8/8/8/8/8/R3K3 w - - 0 1", false).expect("valid");
+        assert_eq!(score_to_uci(r.score, &pos), "mate 1");
     }
 
     #[test]
@@ -1706,10 +1702,20 @@ mod tests {
 
     #[test]
     fn score_rendering_matches_the_uci_conventions() {
-        assert_eq!(score_to_uci(0), "cp 0");
-        assert_eq!(score_to_uci(123), "cp 123");
-        assert_eq!(score_to_uci(VALUE_MATE - 1), "mate 1");
-        assert_eq!(score_to_uci(VALUE_MATE - 3), "mate 2");
-        assert_eq!(score_to_uci(-VALUE_MATE + 2), "mate -1");
+        let pos = Position::startpos();
+        assert_eq!(score_to_uci(0, &pos), "cp 0");
+        assert_eq!(score_to_uci(VALUE_MATE - 1, &pos), "mate 1");
+        assert_eq!(score_to_uci(VALUE_MATE - 3, &pos), "mate 2");
+        assert_eq!(score_to_uci(-VALUE_MATE + 2, &pos), "mate -1");
+    }
+
+    #[test]
+    fn a_reported_score_depends_on_the_position_it_came_from() {
+        // The centipawn is normalised against the material on the board, so the SAME
+        // internal score reports differently in an endgame than in the opening. A renderer
+        // that took only the value could not do this, which is why it takes the position.
+        let opening = Position::startpos();
+        let endgame = Position::from_fen("8/5k2/8/8/8/8/3K4/7R w - - 0 1", false).expect("valid");
+        assert_ne!(score_to_uci(300, &opening), score_to_uci(300, &endgame));
     }
 }
