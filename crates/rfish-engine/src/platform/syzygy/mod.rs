@@ -29,7 +29,9 @@ pub use probe::{ProbeState, Wdl};
 
 use crate::board::movegen::generate_legal;
 use crate::board::position::Position;
-use crate::board::types::{Move, MoveType, PieceType};
+use crate::board::types::{
+    MAX_PLY, Move, MoveType, PAWN_VALUE, PieceType, VALUE_DRAW, VALUE_MATE, Value,
+};
 use table::{TbTable, TbType};
 
 /// Every table found on the configured path.
@@ -259,31 +261,162 @@ impl TableRegistry {
         Ok(if min_dtz == 0xFFFF { -1 } else { min_dtz })
     }
 
-    /// Rank the root moves by their tablebase verdict.
+    /// Rank the root moves with the DTZ tables.
     ///
     /// Returns `None` when any move could not be probed — a partial ranking is worse than
     /// none, because the search would then trust an ordering built from a mixture of
     /// tablebase truth and missing data.
+    ///
+    /// `rank_dtz` distinguishes the two things a caller can want. Ordinarily every certain
+    /// win ranks equally, because a win is a win and the search should be free to pick the
+    /// most human of them; when the caller is extending a PV to mate it wants the SHORTEST
+    /// win, and passing true subtracts the distance so the ranking orders them.
     #[must_use]
-    pub fn rank_root_moves(&self, pos: &Position) -> Option<Vec<(Move, i32)>> {
-        if pos.piece_total() > self.max_cardinality || self.max_cardinality == 0 {
-            return None;
-        }
+    pub fn root_probe(
+        &self,
+        pos: &Position,
+        rule50: bool,
+        rank_dtz: bool,
+    ) -> Option<Vec<RankedRootMove>> {
+        // The fifty-move counter at the root, which every distance below is measured
+        // against: a win in 40 is not a win if the counter is already at 70.
+        let cnt50 = pos.rule50_count();
+        // A repetition since the last zeroing move makes the opponent able to force one
+        // again, so a long win cannot be trusted to stay a win.
+        let rep = pos.has_repeated();
+        let bound = if rule50 { MAX_DTZ / 2 - 100 } else { 1 };
+
         let mut work = pos.clone();
         let mut out = Vec::new();
         for &mv in generate_legal(pos).as_slice() {
             work.do_move(mv);
-            let dtz = self.probe_dtz(&work);
+
+            let probed = if work.rule50_count() == 0 {
+                // A zeroing move starts a fresh count, so the distance is the verdict's own
+                // -101/-1/0/1/101 rather than anything stored in a table.
+                self.probe_wdl(&work).map(|w| dtz_before_zeroing(w.negate()))
+            } else if (rule50 && work.is_draw(1)) || work.is_repetition(1) {
+                // One ply from the root, so this is a true repetition inside the game's own
+                // history rather than a search artefact: the move draws.
+                Ok(0)
+            } else {
+                self.probe_dtz(&work).map(|d| {
+                    let d = -d;
+                    d + sign_of(d)
+                })
+            };
+
+            // A mating move ends it now, whatever distance the table gives.
+            let dtz = match probed {
+                Ok(2) if work.in_check() && generate_legal(&work).is_empty() => 1,
+                Ok(d) => d,
+                Err(_) => {
+                    work.undo_move(mv);
+                    return None;
+                }
+            };
             work.undo_move(mv);
-            let dtz = dtz.ok()?;
-            // The child's distance is from the OPPONENT's point of view, so negate; and a
-            // non-zeroing move costs a ply.
-            let rank = -(dtz + sign_of(dtz));
-            out.push((mv, rank));
+
+            // Better moves rank higher. Certain wins rank equally, and so do losses, unless
+            // the fifty-move counter puts a draw within reach and the distance starts to
+            // matter again.
+            let rank = match dtz.cmp(&0) {
+                std::cmp::Ordering::Greater => {
+                    if dtz + cnt50 <= 99 && !rep {
+                        MAX_DTZ - if rank_dtz { dtz } else { 0 }
+                    } else {
+                        MAX_DTZ / 2 - (dtz + cnt50)
+                    }
+                }
+                std::cmp::Ordering::Less => {
+                    if -dtz * 2 + cnt50 < 100 {
+                        -MAX_DTZ - if rank_dtz { dtz } else { 0 }
+                    } else {
+                        -MAX_DTZ / 2 + (-dtz + cnt50)
+                    }
+                }
+                std::cmp::Ordering::Equal => 0,
+            };
+
+            // Give a cursed win at least 1cp and let it grow towards 49cp as the position
+            // approaches a real one: reporting a dead draw for a position that is winning
+            // but for the fifty-move rule tells the operator the wrong thing.
+            let score = if rank >= bound {
+                VALUE_MATE - MAX_PLY as i32 - 1
+            } else if rank > 0 {
+                (3.max(rank - (MAX_DTZ / 2 - 200)) * PAWN_VALUE) / 200
+            } else if rank == 0 {
+                VALUE_DRAW
+            } else if rank > -bound {
+                ((-3i32).min(rank + (MAX_DTZ / 2 - 200)) * PAWN_VALUE) / 200
+            } else {
+                -VALUE_MATE + MAX_PLY as i32 + 1
+            };
+
+            out.push(RankedRootMove { mv, rank, score });
         }
-        out.sort_by_key(|(_, r)| -r);
         Some(out)
     }
+
+    /// Rank the root moves with the WDL tables, when the DTZ ones are missing.
+    ///
+    /// A WDL verdict says who wins but not how fast, so every win ranks the same. That is
+    /// enough to keep the game won and not enough to finish it, which is why this is the
+    /// fallback and why the search keeps probing when it is the one that answered.
+    #[must_use]
+    pub fn root_probe_wdl(&self, pos: &Position, rule50: bool) -> Option<Vec<RankedRootMove>> {
+        const WDL_TO_RANK: [i32; 5] = [-MAX_DTZ, -MAX_DTZ + 101, 0, MAX_DTZ - 101, MAX_DTZ];
+        const WDL_TO_VALUE: [Value; 5] = [
+            -VALUE_MATE + MAX_PLY as i32 + 1,
+            VALUE_DRAW - 2,
+            VALUE_DRAW,
+            VALUE_DRAW + 2,
+            VALUE_MATE - MAX_PLY as i32 - 1,
+        ];
+
+        let mut work = pos.clone();
+        let mut out = Vec::new();
+        for &mv in generate_legal(pos).as_slice() {
+            work.do_move(mv);
+            let probed = self.probe_wdl(&work);
+            work.undo_move(mv);
+            let wdl = probed.ok()?.negate();
+
+            let rank = WDL_TO_RANK[(wdl as i32 + 2) as usize];
+            // With the fifty-move rule off, a cursed win IS a win and a blessed loss IS a
+            // loss: the caller has said the counter does not apply to this game.
+            let scored = if rule50 {
+                wdl
+            } else if (wdl as i32) > 0 {
+                Wdl::Win
+            } else if (wdl as i32) < 0 {
+                Wdl::Loss
+            } else {
+                Wdl::Draw
+            };
+            out.push(RankedRootMove {
+                mv,
+                rank,
+                score: WDL_TO_VALUE[(scored as i32 + 2) as usize],
+            });
+        }
+        Some(out)
+    }
+}
+
+/// Twice the largest distance a Syzygy table can express, which is the scale every root
+/// rank is built on.
+pub const MAX_DTZ: i32 = 1 << 18;
+
+/// One root move as the tablebases rank it.
+#[derive(Clone, Copy, Debug)]
+pub struct RankedRootMove {
+    pub mv: Move,
+    /// Higher is better. Certain wins share a rank unless the caller asked for distances.
+    pub rank: i32,
+    /// The score to report for this move, which is a tablebase fact rather than a search
+    /// result and is reported as such.
+    pub score: Value,
 }
 
 /// The distance a zeroing move implies, given the verdict after it.
@@ -399,7 +532,8 @@ mod tests {
         let r = TableRegistry::discover(&dir);
         let pos = Position::startpos();
         assert!(r.probe_wdl(&pos).is_err());
-        assert!(r.rank_root_moves(&pos).is_none());
+        assert!(r.root_probe(&pos, true, false).is_none());
+        assert!(r.root_probe_wdl(&pos, true).is_none());
     }
 
     #[test]

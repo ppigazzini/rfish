@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
-use crate::board::types::{Color, MAX_PLY, Move, VALUE_INFINITE, Value};
+use crate::board::types::{Color, MAX_PLY, Move, VALUE_DRAW, VALUE_INFINITE, Value};
 
 /// What the caller asked the search to do.
 ///
@@ -121,6 +121,12 @@ pub struct RootMove {
     pub pv: Vec<Move>,
     /// Tablebase rank, for root filtering. Zero when no tablebase was consulted.
     pub tb_rank: i32,
+    /// What the tablebases say this move is worth.
+    ///
+    /// Kept apart from `score`, which the search owns. When the root is in the tables the
+    /// reporter shows THIS: the tables know the result exactly and a search score is only
+    /// an estimate of a fact already established.
+    pub tb_score: Value,
     /// Nodes spent below this move across the whole search, for time management.
     ///
     /// A best move that already accounts for most of the tree is unlikely to be displaced
@@ -140,6 +146,7 @@ impl RootMove {
             sel_depth: 0,
             pv: vec![mv],
             tb_rank: 0,
+            tb_score: VALUE_DRAW,
             effort: 0,
         }
     }

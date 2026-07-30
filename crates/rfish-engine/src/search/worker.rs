@@ -134,6 +134,12 @@ pub struct SearchWorker {
     tb_probe_depth: i32,
     tb_probe_limit: u32,
     tb_use_rule50: bool,
+    /// The piece count the in-search probe is still willing to answer at. Zero once the
+    /// root ranking has settled the game and further probing would only cost time.
+    tb_cardinality: u32,
+    /// True when the root itself is a tablebase position, so the reported score is a
+    /// tablebase fact rather than a search result.
+    root_in_tb: bool,
 }
 
 impl core::fmt::Debug for SearchWorker {
@@ -177,6 +183,8 @@ impl SearchWorker {
             tb_probe_depth: 1,
             tb_probe_limit: 7,
             tb_use_rule50: true,
+            tb_cardinality: 0,
+            root_in_tb: false,
         }
     }
 
@@ -303,6 +311,72 @@ impl SearchWorker {
         self.thread_count = n.max(1);
     }
 
+    /// Order the root moves by their tablebase verdict, when the tables cover the root.
+    ///
+    /// This decides the game rather than informing it. Every move that preserves the
+    /// result ranks above every move that throws it away, so the search below is choosing
+    /// between moves that are all still winning — and because the tables have already
+    /// answered, the in-search probe is switched off for the rest of the move.
+    ///
+    /// Castling rights disqualify the root: Syzygy tables model no castling, so a position
+    /// that still has rights is not the position the table describes.
+    fn rank_root_moves(&mut self) {
+        self.tb_cardinality = self.tb_probe_limit;
+        self.root_in_tb = false;
+
+        let Some(tb) = self.tablebases.clone() else { return };
+        let max = tb.max_cardinality();
+        if max == 0 {
+            self.tb_cardinality = 0;
+            return;
+        }
+        if self.tb_cardinality > max {
+            // Below the found tables' limit every probe is cheap, so stop gating on depth.
+            self.tb_cardinality = max;
+            self.tb_probe_depth = 0;
+        }
+        if self.tb_cardinality < self.pos.piece_total()
+            || self.pos.can_castle(crate::board::types::CastlingRights::ANY)
+        {
+            return;
+        }
+
+        // When mate is the only zeroing move, DTZ IS distance to mate, so ranking by it
+        // costs nothing and produces the shortest win rather than any win.
+        let rank_dtz = self.pos.dtz_is_dtm();
+        let mut dtz_available = true;
+        let mut ranked = tb.root_probe(&self.pos, self.tb_use_rule50, rank_dtz);
+        if ranked.is_none() {
+            // The DTZ tables are missing. WDL still says who wins.
+            dtz_available = false;
+            ranked = tb.root_probe_wdl(&self.pos, self.tb_use_rule50);
+        }
+        let Some(ranked) = ranked else { return };
+
+        self.root_in_tb = true;
+        for rm in &mut self.root_moves {
+            if let Some(r) = ranked.iter().find(|r| r.mv == rm.mv) {
+                rm.tb_rank = r.rank;
+                rm.tb_score = r.score;
+            }
+        }
+        // Stable, so moves the tables rank equally keep the movegen order and the result
+        // does not depend on the sort's internals.
+        self.root_moves.sort_by_key(|rm| core::cmp::Reverse(rm.tb_rank));
+
+        // Keep probing during the search only when WDL answered AND the root is not
+        // winning: that is the one case where the ranking cannot finish the game by itself.
+        if dtz_available || self.root_moves[0].tb_score <= VALUE_DRAW {
+            self.tb_cardinality = 0;
+        }
+    }
+
+    /// How many nodes this worker has searched.
+    #[must_use]
+    pub fn nodes(&self) -> u64 {
+        self.nodes
+    }
+
     /// Run one search to completion.
     ///
     /// Returns the best move and its score. Every thread runs this; only thread 0's return
@@ -354,6 +428,11 @@ impl SearchWorker {
                 nodes: 0,
             };
         }
+
+        // Rank the root against the tablebases before searching. When the position is in
+        // the tables this decides the game outright, and the search below is then only
+        // choosing between moves that already preserve the result.
+        self.rank_root_moves();
 
         let mut skill = Skill::new(opts.skill_level, opts.uci_elo);
         let mut rng = Prng::from_clock();
@@ -1176,11 +1255,13 @@ impl SearchWorker {
         tt: &TranspositionTable,
         probe: super::tt::TTProbe,
     ) -> Option<Value> {
+        if self.tb_cardinality == 0 {
+            return None;
+        }
         let tb = self.tablebases.as_ref()?;
         let pieces = self.pos.piece_total();
-        if pieces > self.tb_probe_limit.min(tb.max_cardinality())
-            || (pieces == self.tb_probe_limit.min(tb.max_cardinality())
-                && depth < self.tb_probe_depth)
+        if pieces > self.tb_cardinality
+            || (pieces == self.tb_cardinality && depth < self.tb_probe_depth)
         {
             return None;
         }
@@ -1346,6 +1427,13 @@ impl SearchWorker {
         sink: &mut dyn InfoSink,
     ) {
         let rm = &self.root_moves[self.pv_index];
+        // With the root in the tables, show what the tables say. A mate score is left alone:
+        // a forced mate is more specific than "this is a win", so it outranks the verdict.
+        let score = if self.root_in_tb && score.abs() < VALUE_MATE_IN_MAX_PLY {
+            rm.tb_score
+        } else {
+            score
+        };
         // Real milliseconds even under `nodestime`: a GUI reading `time` wants wall clock,
         // and the node budget is the engine's business rather than the GUI's.
         let elapsed = self.budget.elapsed_time().max(1) as u64;
@@ -1373,7 +1461,7 @@ impl SearchWorker {
             hashfull: tt.hashfull(),
             // Every root move the tables ranked is a hit, on top of the ones the search
             // scored below the root.
-            tb_hits: self.tb_hits,
+            tb_hits: self.tb_hits + if self.root_in_tb { self.root_moves.len() as u64 } else { 0 },
             time_ms: elapsed,
             pv: &pv,
         };

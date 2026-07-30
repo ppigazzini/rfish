@@ -1245,6 +1245,31 @@ impl Position {
         if st.rule50 > 99 && (!self.in_check() || super::movegen::has_legal_move(self)) {
             return true;
         }
+        self.is_repetition(ply)
+    }
+
+    /// True when a Syzygy DTZ table's distance is also the distance to mate.
+    ///
+    /// DTZ counts plies to the next clock-zeroing move, which is generally not mate. With
+    /// no pawns and at most a bare piece on each side, the only zeroing move available IS
+    /// the mate, so the two distances coincide and the root ranking can order wins by
+    /// length instead of treating them all as equal.
+    #[must_use]
+    pub fn dtz_is_dtm(&self) -> bool {
+        self.count_both(PieceType::Pawn) == 0
+            && (self.piece_total() == 3
+                || (self.piece_total() == 4
+                    && (self.pieces(PieceType::Queen) | self.pieces(PieceType::Rook)).is_empty()))
+    }
+
+    /// True when this position has already occurred within `ply` of the search root.
+    ///
+    /// Split out from [`Position::is_draw`] because the root tablebase ranking needs the
+    /// repetition alone: with `Syzygy50MoveRule` off, the fifty-move half of a draw does
+    /// not apply but a repetition still does.
+    #[must_use]
+    pub fn is_repetition(&self, ply: i32) -> bool {
+        let st = self.st();
         st.repetition != 0 && st.repetition < ply
     }
 
