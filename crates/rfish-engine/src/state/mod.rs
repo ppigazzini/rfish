@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::board::types::{Color, MAX_PLY, Move, VALUE_INFINITE, Value};
 
@@ -39,6 +39,11 @@ pub struct Limits {
     pub start: Option<Instant>,
     /// Plies already played, for the time manager's move-number heuristics.
     pub ply: i32,
+    /// Nodes per millisecond, when `nodestime` converts the clock into a node budget.
+    ///
+    /// Zero means the clock is a real clock. The time manager writes this from the option,
+    /// so the search reads one field rather than being handed the whole option map.
+    pub npmsec: u64,
 }
 
 impl Limits {
@@ -55,9 +60,48 @@ impl Limits {
     }
 
     /// True when the search must manage a clock rather than a fixed budget.
+    ///
+    /// A clock on either side is the whole test, matching upstream. `movetime` is NOT
+    /// excluded here: it is enforced directly against the elapsed count, not through the
+    /// budget, so folding it in would give one limit two enforcement paths.
     #[must_use]
     pub fn uses_time_management(&self) -> bool {
-        !self.infinite && self.move_time.is_none() && self.time.iter().any(Option::is_some)
+        self.time.iter().any(|t| t.is_some_and(|ms| ms > 0))
+    }
+}
+
+/// The option values the search reads.
+///
+/// Upstream hands the search its whole `OptionsMap` and it pulls out what it needs. The
+/// engine crate cannot see the shell's option model, so the shell fills this in instead —
+/// which also makes the set of options the search actually depends on a declared list
+/// rather than something a reader has to grep for.
+#[derive(Clone, Copy, Debug)]
+pub struct SearchOptions {
+    /// How many principal variations to report.
+    pub multi_pv: usize,
+    /// Milliseconds reserved for the move to reach the GUI.
+    pub move_overhead: u64,
+    /// Nodes per millisecond, or zero for a real clock.
+    pub nodestime: u64,
+    /// Whether the GUI allows pondering, which buys the current move extra time.
+    pub ponder: bool,
+    /// Playing strength, 0 (weakest) to 20 (full strength).
+    pub skill_level: i32,
+    /// The Elo to play at, or `None` when `UCI_LimitStrength` is off.
+    pub uci_elo: Option<i32>,
+}
+
+impl Default for SearchOptions {
+    fn default() -> SearchOptions {
+        SearchOptions {
+            multi_pv: 1,
+            move_overhead: 10,
+            nodestime: 0,
+            ponder: false,
+            skill_level: 20,
+            uci_elo: None,
+        }
     }
 }
 
@@ -77,6 +121,11 @@ pub struct RootMove {
     pub pv: Vec<Move>,
     /// Tablebase rank, for root filtering. Zero when no tablebase was consulted.
     pub tb_rank: i32,
+    /// Nodes spent below this move across the whole search, for time management.
+    ///
+    /// A best move that already accounts for most of the tree is unlikely to be displaced
+    /// by spending longer, so the time manager reads this as a reason to stop early.
+    pub effort: u64,
 }
 
 impl RootMove {
@@ -91,6 +140,7 @@ impl RootMove {
             sel_depth: 0,
             pv: vec![mv],
             tb_rank: 0,
+            effort: 0,
         }
     }
 }
@@ -132,6 +182,19 @@ pub struct SharedState {
     pub nodes: AtomicU64,
     /// Total tablebase hits across every thread.
     pub tb_hits: AtomicU64,
+    /// Root best-move changes, pooled across every thread since the last read.
+    ///
+    /// Upstream walks the thread list each iteration, sums each worker's counter and zeroes
+    /// it. A thread here is inside a `scope` and the main thread cannot reach into it, so
+    /// the sum accumulates in one place instead and the read takes it: a `swap` is exactly
+    /// "add them all up, then set them all to zero".
+    pub best_move_changes: AtomicU64,
+    /// Cleared by the time manager when a move is taking long enough to be worth
+    /// re-searching the same depth rather than deepening.
+    pub increase_depth: AtomicBool,
+    /// Set when the budget has run out but the engine is pondering, so the search keeps
+    /// going and stops the moment the GUI converts the ponder into a real move.
+    pub stop_on_ponderhit: AtomicBool,
 }
 
 impl SharedState {
@@ -158,6 +221,64 @@ impl SharedState {
         self.stop.store(false, Ordering::Relaxed);
         self.nodes.store(0, Ordering::Relaxed);
         self.tb_hits.store(0, Ordering::Relaxed);
+        self.best_move_changes.store(0, Ordering::Relaxed);
+        self.increase_depth.store(true, Ordering::Relaxed);
+        self.stop_on_ponderhit.store(false, Ordering::Relaxed);
+    }
+
+    /// True while the search is thinking on the opponent's clock.
+    #[inline]
+    #[must_use]
+    pub fn pondering(&self) -> bool {
+        self.ponder.load(Ordering::Relaxed)
+    }
+
+    /// Stop as soon as the ponder becomes a real search, but not before.
+    pub fn request_stop_on_ponderhit(&self) {
+        self.stop_on_ponderhit.store(true, Ordering::Relaxed);
+    }
+
+    /// Convert a ponder into a real search, honouring a budget that already ran out.
+    ///
+    /// This is the whole of `ponderhit`: the thinking already done counts, and if the
+    /// budget was spent while pondering the move is played immediately.
+    pub fn ponder_hit(&self) {
+        self.ponder.store(false, Ordering::Relaxed);
+        if self.stop_on_ponderhit.load(Ordering::Relaxed) {
+            self.request_stop();
+        }
+    }
+
+    /// Set whether iterations should keep deepening.
+    pub fn set_increase_depth(&self, yes: bool) {
+        self.increase_depth.store(yes, Ordering::Relaxed);
+    }
+
+    /// True when the budget ran out while pondering.
+    #[inline]
+    #[must_use]
+    pub fn stop_on_ponderhit(&self) -> bool {
+        self.stop_on_ponderhit.load(Ordering::Relaxed)
+    }
+
+    /// Record that this thread's best root move changed.
+    #[inline]
+    pub fn note_best_move_change(&self) {
+        self.best_move_changes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Take the pooled best-move-change count, leaving zero behind.
+    #[inline]
+    #[must_use]
+    pub fn take_best_move_changes(&self) -> u64 {
+        self.best_move_changes.swap(0, Ordering::Relaxed)
+    }
+
+    /// True while iterations should keep deepening rather than re-running a depth.
+    #[inline]
+    #[must_use]
+    pub fn increase_depth(&self) -> bool {
+        self.increase_depth.load(Ordering::Relaxed)
     }
 
     /// Add `n` to the global node count.
@@ -174,28 +295,51 @@ impl SharedState {
     }
 }
 
-/// The time budget for one move.
+/// The time budget for one move, in the unit the clock is being measured in.
+///
+/// Upstream's `TimeManagement` is two numbers plus the flag that says what the numbers
+/// count. Under `nodestime` the whole time model switches to nodes — the clock, the
+/// increment and the move overhead are all multiplied into node counts, and `elapsed`
+/// returns nodes searched rather than milliseconds. Keeping the flag next to the two
+/// bounds is what stops a caller comparing a node count against a millisecond.
 #[derive(Clone, Copy, Debug)]
 pub struct TimeBudget {
     /// When the search started.
     pub start: Instant,
     /// The point past which a new iteration should not be started.
-    pub optimum: Duration,
+    pub optimum: i64,
     /// The point past which the search stops even mid-iteration.
-    pub maximum: Duration,
+    pub maximum: i64,
+    /// True when the two bounds count nodes rather than milliseconds.
+    pub use_nodes_time: bool,
+}
+
+impl Default for TimeBudget {
+    fn default() -> TimeBudget {
+        TimeBudget { start: Instant::now(), optimum: 0, maximum: 0, use_nodes_time: false }
+    }
 }
 
 impl TimeBudget {
-    /// How long the search has been running.
+    /// How far the search has got, in whichever unit the budget counts.
+    ///
+    /// `nodes` is the pool-wide count, needed only in nodes-as-time mode; the caller passes
+    /// it unconditionally because reading a relaxed atomic is cheaper than branching around
+    /// it.
+    #[inline]
     #[must_use]
-    pub fn elapsed(&self) -> Duration {
-        self.start.elapsed()
+    pub fn elapsed(&self, nodes: u64) -> i64 {
+        if self.use_nodes_time { nodes as i64 } else { self.elapsed_time() }
     }
 
-    /// True when the hard limit has passed.
+    /// Wall-clock milliseconds since the search started, whatever the mode.
+    ///
+    /// Reporting stays in real time: a GUI that is told a search took 40 000 "milliseconds"
+    /// because the engine was counting nodes will draw the wrong conclusion.
+    #[inline]
     #[must_use]
-    pub fn out_of_time(&self) -> bool {
-        self.elapsed() >= self.maximum
+    pub fn elapsed_time(&self) -> i64 {
+        self.start.elapsed().as_millis() as i64
     }
 }
 
@@ -280,13 +424,20 @@ mod tests {
     }
 
     #[test]
-    fn a_clock_means_time_management_but_movetime_does_not() {
+    fn a_clock_is_the_whole_test_for_time_management() {
         let clock = Limits { time: [Some(60_000), Some(60_000)], ..Limits::default() };
         assert!(clock.uses_time_management());
-        let fixed = Limits { move_time: Some(1000), ..clock };
-        assert!(!fixed.uses_time_management());
-        let infinite = Limits { infinite: true, ..Limits::default() };
-        assert!(!infinite.uses_time_management());
+
+        // A clock plus `movetime` still manages time. `movetime` is enforced against the
+        // elapsed count directly, so excluding it here would silence the maximum as well
+        // and a `go movetime` on a clock would run past both.
+        assert!(Limits { move_time: Some(1000), ..clock.clone() }.uses_time_management());
+        assert!(Limits { infinite: true, ..clock }.uses_time_management());
+
+        assert!(!Limits { infinite: true, ..Limits::default() }.uses_time_management());
+        assert!(!Limits { move_time: Some(1000), ..Limits::default() }.uses_time_management());
+        // A zero clock is "no clock given", not "no time left".
+        assert!(!Limits { time: [Some(0), Some(0)], ..Limits::default() }.uses_time_management());
     }
 
     #[test]

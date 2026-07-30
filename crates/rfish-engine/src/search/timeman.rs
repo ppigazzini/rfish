@@ -5,12 +5,17 @@
 //! one already has a best move. The *maximum* is the point past which the search stops
 //! wherever it is, and losing on time is worse than any move it could still find.
 //!
+//! The manager outlives one move. `available_nodes` is a whole-game budget under
+//! `nodestime`, and `original_time_adjust` is fixed on the first move of the game and
+//! reused, so both live here and are cleared by [`TimeManagement::clear`] on `ucinewgame`
+//! rather than being recomputed per `go`.
+//!
 //! Golden: `Stockfish/src/timeman.cpp`.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::board::types::Color;
-use crate::state::{Limits, TimeBudget};
+use crate::state::{Limits, SearchOptions, TimeBudget};
 
 /// Milliseconds reserved for the move to reach the GUI.
 ///
@@ -19,64 +24,153 @@ use crate::state::{Limits, TimeBudget};
 /// through no fault of the search.
 pub const DEFAULT_MOVE_OVERHEAD: u64 = 10;
 
-/// Work out the budget for one move.
-///
-/// `moves_to_go` of `None` means sudden death, which is the case the whole formula is
-/// shaped around: the clock has to last an unknown number of moves, so each move gets a
-/// fraction of what remains rather than a share of a known quota.
-#[must_use]
-pub fn allocate(limits: &Limits, us: Color, move_overhead: u64) -> TimeBudget {
-    let start = limits.start.unwrap_or_else(Instant::now);
+/// The clock model for one game.
+#[derive(Clone, Copy, Debug)]
+pub struct TimeManagement {
+    start: Instant,
+    optimum: i64,
+    maximum: i64,
+    use_nodes_time: bool,
+    /// Nodes left in the game under `nodestime`; negative means "not yet initialised".
+    available_nodes: i64,
+    /// The first move's time-left factor, held for the rest of the game; negative means
+    /// "not yet computed".
+    original_time_adjust: f64,
+}
 
-    // A fixed time per move needs no reasoning: spend it, minus the overhead.
-    if let Some(mt) = limits.move_time {
-        let d = Duration::from_millis(mt.saturating_sub(move_overhead));
-        return TimeBudget { start, optimum: d, maximum: d };
-    }
-
-    let Some(remaining) = limits.time[us.index()] else {
-        // No clock: `go infinite`, `go depth`, `go nodes`. Nothing bounds the time, so
-        // hand back a budget that never expires and let the other limit do the work.
-        let forever = Duration::from_secs(86_400);
-        return TimeBudget { start, optimum: forever, maximum: forever };
-    };
-
-    let inc = limits.inc[us.index()];
-    // Never plan to use time that will not exist by the time the move is sent.
-    let remaining = remaining.saturating_sub(move_overhead).max(1);
-
-    // How many moves the budget has to cover. With a known quota, use it; without one,
-    // assume the game runs about 50 more plies, tapering as the game goes on so the
-    // opening does not spend the endgame's time.
-    let mtg = match limits.moves_to_go {
-        Some(n) => u64::from(n.max(1)).min(50),
-        None => 50u64.saturating_sub((limits.ply as u64 / 2).min(30)).max(20),
-    };
-
-    // The optimum is the even share plus most of the increment: the increment is money
-    // that arrives whether it is spent or not, so holding it back only wastes it.
-    let optimum_ms = (remaining / mtg + inc * 3 / 4).min(remaining);
-
-    // The maximum lets a single critical move borrow from the rest of the game, capped so
-    // that a bad estimate cannot spend the whole clock at once.
-    let maximum_ms = (optimum_ms * 4).min(remaining * 4 / 5).max(optimum_ms);
-
-    TimeBudget {
-        start,
-        optimum: Duration::from_millis(optimum_ms),
-        maximum: Duration::from_millis(maximum_ms.max(1)),
+impl Default for TimeManagement {
+    fn default() -> TimeManagement {
+        TimeManagement {
+            start: Instant::now(),
+            optimum: 0,
+            maximum: 0,
+            use_nodes_time: false,
+            available_nodes: -1,
+            original_time_adjust: -1.0,
+        }
     }
 }
 
-/// Should the search start another iteration?
-///
-/// `instability` scales the optimum: a root move that keeps changing, or a score that
-/// keeps falling, is a sign the current answer is not to be trusted, and upstream buys more
-/// time rather than reporting it.
-#[must_use]
-pub fn should_start_iteration(budget: &TimeBudget, instability: f64) -> bool {
-    let scaled = budget.optimum.mul_f64(instability.clamp(0.5, 2.5));
-    budget.elapsed() < scaled.min(budget.maximum)
+impl TimeManagement {
+    /// Forget the whole-game state. Called on `ucinewgame`.
+    pub fn clear(&mut self) {
+        self.available_nodes = -1;
+        self.original_time_adjust = -1.0;
+    }
+
+    /// Spend `nodes` of the game-long node budget.
+    pub fn advance_nodes_time(&mut self, nodes: i64) {
+        debug_assert!(self.use_nodes_time);
+        self.available_nodes = (self.available_nodes - nodes).max(0);
+    }
+
+    /// The budget the workers enforce.
+    #[must_use]
+    pub fn budget(&self) -> TimeBudget {
+        TimeBudget {
+            start: self.start,
+            optimum: self.optimum,
+            maximum: self.maximum,
+            use_nodes_time: self.use_nodes_time,
+        }
+    }
+
+    /// True when the clock is being counted in nodes rather than milliseconds.
+    #[must_use]
+    pub fn uses_nodes_time(&self) -> bool {
+        self.use_nodes_time
+    }
+
+    /// Work out the bounds for the current move.
+    ///
+    /// `limits` is taken by `&mut` because nodes-as-time REWRITES it: the clock, the
+    /// increment and the overhead are all converted into node counts, and everything
+    /// downstream then compares node counts against node counts. That conversion is
+    /// upstream's, and doing it anywhere else would leave two units in play at once.
+    pub fn init(&mut self, limits: &mut Limits, us: Color, ply: i32, opts: &SearchOptions) {
+        let npmsec = opts.nodestime as i64;
+
+        // With no clock there is nothing to divide up. `start` and `use_nodes_time` still
+        // have to be right: `movetime` and the node limit are measured against them.
+        self.start = limits.start.unwrap_or_else(Instant::now);
+        self.use_nodes_time = npmsec != 0;
+
+        let side = us.index();
+        let Some(mut time) = limits.time[side].map(|t| t as i64).filter(|&t| t > 0) else {
+            return;
+        };
+
+        let mut move_overhead = opts.move_overhead as i64;
+        let mut inc = limits.inc[side] as i64;
+
+        // WARNING: to avoid losing on time, the `nodestime` value must be well BELOW the
+        // engine's real speed. It is a budget the search is held to, not a measurement.
+        if self.use_nodes_time {
+            if self.available_nodes < 0 {
+                // Once, at the start of the game.
+                self.available_nodes = npmsec * time;
+            }
+            time = self.available_nodes;
+            inc *= npmsec;
+            move_overhead *= npmsec;
+            limits.time[side] = Some(time as u64);
+            limits.inc[side] = inc as u64;
+            limits.npmsec = npmsec as u64;
+        }
+
+        // Every constant below is calibrated against milliseconds, so scale back into them
+        // before comparing and scale the result out again.
+        let scale_factor = if self.use_nodes_time { npmsec } else { 1 };
+        let scaled_time = time / scale_factor;
+
+        let movestogo = limits.moves_to_go.unwrap_or(0) as i32;
+        let mut mtg = if movestogo != 0 { movestogo.min(50) } else { 50 };
+
+        // Under a second, taper the horizon: planning fifty more moves out of 800 ms
+        // allocates a budget too small to complete even one iteration.
+        if scaled_time < 1000 {
+            mtg = (scaled_time as f64 * 0.05) as i32;
+        }
+
+        // Used as a divisor below, so it must stay positive.
+        let time_left =
+            (time + inc * i64::from(mtg - 1) - move_overhead * i64::from(2 + mtg)).max(1);
+
+        let (opt_scale, max_scale);
+        if movestogo == 0 {
+            // x basetime (+ z increment).
+            if self.original_time_adjust < 0.0 {
+                self.original_time_adjust = 0.3272 * (time_left as f64).log10() - 0.4141;
+            }
+
+            let log_time_in_sec = (scaled_time as f64 / 1000.0).log10();
+            let opt_constant = (0.002_986_9 + 0.000_335_54 * log_time_in_sec).min(0.004_905);
+            let max_constant = (3.3744 + 3.0608 * log_time_in_sec).max(3.1441);
+
+            // A healthy increment can push `time_left` past the time actually available for
+            // this move, so cap against the clock as well as against the formula.
+            opt_scale = (0.012_112 + (f64::from(ply) + 3.22713).powf(0.46866) * opt_constant)
+                .min(0.19404 * time as f64 / time_left as f64)
+                * self.original_time_adjust;
+            max_scale = 6.873f64.min(max_constant + f64::from(ply) / 12.352);
+        } else {
+            // x moves in y seconds (+ z increment).
+            opt_scale = ((0.88 + f64::from(ply) / 116.4) / f64::from(mtg))
+                .min(0.88 * time as f64 / time_left as f64);
+            max_scale = 1.3 + 0.11 * f64::from(mtg);
+        }
+
+        self.optimum = (opt_scale * time_left as f64).max(1.0) as i64;
+        self.maximum = (self.optimum as f64)
+            .max((0.8097 * time as f64 - move_overhead as f64).min(max_scale * self.optimum as f64))
+            as i64;
+
+        // A ponder hit inherits the thinking already done, so the move can afford to plan
+        // for longer than it would if every millisecond had to come out of its own clock.
+        if opts.ponder {
+            self.optimum += self.optimum / 4;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -93,31 +187,30 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_fixed_move_time_is_spent_minus_the_overhead() {
-        let l = Limits { move_time: Some(1000), start: Some(Instant::now()), ..Limits::default() };
-        let b = allocate(&l, Color::White, 10);
-        assert_eq!(b.optimum, Duration::from_millis(990));
-        assert_eq!(b.maximum, b.optimum);
+    fn budget(ms: u64, inc: u64, mtg: Option<u32>, ply: i32) -> TimeBudget {
+        let mut l = limits_with_clock(ms, inc, mtg);
+        let mut tm = TimeManagement::default();
+        tm.init(&mut l, Color::White, ply, &SearchOptions::default());
+        tm.budget()
     }
 
     #[test]
-    fn no_clock_means_no_time_limit() {
-        let l = Limits { depth: Some(10), start: Some(Instant::now()), ..Limits::default() };
-        let b = allocate(&l, Color::White, 10);
-        assert!(b.optimum > Duration::from_secs(3600));
-        assert!(!b.out_of_time());
+    fn no_clock_leaves_the_bounds_at_zero() {
+        let mut l = Limits { depth: Some(10), start: Some(Instant::now()), ..Limits::default() };
+        let mut tm = TimeManagement::default();
+        tm.init(&mut l, Color::White, 0, &SearchOptions::default());
+        // `go depth` is not bounded by the clock, and the caller checks
+        // `uses_time_management` before reading these at all.
+        assert!(!l.uses_time_management());
+        assert_eq!(tm.budget().optimum, 0);
     }
 
     #[test]
     fn the_budget_never_exceeds_the_clock() {
         for ms in [10u64, 100, 1000, 60_000, 3_600_000] {
             for inc in [0u64, 100, 1000] {
-                let b = allocate(&limits_with_clock(ms, inc, None), Color::White, 10);
-                assert!(
-                    b.maximum <= Duration::from_millis(ms),
-                    "budget {b:?} exceeds a {ms} ms clock"
-                );
+                let b = budget(ms, inc, None, 20);
+                assert!(b.maximum <= ms as i64, "budget {b:?} exceeds a {ms} ms clock");
                 assert!(b.optimum <= b.maximum);
             }
         }
@@ -125,36 +218,84 @@ mod tests {
 
     #[test]
     fn a_short_clock_still_yields_a_positive_budget() {
-        // Under the overhead, the budget must not become zero or the engine forfeits by
+        // Under the overhead the budget must not become zero, or the engine forfeits by
         // making no move at all.
-        let b = allocate(&limits_with_clock(5, 0, None), Color::White, 10);
-        assert!(b.maximum >= Duration::from_millis(1));
+        assert!(budget(5, 0, None, 20).maximum >= 1);
     }
 
     #[test]
     fn a_known_move_quota_spends_a_larger_share_than_sudden_death() {
-        let quota = allocate(&limits_with_clock(60_000, 0, Some(5)), Color::White, 10);
-        let sudden = allocate(&limits_with_clock(60_000, 0, None), Color::White, 10);
-        assert!(quota.optimum > sudden.optimum);
+        assert!(budget(60_000, 0, Some(5), 20).optimum > budget(60_000, 0, None, 20).optimum);
     }
 
     #[test]
     fn an_increment_raises_the_per_move_budget() {
-        let with = allocate(&limits_with_clock(60_000, 1000, None), Color::White, 10);
-        let without = allocate(&limits_with_clock(60_000, 0, None), Color::White, 10);
-        assert!(with.optimum > without.optimum);
+        assert!(budget(60_000, 1000, None, 20).optimum > budget(60_000, 0, None, 20).optimum);
     }
 
     #[test]
-    fn instability_buys_time_but_never_past_the_maximum() {
-        let b = allocate(&limits_with_clock(60_000, 0, None), Color::White, 10);
-        assert!(should_start_iteration(&b, 1.0));
-        // Even an extreme instability factor is clamped by the hard limit.
-        let hard = TimeBudget {
-            start: Instant::now().checked_sub(Duration::from_millis(10)).unwrap(),
-            optimum: Duration::from_millis(1),
-            maximum: Duration::from_millis(2),
-        };
-        assert!(!should_start_iteration(&hard, 100.0));
+    fn pondering_raises_the_optimum_by_a_quarter() {
+        let mut l = limits_with_clock(60_000, 0, None);
+        let mut tm = TimeManagement::default();
+        let plain = SearchOptions::default();
+        tm.init(&mut l, Color::White, 20, &plain);
+        let without = tm.budget().optimum;
+
+        let mut l = limits_with_clock(60_000, 0, None);
+        let mut tm = TimeManagement::default();
+        tm.init(&mut l, Color::White, 20, &SearchOptions { ponder: true, ..plain });
+        assert_eq!(tm.budget().optimum, without + without / 4);
+    }
+
+    #[test]
+    fn nodestime_converts_the_whole_clock_into_nodes() {
+        let mut l = limits_with_clock(60_000, 100, None);
+        let mut tm = TimeManagement::default();
+        let opts = SearchOptions { nodestime: 600, ..SearchOptions::default() };
+        tm.init(&mut l, Color::White, 20, &opts);
+
+        assert!(tm.uses_nodes_time());
+        assert!(tm.budget().use_nodes_time);
+        // The clock became a node budget at the declared rate, and the increment with it.
+        assert_eq!(l.time[Color::White.index()], Some(600 * 60_000));
+        assert_eq!(l.inc[Color::White.index()], 600 * 100);
+        assert_eq!(l.npmsec, 600);
+    }
+
+    #[test]
+    fn the_node_budget_is_spent_across_moves() {
+        let mut l = limits_with_clock(1000, 0, None);
+        let mut tm = TimeManagement::default();
+        let opts = SearchOptions { nodestime: 600, ..SearchOptions::default() };
+        tm.init(&mut l, Color::White, 0, &opts);
+        let first = tm.budget().optimum;
+
+        tm.advance_nodes_time(500_000);
+        let mut l = limits_with_clock(1000, 0, None);
+        tm.init(&mut l, Color::White, 2, &opts);
+        // Half the game's nodes are gone, so the next move plans for less.
+        assert!(tm.budget().optimum < first, "spending nodes must shrink the next budget");
+    }
+
+    #[test]
+    fn the_time_adjust_factor_is_fixed_on_the_first_move() {
+        let mut tm = TimeManagement::default();
+        let opts = SearchOptions::default();
+        let mut l = limits_with_clock(600_000, 0, None);
+        tm.init(&mut l, Color::White, 0, &opts);
+        let fixed = tm.original_time_adjust;
+
+        // A later move with far less clock keeps the factor the game opened with.
+        let mut l = limits_with_clock(1_000, 0, None);
+        tm.init(&mut l, Color::White, 60, &opts);
+        assert!((tm.original_time_adjust - fixed).abs() < f64::EPSILON);
+
+        tm.clear();
+        let mut l = limits_with_clock(1_000, 0, None);
+        tm.init(&mut l, Color::White, 0, &opts);
+        assert!(
+            (tm.original_time_adjust - fixed).abs() > f64::EPSILON,
+            "ucinewgame must re-derive the factor"
+        );
     }
 }

@@ -26,9 +26,10 @@ use std::sync::Arc;
 use crate::board::position::Position;
 use crate::board::types::Move;
 use crate::eval::nnue::Network;
+use crate::search::timeman::TimeManagement;
 use crate::search::tt::TranspositionTable;
 use crate::search::worker::{InfoSink, SearchResult, SearchWorker, SilentSink};
-use crate::state::{Limits, SharedState};
+use crate::state::{Limits, SearchOptions, SharedState};
 
 /// A set of search threads and the state they keep between searches.
 ///
@@ -38,6 +39,9 @@ use crate::state::{Limits, SharedState};
 pub struct ThreadPool {
     workers: Vec<SearchWorker>,
     shared: Arc<SharedState>,
+    /// The clock model, which outlives one `go`: a `nodestime` budget is spent across the
+    /// whole game, and the time-left factor is fixed on the first move and reused.
+    tm: TimeManagement,
 }
 
 impl core::fmt::Debug for ThreadPool {
@@ -52,7 +56,7 @@ impl ThreadPool {
     pub fn new(n: usize) -> ThreadPool {
         let shared = SharedState::new();
         let workers = (0..n.max(1)).map(|i| SearchWorker::new(i, Arc::clone(&shared))).collect();
-        ThreadPool { workers, shared }
+        ThreadPool { workers, shared, tm: TimeManagement::default() }
     }
 
     /// Resize to `n` threads, keeping thread 0's histories.
@@ -125,6 +129,7 @@ impl ThreadPool {
         for w in &mut self.workers {
             w.clear();
         }
+        self.tm.clear();
     }
 
     /// Search `pos` with every thread and return thread 0's result.
@@ -137,12 +142,25 @@ impl ThreadPool {
         pos: &Position,
         limits: &Limits,
         tt: &TranspositionTable,
-        multi_pv: usize,
-        move_overhead: u64,
+        opts: &SearchOptions,
         sink: &mut dyn InfoSink,
     ) -> SearchResult {
         self.shared.reset();
         tt.new_search();
+
+        // The clock model is the pool's, not a worker's: `nodestime` spends a budget that
+        // lasts the whole game, so it cannot live in state that is rebuilt per `go`. The
+        // limits it hands back are the converted ones, and every worker searches those.
+        let mut limits = limits.clone();
+        let ply = limits.ply;
+        self.tm.init(&mut limits, pos.side_to_move(), ply, opts);
+        let budget = self.tm.budget();
+        let limits = &limits;
+
+        let n = self.workers.len();
+        for w in &mut self.workers {
+            w.set_thread_count(n);
+        }
 
         let (main, helpers) = self.workers.split_at_mut(1);
         let main = &mut main[0];
@@ -151,13 +169,13 @@ impl ThreadPool {
             let mut handles = Vec::with_capacity(helpers.len());
             for w in helpers.iter_mut() {
                 let (pos, limits) = (pos, limits);
-                handles.push(scope.spawn(move || {
-                    w.search(pos, limits, tt, multi_pv, move_overhead, &mut SilentSink)
-                }));
+                handles.push(
+                    scope.spawn(move || w.search(pos, limits, tt, opts, budget, &mut SilentSink)),
+                );
             }
             // The main thread searches on this thread rather than a spawned one, so a
             // single-threaded run has no thread involved at all.
-            let r = main.search(pos, limits, tt, multi_pv, move_overhead, sink);
+            let r = main.search(pos, limits, tt, opts, budget, sink);
             // Every helper must see the stop before this scope can join them.
             self.shared.request_stop();
             let votes: Vec<SearchResult> =
@@ -171,14 +189,29 @@ impl ThreadPool {
         //
         // With one thread there is nothing to vote on and this reduces to thread 0's answer,
         // which is what keeps `Threads 1` deterministic. `MultiPV` is excluded because the
-        // caller asked for a ranked list, not a single answer.
-        if !votes.is_empty() && multi_pv == 1 {
+        // caller asked for a ranked list, not a single answer. A strength handicap is
+        // excluded for the same reason in reverse: it has already chosen a move on purpose,
+        // and a vote would put the best one back.
+        if !votes.is_empty() && opts.multi_pv == 1 && limits.depth.is_none() && !handicapped(opts) {
             result = elect(std::iter::once(result).chain(votes));
         }
 
         result.nodes = self.shared.node_count().max(result.nodes);
+
+        // Charge the game-long node budget for what this move spent, less the increment it
+        // earned back by playing.
+        if self.tm.uses_nodes_time() {
+            let inc = limits.inc[pos.side_to_move().index()] as i64;
+            self.tm.advance_nodes_time(result.nodes as i64 - inc);
+        }
+
         result
     }
+}
+
+/// True when a strength handicap is choosing the move.
+fn handicapped(opts: &SearchOptions) -> bool {
+    crate::search::skill::Skill::new(opts.skill_level, opts.uci_elo).enabled()
 }
 
 /// Choose the move a set of finished searches agrees on.
@@ -246,6 +279,10 @@ mod tests {
     use crate::board::position::START_FEN;
     use std::time::Instant;
 
+    fn opts(multi_pv: usize) -> SearchOptions {
+        SearchOptions { multi_pv, ..SearchOptions::default() }
+    }
+
     fn depth_limits(d: i32) -> Limits {
         Limits { depth: Some(d), start: Some(Instant::now()), ..Limits::default() }
     }
@@ -255,7 +292,7 @@ mod tests {
         let mut pool = ThreadPool::new(1);
         let tt = TranspositionTable::new(8);
         let pos = Position::from_fen(START_FEN, false).expect("valid");
-        let r = pool.search(&pos, &depth_limits(6), &tt, 1, 10, &mut SilentSink);
+        let r = pool.search(&pos, &depth_limits(6), &tt, &opts(1), &mut SilentSink);
         assert!(generate_legal(&pos).contains(&r.best_move));
     }
 
@@ -271,7 +308,7 @@ mod tests {
             false,
         )
         .expect("valid");
-        let r = pool.search(&pos, &depth_limits(7), &tt, 1, 10, &mut SilentSink);
+        let r = pool.search(&pos, &depth_limits(7), &tt, &opts(1), &mut SilentSink);
         assert!(generate_legal(&pos).contains(&r.best_move));
         assert_eq!(pool.len(), 4);
         // The helpers' nodes are counted too, so the total exceeds thread 0's alone.
@@ -289,7 +326,7 @@ mod tests {
             shared.request_stop();
         });
         let limits = Limits { infinite: true, start: Some(Instant::now()), ..Limits::default() };
-        let r = pool.search(&pos, &limits, &tt, 1, 10, &mut SilentSink);
+        let r = pool.search(&pos, &limits, &tt, &opts(1), &mut SilentSink);
         stopper.join().expect("the stopper thread finishes");
         assert!(r.best_move.is_ok());
     }
@@ -306,7 +343,7 @@ mod tests {
 
         let tt = TranspositionTable::new(4);
         let pos = Position::from_fen(START_FEN, false).expect("valid");
-        let r = pool.search(&pos, &depth_limits(4), &tt, 1, 10, &mut SilentSink);
+        let r = pool.search(&pos, &depth_limits(4), &tt, &opts(1), &mut SilentSink);
         assert!(r.best_move.is_ok());
     }
 
@@ -341,11 +378,11 @@ mod tests {
         let mut a = ThreadPool::new(1);
         let tt = TranspositionTable::new(8);
         let pos = Position::from_fen(START_FEN, false).expect("valid");
-        let first = a.search(&pos, &depth_limits(7), &tt, 1, 10, &mut SilentSink);
+        let first = a.search(&pos, &depth_limits(7), &tt, &opts(1), &mut SilentSink);
 
         let mut b = ThreadPool::new(1);
         let tt2 = TranspositionTable::new(8);
-        let second = b.search(&pos, &depth_limits(7), &tt2, 1, 10, &mut SilentSink);
+        let second = b.search(&pos, &depth_limits(7), &tt2, &opts(1), &mut SilentSink);
         assert_eq!(first.best_move, second.best_move);
         assert_eq!(first.score, second.score);
     }
@@ -355,9 +392,9 @@ mod tests {
         let mut pool = ThreadPool::new(2);
         let tt = TranspositionTable::new(4);
         let pos = Position::from_fen(START_FEN, false).expect("valid");
-        pool.search(&pos, &depth_limits(5), &tt, 1, 10, &mut SilentSink);
+        pool.search(&pos, &depth_limits(5), &tt, &opts(1), &mut SilentSink);
         pool.clear();
-        let r = pool.search(&pos, &depth_limits(5), &tt, 1, 10, &mut SilentSink);
+        let r = pool.search(&pos, &depth_limits(5), &tt, &opts(1), &mut SilentSink);
         assert!(r.best_move.is_ok());
     }
 }

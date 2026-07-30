@@ -17,23 +17,33 @@
 //! Golden: `Stockfish/src/search.cpp`.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use crate::board::movegen::{generate_legal, move_to_uci};
 use crate::board::position::Position;
 use crate::board::types::{
     Bound, Color, MAX_PLY, Move, VALUE_DRAW, VALUE_INFINITE, VALUE_MATE, VALUE_MATE_IN_MAX_PLY,
     VALUE_MATED_IN_MAX_PLY, VALUE_NONE, VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY, Value,
-    mated_in, piece_value,
+    mate_in, mated_in, piece_value,
 };
 use crate::eval;
 use crate::eval::nnue::{Network, Scratch};
-use crate::state::{Limits, RootMove, STACK_BASE, STACK_SIZE, SharedState, StackEntry, TimeBudget};
+use crate::state::{
+    Limits, RootMove, STACK_BASE, STACK_SIZE, SearchOptions, SharedState, StackEntry, TimeBudget,
+};
 
 use super::history::{Histories, stat_bonus, stat_malus};
 use super::movepick::{ContKey, MovePicker, continuation_to};
-use super::timeman;
+use super::skill::{Prng, Skill};
 use super::tt::{TranspositionTable, value_from_tt, value_to_tt};
+
+/// Interpolate `y0..y1` linearly over `x0..x1`, without clamping to the ends.
+///
+/// Upstream's `interpolate`. The callers clamp afterwards, and they clamp to a range that
+/// is not the endpoints, so folding the clamp in here would change the answer.
+fn interpolate(x: f64, x0: f64, x1: f64, y0: f64, y1: f64) -> f64 {
+    debug_assert!((x0 - x1).abs() > f64::EPSILON, "interpolating over an empty range");
+    y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+}
 
 /// How the search reports progress.
 ///
@@ -105,9 +115,15 @@ pub struct SearchWorker {
     completed_depth: i32,
     pv_index: usize,
     multi_pv: usize,
-    /// How often the best root move changed, decayed each iteration. High values buy time.
-    best_move_changes: f64,
+    /// How many threads are searching this root, for the pooled instability term.
+    thread_count: usize,
     optimism: [Value; 2],
+    /// The stability factor the previous move settled on, carried into this one.
+    previous_time_reduction: f64,
+    /// The previous move's averaged root score, for the falling-eval term.
+    best_previous_average_score: Value,
+    /// The last four iterations' scores, for the same term over a longer window.
+    iter_value: [Value; 4],
     /// The network, shared read-only across every thread. `None` runs the classical
     /// fallback, which is what a run with no net on disk does.
     network: Option<Arc<Network>>,
@@ -142,11 +158,7 @@ impl SearchWorker {
             root_moves: Vec::new(),
             shared,
             limits: Limits::default(),
-            budget: TimeBudget {
-                start: Instant::now(),
-                optimum: std::time::Duration::MAX,
-                maximum: std::time::Duration::MAX,
-            },
+            budget: TimeBudget::default(),
             nodes: 0,
             tb_hits: 0,
             sel_depth: 0,
@@ -154,8 +166,11 @@ impl SearchWorker {
             completed_depth: 0,
             pv_index: 0,
             multi_pv: 1,
-            best_move_changes: 0.0,
+            thread_count: 1,
             optimism: [0; 2],
+            previous_time_reduction: 0.85,
+            best_previous_average_score: VALUE_INFINITE,
+            iter_value: [0; 4],
             network: None,
             scratch: Scratch::default(),
             tablebases: None,
@@ -279,12 +294,13 @@ impl SearchWorker {
     /// Forget every history. Called on `ucinewgame`, never mid-game.
     pub fn clear(&mut self) {
         self.histories.clear();
+        self.previous_time_reduction = 0.85;
+        self.best_previous_average_score = VALUE_INFINITE;
     }
 
-    /// How many nodes this worker has searched.
-    #[must_use]
-    pub fn nodes(&self) -> u64 {
-        self.nodes
+    /// Tell this worker how many threads share the root, for the instability term.
+    pub fn set_thread_count(&mut self, n: usize) {
+        self.thread_count = n.max(1);
     }
 
     /// Run one search to completion.
@@ -296,21 +312,28 @@ impl SearchWorker {
         pos: &Position,
         limits: &Limits,
         tt: &TranspositionTable,
-        multi_pv: usize,
-        move_overhead: u64,
+        opts: &SearchOptions,
+        budget: TimeBudget,
         sink: &mut dyn InfoSink,
     ) -> SearchResult {
         self.pos = pos.clone();
         self.limits = limits.clone();
-        self.budget = timeman::allocate(limits, pos.side_to_move(), move_overhead);
+        self.budget = budget;
         self.nodes = 0;
         self.tb_hits = 0;
         self.sel_depth = 0;
         self.completed_depth = 0;
-        self.best_move_changes = 0.0;
         for e in &mut self.stack {
             *e = StackEntry::default();
         }
+
+        // Seed the iteration history with the previous move's score, so the falling-eval
+        // term compares against something real from the very first iteration.
+        self.iter_value = [if self.best_previous_average_score == VALUE_INFINITE {
+            VALUE_DRAW
+        } else {
+            self.best_previous_average_score
+        }; 4];
 
         // Build the root move list, honouring `searchmoves` when the caller gave one.
         self.root_moves = generate_legal(&self.pos)
@@ -332,28 +355,53 @@ impl SearchWorker {
             };
         }
 
+        let mut skill = Skill::new(opts.skill_level, opts.uci_elo);
+        let mut rng = Prng::from_clock();
+
+        // A handicap needs alternatives to choose between, so it searches several lines
+        // behind the GUI's back whatever the GUI asked for.
+        let mut multi_pv = opts.multi_pv;
+        if skill.enabled() {
+            multi_pv = multi_pv.max(4);
+        }
         self.multi_pv = multi_pv.clamp(1, self.root_moves.len());
         let max_depth = limits.depth.unwrap_or(MAX_PLY as i32 - 1).min(MAX_PLY as i32 - 1);
 
         let mut last_best = self.root_moves[0].mv;
+        let mut last_best_depth = 0;
+        let mut time_reduction = 1.0f64;
+        let mut tot_best_move_changes = 0.0f64;
+        let mut iter_idx = 0usize;
+        let mut search_again_counter = 0i32;
         let mut root_depth = 1;
         while root_depth <= max_depth {
             if self.shared.stopped() {
                 break;
             }
+            // A move the pool is spending a long time on is re-searched at a shallower
+            // effective depth rather than deepened: more of the tree at the depth that is
+            // still in doubt beats a little of the tree one ply further on.
+            if !self.shared.increase_depth() {
+                search_again_counter += 1;
+            }
+
             self.root_depth = root_depth;
             for rm in &mut self.root_moves {
                 rm.previous_score = rm.score;
             }
-            self.best_move_changes *= 0.5;
+            // Halve rather than clear: a move that was unstable two iterations ago is
+            // weaker evidence than one that is unstable now, not no evidence.
+            tot_best_move_changes /= 2.0;
 
+            let mut best_value = -VALUE_INFINITE;
             for pv in 0..self.multi_pv {
                 self.pv_index = pv;
                 self.sel_depth = 0;
-                let score = self.aspiration(root_depth, tt);
+                let score = self.aspiration(root_depth, search_again_counter, tt);
                 if self.shared.stopped() {
                     break;
                 }
+                best_value = best_value.max(score);
                 // Sort only the moves at or after the current PV slot: the ones already
                 // reported keep their place, which is what `MultiPV` output requires.
                 self.root_moves[pv..].sort();
@@ -365,29 +413,115 @@ impl SearchWorker {
             if !self.shared.stopped() {
                 self.completed_depth = root_depth;
                 if self.root_moves[0].mv != last_best {
-                    self.best_move_changes += 1.0;
                     last_best = self.root_moves[0].mv;
+                    last_best_depth = root_depth;
+                    self.shared.note_best_move_change();
                 }
             }
 
-            // Stop between iterations when the budget says the next one will not finish.
-            if self.limits.uses_time_management() {
-                let instability = 1.0 + 0.9 * self.best_move_changes;
-                if !timeman::should_start_iteration(&self.budget, instability) {
-                    break;
-                }
-            }
-            if let Some(n) = self.limits.nodes
-                && self.shared.node_count() >= n
-            {
-                break;
-            }
             if let Some(mate) = self.limits.mate
+                && !self.shared.stopped()
                 && self.root_moves[0].score >= VALUE_MATE - 2 * mate
             {
                 break;
             }
+
+            // Only the main thread manages the clock; the helpers stop when it says so.
+            if self.id != 0 {
+                root_depth += 1;
+                continue;
+            }
+
+            // Pick the handicapped move at the depth the level corresponds to, and keep it:
+            // later iterations refine a line this opponent is not supposed to see.
+            if skill.enabled() && skill.time_to_pick(root_depth) {
+                skill.pick_best(&self.root_moves, self.multi_pv, &mut rng);
+            }
+
+            tot_best_move_changes += self.shared.take_best_move_changes() as f64;
+
+            if self.limits.uses_time_management() && !self.shared.stopped() {
+                let nodes = self.shared.node_count().max(self.nodes);
+                let nodes_effort = self.root_moves[0].effort * 100_000 / nodes.max(1);
+
+                // A score that is falling relative to the last move, or to recent
+                // iterations, is a reason to keep looking rather than to bank the answer.
+                let falling_eval = (11.48
+                    + 2.30 * f64::from(self.best_previous_average_score - best_value)
+                    + 1.1 * f64::from(self.iter_value[iter_idx] - best_value))
+                    / 100.0;
+                let falling_eval = falling_eval.clamp(0.576, 1.728);
+
+                // A best move that has survived several iterations is unlikely to change
+                // now, so spend less on it.
+                time_reduction =
+                    interpolate(f64::from(root_depth - last_best_depth), 4.96, 18.79, 0.639, 1.712)
+                        .clamp(0.629, 1.544);
+                let reduction = (1.468 + self.previous_time_reduction) / (2.284 * time_reduction);
+
+                let best_move_instability =
+                    1.077 + 2.229 * tot_best_move_changes / self.thread_count as f64;
+
+                // A best move that already accounts for most of the tree has little left to
+                // be displaced by.
+                let high_best_move_effort =
+                    interpolate(nodes_effort as f64, 75_800.0, 104_510.0, 0.969, 0.714)
+                        .clamp(0.693, 0.838);
+
+                let mut total_time = self.budget.optimum as f64
+                    * falling_eval
+                    * reduction
+                    * best_move_instability
+                    * high_best_move_effort;
+
+                if self.root_moves.len() == 1 {
+                    // With one legal move, cap the think at half a second: there is nothing
+                    // to decide and a viewer should not be left waiting.
+                    total_time = total_time.min(500.0);
+                }
+
+                let elapsed = self.budget.elapsed(nodes) as f64;
+
+                // Stop when the budget is spent, or when the line is already decided.
+                if elapsed > total_time.min(self.budget.maximum as f64)
+                    || self.root_moves[self.multi_pv - 1].score >= mate_in(3)
+                    || self.root_moves[0].score == mated_in(2)
+                {
+                    if self.shared.pondering() {
+                        // Pondering is free time. Keep going until the GUI says otherwise.
+                        self.shared.request_stop_on_ponderhit();
+                    } else {
+                        self.shared.request_stop();
+                    }
+                } else {
+                    self.shared.set_increase_depth(
+                        self.shared.pondering() || elapsed <= total_time * 0.50,
+                    );
+                }
+            }
+
+            self.iter_value[iter_idx] = best_value;
+            iter_idx = (iter_idx + 1) & 3;
+
             root_depth += 1;
+        }
+
+        if self.id == 0 {
+            self.previous_time_reduction = time_reduction;
+            self.best_previous_average_score = self.root_moves[0].average_score;
+
+            // Swap the handicapped choice into first place. It was searched like any other
+            // root move, so its PV and score are real; it is simply not the best one.
+            if skill.enabled() {
+                let chosen = if skill.best().is_none() {
+                    skill.pick_best(&self.root_moves, self.multi_pv, &mut rng)
+                } else {
+                    skill.best()
+                };
+                if let Some(i) = self.root_moves.iter().position(|rm| rm.mv == chosen) {
+                    self.root_moves.swap(0, i);
+                }
+            }
         }
 
         let best = &self.root_moves[0];
@@ -405,7 +539,12 @@ impl SearchWorker {
     /// A narrow window cuts far more of the tree than a full one; when the true score
     /// falls outside it the search has to be redone, so the window widens on each failure
     /// rather than jumping straight back to infinity.
-    fn aspiration(&mut self, depth: i32, tt: &TranspositionTable) -> Value {
+    fn aspiration(
+        &mut self,
+        depth: i32,
+        search_again_counter: i32,
+        tt: &TranspositionTable,
+    ) -> Value {
         let mut delta = 10 + self.root_moves[self.pv_index].average_score.abs() / 12_000;
         let prev = self.root_moves[self.pv_index].average_score;
         let (mut alpha, mut beta) = if depth >= 4 && prev != -VALUE_INFINITE {
@@ -416,7 +555,8 @@ impl SearchWorker {
 
         let mut fail_high_count = 0;
         loop {
-            let adjusted_depth = (depth - fail_high_count).max(1);
+            let adjusted_depth =
+                (depth - fail_high_count - 3 * (search_again_counter + 1) / 4).max(1);
             let score = self.node::<true>(alpha, beta, adjusted_depth, 0, false, tt);
             if self.shared.stopped() {
                 return score;
@@ -738,6 +878,9 @@ impl SearchWorker {
             // DIFFERENT sibling. That produces a reported PV whose moves are not legal from
             // the root, which is exactly how it was caught.
             self.stack[si + 1].pv.clear();
+            // The node count before the subtree, so a root move can be charged for exactly
+            // the tree it caused. The time manager reads it.
+            let node_count = self.nodes;
             self.pos.do_move_checked(mv, gives_check);
 
             // Late move reductions: search a late, quiet move shallower, and re-search at
@@ -794,6 +937,7 @@ impl SearchWorker {
                     .iter()
                     .position(|rm| rm.mv == mv)
                     .expect("a root move that was searched is in the list");
+                self.root_moves[idx].effort += self.nodes - node_count;
                 if move_count == 1 || score > alpha {
                     self.root_moves[idx].score = score;
                     self.root_moves[idx].sel_depth = self.sel_depth;
@@ -1174,18 +1318,20 @@ impl SearchWorker {
         if self.shared.stopped() {
             return;
         }
-        if self.limits.infinite {
+        // Pondering is thinking on the opponent's clock: nothing here can end it, only the
+        // GUI can. The flag that says the budget ran out is honoured at `ponderhit`.
+        if self.shared.pondering() {
             return;
         }
-        if let Some(n) = self.limits.nodes
-            && self.shared.node_count() >= n
-        {
-            self.shared.request_stop();
-            return;
-        }
-        if (self.limits.uses_time_management() || self.limits.move_time.is_some())
-            && self.budget.out_of_time()
-        {
+        let nodes = self.shared.node_count();
+        let elapsed = self.budget.elapsed(nodes);
+
+        let out_of_time = self.limits.uses_time_management()
+            && (elapsed > self.budget.maximum || self.shared.stop_on_ponderhit());
+        let past_move_time = self.limits.move_time.is_some_and(|mt| elapsed >= mt as i64);
+        let past_nodes = self.limits.nodes.is_some_and(|n| nodes >= n);
+
+        if out_of_time || past_move_time || past_nodes {
             self.shared.request_stop();
         }
     }
@@ -1200,7 +1346,9 @@ impl SearchWorker {
         sink: &mut dyn InfoSink,
     ) {
         let rm = &self.root_moves[self.pv_index];
-        let elapsed = self.budget.elapsed().as_millis().max(1) as u64;
+        // Real milliseconds even under `nodestime`: a GUI reading `time` wants wall clock,
+        // and the node budget is the engine's business rather than the GUI's.
+        let elapsed = self.budget.elapsed_time().max(1) as u64;
         let nodes = self.shared.node_count().max(self.nodes);
         // Render the PV against a copy, because Chess960 castling notation depends on the
         // position each move is played in.
@@ -1223,6 +1371,8 @@ impl SearchWorker {
             nodes,
             nps: nodes * 1000 / elapsed,
             hashfull: tt.hashfull(),
+            // Every root move the tables ranked is a hit, on top of the ones the search
+            // scored below the root.
             tb_hits: self.tb_hits,
             time_ms: elapsed,
             pv: &pv,
@@ -1285,6 +1435,8 @@ pub fn searching_side(pos: &Position) -> Color {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
     use crate::board::position::START_FEN;
 
@@ -1296,7 +1448,14 @@ mod tests {
         let mut w = SearchWorker::new(0, Arc::clone(&shared));
         let limits =
             Limits { depth: Some(depth), start: Some(Instant::now()), ..Limits::default() };
-        w.search(&pos, &limits, &tt, 1, 10, &mut SilentSink)
+        w.search(
+            &pos,
+            &limits,
+            &tt,
+            &SearchOptions { multi_pv: 1, ..SearchOptions::default() },
+            TimeBudget::default(),
+            &mut SilentSink,
+        )
     }
 
     #[test]
@@ -1340,7 +1499,14 @@ mod tests {
         let tt = TranspositionTable::new(1);
         let mut w = SearchWorker::new(0, shared);
         let limits = Limits { depth: Some(4), start: Some(Instant::now()), ..Limits::default() };
-        let r = w.search(&pos, &limits, &tt, 1, 10, &mut SilentSink);
+        let r = w.search(
+            &pos,
+            &limits,
+            &tt,
+            &SearchOptions { multi_pv: 1, ..SearchOptions::default() },
+            TimeBudget::default(),
+            &mut SilentSink,
+        );
         assert!(r.best_move.is_none());
         assert_eq!(r.score, VALUE_DRAW);
     }
@@ -1354,7 +1520,14 @@ mod tests {
         let mut w = SearchWorker::new(0, Arc::clone(&shared));
         let limits =
             Limits { nodes: Some(20_000), start: Some(Instant::now()), ..Limits::default() };
-        let r = w.search(&pos, &limits, &tt, 1, 10, &mut SilentSink);
+        let r = w.search(
+            &pos,
+            &limits,
+            &tt,
+            &SearchOptions { multi_pv: 1, ..SearchOptions::default() },
+            TimeBudget::default(),
+            &mut SilentSink,
+        );
         assert!(r.best_move.is_ok());
         // The check runs every 1024 nodes, so allow that much slack over the limit.
         assert!(shared.node_count() < 20_000 + 4096 + 1024 * 40, "{}", shared.node_count());
@@ -1373,7 +1546,14 @@ mod tests {
             start: Some(Instant::now()),
             ..Limits::default()
         };
-        let r = w.search(&pos, &limits, &tt, 1, 10, &mut SilentSink);
+        let r = w.search(
+            &pos,
+            &limits,
+            &tt,
+            &SearchOptions { multi_pv: 1, ..SearchOptions::default() },
+            TimeBudget::default(),
+            &mut SilentSink,
+        );
         assert_eq!(r.best_move, only);
     }
 
@@ -1398,7 +1578,14 @@ mod tests {
         let tt = TranspositionTable::new(16);
         let mut w = SearchWorker::new(0, Arc::clone(&shared));
         let limits = Limits { depth: Some(8), start: Some(Instant::now()), ..Limits::default() };
-        w.search(&pos, &limits, &tt, 1, 10, &mut SilentSink);
+        w.search(
+            &pos,
+            &limits,
+            &tt,
+            &SearchOptions { multi_pv: 1, ..SearchOptions::default() },
+            TimeBudget::default(),
+            &mut SilentSink,
+        );
 
         let mut walk = pos.clone();
         for &m in &w.root_moves[0].pv {
@@ -1414,7 +1601,14 @@ mod tests {
         let tt = TranspositionTable::new(8);
         let mut w = SearchWorker::new(0, Arc::clone(&shared));
         let limits = Limits { depth: Some(5), start: Some(Instant::now()), ..Limits::default() };
-        w.search(&pos, &limits, &tt, 3, 10, &mut SilentSink);
+        w.search(
+            &pos,
+            &limits,
+            &tt,
+            &SearchOptions { multi_pv: 3, ..SearchOptions::default() },
+            TimeBudget::default(),
+            &mut SilentSink,
+        );
         let top: Vec<Move> = w.root_moves[..3].iter().map(|rm| rm.mv).collect();
         let mut sorted = top.clone();
         sorted.sort_unstable();

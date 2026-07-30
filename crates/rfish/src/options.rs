@@ -84,6 +84,7 @@ impl Default for Options {
         o.add_button("Clear Hash");
         o.add_check("Ponder", false);
         o.add_spin("MultiPV", 1, 1, 256);
+        o.add_spin("Skill Level", 20, 0, 20);
         o.add_spin("Move Overhead", 10, 0, 5000);
         o.add_spin("nodestime", 0, 0, 10000);
         o.add_check("UCI_Chess960", false);

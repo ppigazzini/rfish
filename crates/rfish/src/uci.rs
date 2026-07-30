@@ -20,7 +20,7 @@ use rfish_engine::platform::syzygy::TableRegistry;
 use rfish_engine::platform::threads::ThreadPool;
 use rfish_engine::search::tt::TranspositionTable;
 use rfish_engine::search::worker::{DepthReport, InfoSink, score_to_uci};
-use rfish_engine::state::Limits;
+use rfish_engine::state::{Limits, SearchOptions};
 
 use crate::bench::{BenchEntry, BenchSpec, parse_entry};
 use crate::options::Options;
@@ -120,9 +120,7 @@ impl Engine {
             "position" => self.cmd_position(&rest, out),
             "go" => self.cmd_go(&rest, out),
             "stop" => self.pool.shared().request_stop(),
-            "ponderhit" => {
-                self.pool.shared().ponder.store(false, std::sync::atomic::Ordering::Relaxed);
-            }
+            "ponderhit" => self.pool.shared().ponder_hit(),
             "d" => {
                 let _ = writeln!(out, "{}", self.pos);
                 // The tablebase view of the position, in upstream's own format so a
@@ -223,6 +221,24 @@ impl Engine {
         }
     }
 
+    /// The option values the search reads, gathered in one place.
+    ///
+    /// `UCI_Elo` is passed only when `UCI_LimitStrength` is on: a GUI that leaves the Elo
+    /// spin at some value it never meant to apply must not find itself handicapped.
+    fn search_options(&self) -> SearchOptions {
+        SearchOptions {
+            multi_pv: self.options.spin("MultiPV") as usize,
+            move_overhead: self.options.spin("Move Overhead") as u64,
+            nodestime: self.options.spin("nodestime") as u64,
+            ponder: self.options.check("Ponder"),
+            skill_level: self.options.spin("Skill Level") as i32,
+            uci_elo: self
+                .options
+                .check("UCI_LimitStrength")
+                .then(|| self.options.spin("UCI_Elo") as i32),
+        }
+    }
+
     /// Push the tablebase registry and its bounding options into the pool.
     fn apply_tb_options(&mut self) {
         self.pool.set_tablebases(
@@ -315,10 +331,9 @@ impl Engine {
 
         let limits = self.parse_limits(args);
         let result = {
-            let multi_pv = self.options.spin("MultiPV") as usize;
-            let overhead = self.options.spin("Move Overhead") as u64;
+            let opts = self.search_options();
             let mut sink = UciSink { out: &mut *out, show_wdl: self.options.check("UCI_ShowWDL") };
-            self.pool.search(&self.pos, &limits, &self.tt, multi_pv, overhead, &mut sink)
+            self.pool.search(&self.pos, &limits, &self.tt, &opts, &mut sink)
         };
 
         let best = if result.best_move.is_none() {
@@ -468,10 +483,18 @@ impl Engine {
                         _ => limits.depth = Some(spec.limit),
                     }
 
-                    let overhead = self.options.spin("Move Overhead") as u64;
+                    // The bench measures the engine at full strength and one PV, whatever
+                    // the option map happens to hold: a benchmark that a `Skill Level` left
+                    // over from an earlier command can move is not an anchor.
+                    let opts = SearchOptions {
+                        multi_pv: 1,
+                        skill_level: 20,
+                        uci_elo: None,
+                        ..self.search_options()
+                    };
                     let result = {
                         let mut sink = UciSink { out: &mut *out, show_wdl: false };
-                        self.pool.search(&pos, &limits, &self.tt, 1, overhead, &mut sink)
+                        self.pool.search(&pos, &limits, &self.tt, &opts, &mut sink)
                     };
                     total_nodes += result.nodes;
                 }
