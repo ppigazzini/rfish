@@ -5,23 +5,33 @@
 //! live here, and the whole design of NNUE is that this layer can be updated incrementally
 //! rather than recomputed.
 //!
-//! # This accumulator is computed from scratch
+//! # The accumulator is updated by DIFFING FEATURE SETS
 //!
-//! Upstream maintains it incrementally: a move changes a handful of features, so the
-//! accumulator is patched rather than rebuilt, and a king-bucket cache absorbs the case
-//! where the king moved. rfish recomputes it per evaluation.
+//! Upstream patches the accumulator from a per-move delta: `do_move` records which features
+//! a move creates and destroys, and the accumulator applies exactly those. That needs the
+//! board zone to compute a threat delta from the move's geometry — several hundred lines of
+//! dense case analysis, and the reason this was the port's last open item.
 //!
-//! That is CORRECT and slow, in that order deliberately. The from-scratch path is what
-//! upstream's incremental path has to agree with, so it is the thing to have first and the
-//! thing an incremental update is later checked against. Making it incremental needs the
-//! board zone to maintain a per-move threat delta, which it does not yet — see
-//! `docs/01-engine-board.md`.
+//! rfish takes a different route to the same place. The accumulator is a SUM OVER THE ACTIVE
+//! SET, so any two positions' accumulators differ by exactly the set difference of their
+//! features. Recomputing the active set is cheap — it is bitboard work — while applying a
+//! feature is expensive, because each one touches 1024 weights. So rfish recomputes the SET
+//! and diffs it against the last one, then applies only the difference.
+//!
+//! That is correct by construction rather than by case analysis: there is no delta logic to
+//! get wrong, and `cargo xtask nnue-check` compares the result against upstream's own
+//! evaluation position by position. It also handles the case upstream needs a king-bucket
+//! cache for — a king move invalidating every feature — with no special path, because it is
+//! simply a large diff.
+//!
+//! The cost is one set recomputation per evaluation that upstream does not pay. The saving
+//! is the 1024-wide weight row for every feature that did NOT change, which is most of them.
 //!
 //! Golden: `Stockfish/src/nnue/nnue_feature_transformer.h`,
 //! `Stockfish/src/nnue/nnue_accumulator.cpp`.
 
 use crate::board::position::Position;
-use crate::board::types::{COLOR_NB, Color};
+use crate::board::types::{COLOR_NB, Color, Key};
 
 use super::common::{FT_MAX_VAL, L1, NetError, NetReader, PSQT_BUCKETS};
 use super::features::{
@@ -72,12 +82,38 @@ impl Default for Accumulator {
     }
 }
 
+/// The last evaluated position's accumulator and the feature sets that produced it.
+///
+/// One per worker. Keeping only the most recent is deliberate: in a search, consecutive
+/// evaluations are a parent and its child, or two siblings, and those differ by a handful of
+/// features. A deeper stack would cost memory for cases that do not arise.
+#[derive(Clone, Debug)]
+struct Cached {
+    key: Key,
+    accumulation: [Vec<i16>; COLOR_NB],
+    psqt: [[i32; PSQT_BUCKETS]; COLOR_NB],
+    /// The active sets that produced the above, SORTED so the next diff is a merge walk.
+    halfka: [Vec<u32>; COLOR_NB],
+    threats: [Vec<u32>; COLOR_NB],
+}
+
 /// Scratch buffers an evaluation reuses, so a search does not allocate per node.
 #[derive(Debug, Default)]
 pub struct EvalScratch {
-    accumulator: Accumulator,
-    halfka: Vec<u32>,
-    threats: Vec<u32>,
+    cached: Option<Cached>,
+    /// Freshly computed sets, reused between calls to avoid reallocating.
+    next_halfka: [Vec<u32>; COLOR_NB],
+    next_threats: [Vec<u32>; COLOR_NB],
+}
+
+impl EvalScratch {
+    /// Forget the cached accumulator.
+    ///
+    /// Not needed for correctness — a diff against any position is still exact — but a
+    /// caller that has jumped somewhere unrelated saves the work of a large diff.
+    pub fn reset(&mut self) {
+        self.cached = None;
+    }
 }
 
 impl FeatureTransformer {
@@ -134,50 +170,130 @@ impl FeatureTransformer {
         Ok(())
     }
 
-    /// Accumulate every active feature for `perspective` into `out`.
-    fn accumulate(
+    /// Add or subtract one king-piece feature's weight row.
+    #[inline]
+    fn apply_halfka(&self, index: u32, add: bool, acc: &mut [i16], psqt: &mut [i32; PSQT_BUCKETS]) {
+        let base = index as usize * L1;
+        let row = &self.weights[base..base + L1];
+        if add {
+            for (a, w) in acc.iter_mut().zip(row.iter()) {
+                // Wrapping is upstream's behaviour: the accumulator is `i16` and the trainer
+                // keeps the sum in range, so a wrap here means a corrupt net rather than a
+                // value to saturate.
+                *a = a.wrapping_add(*w);
+            }
+        } else {
+            for (a, w) in acc.iter_mut().zip(row.iter()) {
+                *a = a.wrapping_sub(*w);
+            }
+        }
+        let pbase = index as usize * PSQT_BUCKETS;
+        let prow = &self.psqt_weights[pbase..pbase + PSQT_BUCKETS];
+        for (p, w) in psqt.iter_mut().zip(prow.iter()) {
+            if add {
+                *p += w;
+            } else {
+                *p -= w;
+            }
+        }
+    }
+
+    /// The same for a threat or pawn-pair feature, whose weights are one byte wide.
+    #[inline]
+    fn apply_threat(&self, index: u32, add: bool, acc: &mut [i16], psqt: &mut [i32; PSQT_BUCKETS]) {
+        let base = index as usize * L1;
+        let row = &self.threat_and_pp_weights[base..base + L1];
+        if add {
+            for (a, w) in acc.iter_mut().zip(row.iter()) {
+                *a = a.wrapping_add(i16::from(*w));
+            }
+        } else {
+            for (a, w) in acc.iter_mut().zip(row.iter()) {
+                *a = a.wrapping_sub(i16::from(*w));
+            }
+        }
+        let pbase = index as usize * PSQT_BUCKETS;
+        let prow = &self.threat_and_pp_psqt_weights[pbase..pbase + PSQT_BUCKETS];
+        for (p, w) in psqt.iter_mut().zip(prow.iter()) {
+            if add {
+                *p += w;
+            } else {
+                *p -= w;
+            }
+        }
+    }
+
+    /// Walk two sorted sets, applying only what differs.
+    ///
+    /// Both sets are strictly increasing and hold no duplicates — a feature index encodes
+    /// exactly one (piece, square) or (attacker, from, to, attacked) tuple — so a merge walk
+    /// is a complete and exact diff.
+    fn diff_apply(
         &self,
+        old: &[u32],
+        new: &[u32],
+        halfka: bool,
+        acc: &mut [i16],
+        psqt: &mut [i32; PSQT_BUCKETS],
+    ) {
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < old.len() && j < new.len() {
+            match old[i].cmp(&new[j]) {
+                core::cmp::Ordering::Equal => {
+                    // Present in both: the accumulator already holds it.
+                    i += 1;
+                    j += 1;
+                }
+                core::cmp::Ordering::Less => {
+                    self.apply(old[i], false, halfka, acc, psqt);
+                    i += 1;
+                }
+                core::cmp::Ordering::Greater => {
+                    self.apply(new[j], true, halfka, acc, psqt);
+                    j += 1;
+                }
+            }
+        }
+        // Whatever is left in one list has no counterpart in the other.
+        for &a in &old[i..] {
+            self.apply(a, false, halfka, acc, psqt);
+        }
+        for &b in &new[j..] {
+            self.apply(b, true, halfka, acc, psqt);
+        }
+    }
+
+    #[inline]
+    fn apply(
+        &self,
+        index: u32,
+        add: bool,
+        halfka: bool,
+        acc: &mut [i16],
+        psqt: &mut [i32; PSQT_BUCKETS],
+    ) {
+        if halfka {
+            self.apply_halfka(index, add, acc, psqt);
+        } else {
+            self.apply_threat(index, add, acc, psqt);
+        }
+    }
+
+    /// The active feature sets for one perspective, sorted.
+    fn active_sets(
         pos: &Position,
         perspective: Color,
         halfka: &mut Vec<u32>,
         threats: &mut Vec<u32>,
-        acc: &mut [i16],
-        psqt: &mut [i32; PSQT_BUCKETS],
     ) {
-        acc.copy_from_slice(&self.biases);
-        psqt.fill(0);
-
         halfka.clear();
         halfka_active(pos, perspective, halfka);
-        for &index in halfka.iter() {
-            let row = &self.weights[index as usize * L1..index as usize * L1 + L1];
-            for (a, w) in acc.iter_mut().zip(row.iter()) {
-                // Wrapping is upstream's behaviour: the accumulator is `i16` and the
-                // trainer keeps the sum in range, so a wrap here means a corrupt net rather
-                // than a value to saturate.
-                *a = a.wrapping_add(*w);
-            }
-            let prow = &self.psqt_weights
-                [index as usize * PSQT_BUCKETS..index as usize * PSQT_BUCKETS + PSQT_BUCKETS];
-            for (p, w) in psqt.iter_mut().zip(prow.iter()) {
-                *p += w;
-            }
-        }
+        halfka.sort_unstable();
 
         threats.clear();
         threat_active(pos, perspective, threats);
         pawn_pair_active(pos, perspective, threats);
-        for &index in threats.iter() {
-            let row = &self.threat_and_pp_weights[index as usize * L1..index as usize * L1 + L1];
-            for (a, w) in acc.iter_mut().zip(row.iter()) {
-                *a = a.wrapping_add(i16::from(*w));
-            }
-            let prow = &self.threat_and_pp_psqt_weights
-                [index as usize * PSQT_BUCKETS..index as usize * PSQT_BUCKETS + PSQT_BUCKETS];
-            for (p, w) in psqt.iter_mut().zip(prow.iter()) {
-                *p += w;
-            }
-        }
+        threats.sort_unstable();
     }
 
     /// Fill `output` with the transformed features and return the PSQT score.
@@ -194,23 +310,52 @@ impl FeatureTransformer {
         output: &mut [u8],
     ) -> i32 {
         debug_assert_eq!(output.len(), L1);
-        let us = pos.side_to_move();
-        let perspectives = [us, !us];
+        let key = pos.key();
 
-        for p in perspectives {
-            let EvalScratch { accumulator, halfka, threats } = scratch;
-            let (acc, psqt) =
-                (&mut accumulator.accumulation[p.index()], &mut accumulator.psqt[p.index()]);
-            self.accumulate(pos, p, halfka, threats, acc, psqt);
+        // The same position twice in a row -- a quiescence stand-pat after a main-search
+        // evaluation, say -- needs no work at all.
+        let unchanged = scratch.cached.as_ref().is_some_and(|c| c.key == key);
+        if !unchanged {
+            for p in Color::ALL {
+                Self::active_sets(
+                    pos,
+                    p,
+                    &mut scratch.next_halfka[p.index()],
+                    &mut scratch.next_threats[p.index()],
+                );
+            }
+
+            // With no cached state, start from the biases and an empty active set: the
+            // "diff" is then every feature, which is exactly the from-scratch computation.
+            // One code path serves both, so there is no second implementation to disagree.
+            let c = scratch.cached.get_or_insert_with(|| Cached {
+                key,
+                accumulation: [self.biases.clone(), self.biases.clone()],
+                psqt: [[0; PSQT_BUCKETS]; COLOR_NB],
+                halfka: [Vec::new(), Vec::new()],
+                threats: [Vec::new(), Vec::new()],
+            });
+            for p in Color::ALL {
+                let i = p.index();
+                let (acc, psqt) = (&mut c.accumulation[i], &mut c.psqt[i]);
+                self.diff_apply(&c.halfka[i], &scratch.next_halfka[i], true, acc, psqt);
+                self.diff_apply(&c.threats[i], &scratch.next_threats[i], false, acc, psqt);
+                c.halfka[i].clone_from(&scratch.next_halfka[i]);
+                c.threats[i].clone_from(&scratch.next_threats[i]);
+            }
+            c.key = key;
         }
 
-        let psqt = (scratch.accumulator.psqt[perspectives[0].index()][bucket]
-            - scratch.accumulator.psqt[perspectives[1].index()][bucket])
+        let cached = scratch.cached.as_ref().expect("just populated");
+        let us = pos.side_to_move();
+        let perspectives = [us, !us];
+        let psqt = (cached.psqt[perspectives[0].index()][bucket]
+            - cached.psqt[perspectives[1].index()][bucket])
             / 2;
 
         let half = L1 / 2;
         for (p, side) in perspectives.iter().enumerate() {
-            let acc = &scratch.accumulator.accumulation[side.index()];
+            let acc = &cached.accumulation[side.index()];
             let offset = half * p;
             for j in 0..half {
                 let sum0 = i32::from(acc[j]).clamp(0, FT_MAX_VAL);
@@ -247,6 +392,65 @@ mod tests {
 
     /// With every weight zero the accumulator is the biases, and the pairwise product of
     /// two zeros is zero. This is the shape test that does not need a 100 MiB file.
+    /// The diff must reach the same accumulator a from-scratch pass would. Feeding a
+    /// sequence of unrelated positions through ONE scratch and comparing each against a
+    /// fresh scratch is what proves it — a diff that drifts would show up on the second
+    /// position, not the first.
+    #[test]
+    fn diffing_reaches_the_same_state_as_starting_over() {
+        let mut ft = FeatureTransformer::new();
+        // Give the weights some structure, or every difference is zero and proves nothing.
+        for (i, w) in ft.weights.iter_mut().enumerate() {
+            *w = ((i * 7919) % 61) as i16 - 30;
+        }
+        for (i, w) in ft.threat_and_pp_weights.iter_mut().enumerate() {
+            *w = ((i * 104_729) % 41) as i8 - 20;
+        }
+        for (i, w) in ft.psqt_weights.iter_mut().enumerate() {
+            *w = ((i * 7907) % 101) as i32 - 50;
+        }
+
+        let fens = [
+            START_FEN,
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 11",
+            // Back to the first: the diff has to undo everything it applied.
+            START_FEN,
+            "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        ];
+
+        let mut shared = EvalScratch::default();
+        for fen in fens {
+            let pos = Position::from_fen(fen, false).expect("valid");
+            let bucket = (pos.piece_total() as usize - 1) / 4;
+
+            let mut a = vec![0u8; L1];
+            let pa = ft.transform(&pos, bucket, &mut shared, &mut a);
+
+            // A fresh scratch has nothing to diff against, so it computes from scratch.
+            let mut fresh = EvalScratch::default();
+            let mut b = vec![0u8; L1];
+            let pb = ft.transform(&pos, bucket, &mut fresh, &mut b);
+
+            assert_eq!(a, b, "{fen}: diffed features differ from a fresh computation");
+            assert_eq!(pa, pb, "{fen}: diffed PSQT differs from a fresh computation");
+        }
+    }
+
+    /// `reset` must return the scratch to the state a fresh one is in.
+    #[test]
+    fn resetting_the_scratch_forces_a_fresh_computation() {
+        let ft = FeatureTransformer::new();
+        let pos = Position::from_fen(START_FEN, false).expect("valid");
+        let mut scratch = EvalScratch::default();
+        let mut out = vec![0u8; L1];
+        let first = ft.transform(&pos, 7, &mut scratch, &mut out);
+        scratch.reset();
+        let second = ft.transform(&pos, 7, &mut scratch, &mut out);
+        assert_eq!(first, second);
+    }
+
     #[test]
     fn a_zero_network_transforms_to_zero() {
         let ft = FeatureTransformer::new();

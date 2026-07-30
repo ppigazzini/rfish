@@ -182,8 +182,10 @@ lands, an intrinsics-versus-autovectorisation comparison would be measuring the 
 both sides would be dominated by a term only one of them pays.
 
 **So the honest state is: the constraint has not yet been shown to cost anything on this
-axis, because a larger algorithmic difference is in the way.** Do not cite this section as
-evidence either direction until the accumulator is incremental.
+axis.** The largest algorithmic difference — a from-scratch accumulator — has since been
+removed by diffing feature sets, so an intrinsics-versus-autovectorisation comparison is now
+a fair one to run. It has not been run. Do not cite this section as evidence either way until
+someone does.
 
 ---
 
@@ -220,7 +222,8 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | Idea | Status |
 |---|---|
 | `std::simd` / `stdarch` intrinsics for the NNUE kernels | **Rejected by constraint**, not by measurement — nightly and `unsafe` respectively. Not a measurement result; do not cite it as one. |
-| Comparing autovectorised NNUE kernels against upstream's intrinsics | **Premature.** The from-scratch accumulator dominates, so the comparison would measure that instead. Do it after the incremental path lands. |
+| Comparing autovectorised NNUE kernels against upstream's intrinsics | **Now worth doing.** The accumulator no longer dominates the way it did; see `docs/03-engine-eval.md` for the current split. |
+| Recomputing the NNUE accumulator per evaluation | **Superseded, with a measurement.** Diffing the recomputed feature sets is 1.48x faster at a bit-identical node count. Do not go back without beating 21.2 s of CPU on the depth-11 bench. |
 | Optimising the classical evaluation | **Pointless.** It runs only when no net is on disk, and it has a deletion date. |
 | `memmap2` for the Syzygy tables | **Rejected.** The crate's soundness contract cannot be met (a table file can be truncated under the map), and positioned reads behind a block cache give what the mapping actually provides. |
 | Const-evaluating the magic tables | **Not attempted.** 88 772 entries with a subset enumeration each is far more const-eval than the Zobrist tables' ~800 draws; `LazyLock` costs one predicted branch per lookup. Measure before changing. |

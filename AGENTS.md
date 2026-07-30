@@ -41,10 +41,10 @@ state. Check the state against the tree before acting on it:
   the PSQT head and the eight output stacks are in
   `crates/rfish-engine/src/eval/nnue/`, and `cargo xtask nnue-check` proves the raw network
   output equals a pristine upstream build's on every position in `tools/cases/eval.fens`.
-  What is NOT done is the **incremental accumulator**: the accumulator is recomputed from
-  scratch per evaluation, which is correct and roughly an order of magnitude slower than
-  upstream. That is the open half of M3, and it needs the board zone to maintain a per-move
-  threat delta first.
+  The accumulator is updated by **diffing the recomputed feature sets** rather than from a
+  per-move delta — correct by construction, 1.48x the from-scratch cost it replaced, and
+  measured rather than assumed. See `docs/03-engine-eval.md`; that table is the number any
+  further attempt has to beat.
   `crates/rfish-engine/src/eval/classical.rs` is now only the fallback for a run with NO net
   on disk. It is **scaffolding with a scheduled deletion date**: do not tune it, do not
   extend it, and do not let it acquire callers NNUE will not satisfy.

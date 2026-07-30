@@ -82,7 +82,17 @@ upstream binary (`cd ../Stockfish/src && make -j build ARCH=x86-64-avx2`) — an
 SKIPPED for either. **It is deliberately not a CI step**: a gate that can only skip in CI
 teaches contributors to ignore a skip. `parity` names it when it could not run.
 
-Positions in check are excluded, because upstream's `eval` refuses to score one.
+Positions in check are excluded, because upstream's `eval` refuses to score one — and so does
+rfish's, for the same reason and so the two emit the same number of lines.
+
+**Both differential gates drive ONE engine invocation for the whole battery.** A spawn per
+position reloads the 90 MiB network every time; batching took `nnue-check` from minutes to
+three seconds and `tb` from minutes to six. A gate that takes five minutes is a gate people
+skip, which makes it worth no more than one that does not exist.
+
+The batching also made a real difference visible that the per-position form had hidden: it
+compares the two engines' line COUNTS, and rfish was answering two positions upstream
+declined.
 
 ### `tb`
 

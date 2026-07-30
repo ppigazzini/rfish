@@ -385,7 +385,12 @@ impl Engine {
         // the number the differential gate compares: it is the network alone, with no
         // optimism blend and no fifty-move damping on top, so a mismatch localises to the
         // forward pass rather than to the terms around it.
-        if let Some(net) = self.network.as_deref() {
+        //
+        // A position IN CHECK is not evaluated at all, matching upstream, which asserts on
+        // one. The network is trained on quiet positions and its answer there means nothing;
+        // printing one anyway would also make this line unusable as a differential, since
+        // the two engines would emit a different number of them.
+        if let Some(net) = self.network.as_deref().filter(|_| !self.pos.in_check()) {
             let raw = net.evaluate(&self.pos, &mut scratch);
             let _ = writeln!(
                 out,

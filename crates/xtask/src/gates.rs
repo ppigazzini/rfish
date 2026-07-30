@@ -433,20 +433,36 @@ pub(crate) fn tb() -> Result<Outcome, String> {
         return Ok(Outcome::Skipped(format!("{} does not exist", path.display())));
     };
 
+    // One invocation each, for the same reason as `nnue-check`: a per-position spawn reloads
+    // the network 264 times and turns a seconds-long gate into a minutes-long one.
+    let fens: Vec<&str> =
+        text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    let mut script = vec![set.clone()];
+    for fen in &fens {
+        script.push(format!("position fen {fen}"));
+        script.push("d".to_string());
+    }
+    let refs: Vec<&str> = script.iter().map(String::as_str).collect();
+    let mut oracle_script = vec![oracle_set];
+    oracle_script.extend(script[1..].iter().cloned());
+    let oracle_refs: Vec<&str> = oracle_script.iter().map(String::as_str).collect();
+
+    let ours = tb_verdict(&drive(&engine, &refs)?);
+    let theirs = tb_verdict(&drive_at(&oracle, &oracle_dir, &oracle_refs)?);
+
+    if ours.len() != theirs.len() {
+        return Ok(Outcome::Fail(format!(
+            "the two engines answered a different number of probes: {} vs {}",
+            ours.len(),
+            theirs.len()
+        )));
+    }
     let mut checked = 0;
-    let mut skipped = 0;
     let mut failures = Vec::new();
-    for fen in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        let pos = format!("position fen {fen}");
-        let ours = tb_verdict(&drive(&engine, &[&set, &pos, "d"])?);
-        let theirs = tb_verdict(&drive_at(&oracle, &oracle_dir, &[&oracle_set, &pos, "d"])?);
-        if theirs.is_empty() {
-            skipped += 1;
-            continue;
-        }
+    for (i, (a, b)) in ours.iter().zip(theirs.iter()).enumerate() {
         checked += 1;
-        if ours != theirs {
-            failures.push(format!("{fen}: rfish {ours:?} != upstream {theirs:?}"));
+        if a != b {
+            failures.push(format!("probe {i}: rfish {a} != upstream {b}"));
         }
     }
 
@@ -454,8 +470,9 @@ pub(crate) fn tb() -> Result<Outcome, String> {
         eprintln!("  {f}");
     }
     println!(
-        "tb: {} of {checked} positions match upstream on WDL and DTZ ({skipped} illegal, skipped)",
-        checked - failures.len()
+        "tb: {} of {checked} probes match upstream ({} positions x WDL and DTZ)",
+        checked - failures.len(),
+        checked / 2
     );
     Ok(Outcome::check(failures.is_empty(), format!("{} tablebase mismatches", failures.len())))
 }
@@ -503,21 +520,36 @@ pub(crate) fn nnue_check() -> Result<Outcome, String> {
         return Ok(Outcome::Skipped(format!("{} does not exist", path.display())));
     };
 
+    // ONE engine invocation for the whole battery, not one per position. Each start reads a
+    // 90 MiB network, so a per-position spawn spends minutes reloading the same file and
+    // turns this into a gate people skip.
+    let fens: Vec<&str> =
+        text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    let mut script = Vec::with_capacity(fens.len() * 2);
+    for fen in &fens {
+        script.push(format!("position fen {fen}"));
+        script.push("eval".to_string());
+    }
+    let refs: Vec<&str> = script.iter().map(String::as_str).collect();
+    let ours = internal_units_all(&drive(&engine, &refs)?);
+    let theirs = internal_units_all(&drive_at(&oracle, &oracle_dir, &refs)?);
+
     let mut checked = 0;
     let mut failures = Vec::new();
-    for fen in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        let script = [format!("position fen {fen}"), "eval".to_string()];
-        let refs: Vec<&str> = script.iter().map(String::as_str).collect();
-        let ours = internal_units(&drive(&engine, &refs)?);
-        let theirs = internal_units(&drive_at(&oracle, &oracle_dir, &refs)?);
-        // Upstream refuses to evaluate a position in check, so one where it declines is a
-        // position neither side scores -- not a mismatch.
-        if theirs.is_none() {
-            continue;
-        }
+    // Upstream refuses to evaluate a position in check, so it emits fewer lines than there
+    // are positions. Compare by count only when the two agree on how many they answered.
+    if ours.len() != theirs.len() {
+        return Ok(Outcome::Fail(format!(
+            "the two engines answered a different number of positions: {} vs {}",
+            ours.len(),
+            theirs.len()
+        )));
+    }
+    for (i, (a, b)) in ours.iter().zip(theirs.iter()).enumerate() {
         checked += 1;
-        if ours != theirs {
-            failures.push(format!("{fen}: rfish {ours:?} != upstream {theirs:?}"));
+        if a != b {
+            let fen = fens.get(i).copied().unwrap_or("?");
+            failures.push(format!("{fen}: rfish {a} != upstream {b}"));
         }
     }
 
@@ -531,12 +563,12 @@ pub(crate) fn nnue_check() -> Result<Outcome, String> {
     Ok(Outcome::check(failures.is_empty(), format!("{} evaluation mismatches", failures.len())))
 }
 
-/// The raw network output an `eval` printed, in upstream's internal units.
-fn internal_units(out: &str) -> Option<i64> {
+/// Every raw network output an `eval` printed, in upstream's internal units, in order.
+fn internal_units_all(out: &str) -> Vec<i64> {
     out.lines()
-        .find(|l| l.trim_start().starts_with("NNUE evaluation"))
-        .and_then(|l| l.split_whitespace().nth(2))
-        .and_then(|w| w.trim_start_matches('+').parse().ok())
+        .filter(|l| l.trim_start().starts_with("NNUE evaluation"))
+        .filter_map(|l| l.split_whitespace().nth(2)?.trim_start_matches('+').parse().ok())
+        .collect()
 }
 
 /// A pristine upstream binary, if one has been built.

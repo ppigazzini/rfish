@@ -119,12 +119,11 @@ a bug here.
 
 ## What is not here yet
 
-- **Threat deltas.** The NNUE feature transformer could be updated incrementally if
-  `do_move` recorded which threat and pawn-pair features a move creates and destroys.
-  Nothing computes it, so [03-engine-eval.md](03-engine-eval.md)'s accumulator is rebuilt
-  from scratch every evaluation — which is correct, and roughly an order of magnitude slower
-  than upstream.
+- **Threat deltas.** Upstream's `do_move` records which threat and pawn-pair features a move
+  creates and destroys, so the NNUE accumulator can be patched from the move's geometry.
+  rfish does not, and no longer needs to: [03-engine-eval.md](03-engine-eval.md) reaches the
+  same accumulator by diffing the recomputed feature SETS, which is correct by construction
+  and measured at 1.48× the from-scratch cost it replaced.
 
-  This is the single largest remaining performance item in the whole port, and it lives
-  here rather than in the evaluation zone: the evaluation cannot become incremental until
-  the board tells it what changed.
+  A per-move delta would still be faster, because it would remove the set recomputation
+  entirely. It is now an optimisation with a number to beat rather than a blocker.

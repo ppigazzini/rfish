@@ -62,23 +62,43 @@ The threat and pawn-pair sets share one weight array, with the pawn-pair block s
 the threat set's dimension count. That is why `PP_INDEX_BASE == THREAT_DIMENSIONS`, and a
 test asserts it rather than trusting the two constants to stay in step.
 
-## The accumulator is recomputed, not updated
+## The accumulator is updated by diffing feature sets
 
-Upstream maintains the transformer's output incrementally: a move changes a handful of
-features, so the accumulator is patched rather than rebuilt, with a king-bucket cache
-absorbing the case where the king moved.
+Upstream patches the accumulator from a per-move delta: `do_move` records which features a
+move creates and destroys, and the accumulator applies exactly those. That needs the board
+zone to derive a threat delta from the move's geometry — several hundred lines of dense case
+analysis.
 
-**rfish recomputes it per evaluation.** That is correct and slow, in that order deliberately:
-the from-scratch path is what an incremental path has to agree with, so it is the thing to
-have first and the thing an incremental update is later checked against.
+**rfish takes a different route to the same place.** The accumulator is a *sum over the
+active set*, so any two positions' accumulators differ by exactly the set difference of their
+features. Recomputing the active set is cheap — it is bitboard work — while applying a
+feature is expensive, because each touches 1024 weights. So rfish recomputes the SET and
+diffs it against the last one, then applies only what changed.
 
-The cost is real and measured: around 75 kn/s against upstream's 830 kn/s on the same
-machine, an eleven-fold difference that is almost entirely this. The *tree* is upstream's
-size, though — the bench searches roughly two million nodes at depth 13 where upstream
-searches three million — because the evaluation guiding it is upstream's.
+Three things that buys:
 
-Making it incremental needs the board zone to maintain a per-move threat delta, which it
-does not yet. See [01-engine-board.md](01-engine-board.md).
+- **Correct by construction rather than by case analysis.** There is no delta logic to get
+  wrong. The from-scratch path is not a separate implementation either: with no cached state
+  the old set is empty, so the "diff" is every feature and one code path serves both.
+- **No king-bucket cache.** The case upstream needs one for — a king move invalidating every
+  king-piece feature — is simply a large diff.
+- **No blocker.** It does not wait on the board zone.
+
+Measured, on the bench at depth 11, three runs each, comparing CPU time because the machine
+was contended:
+
+| | user time |
+|---|---|
+| recomputed from scratch | 31.34 / 31.58 / 30.80 s |
+| diffed | 21.35 / 20.29 / 21.23 s |
+
+**A 1.48× speedup, with the node count bit-identical** — the same 1 240 003 nodes, which is
+what proves the evaluation did not change. `cargo xtask nnue-check` still matches upstream on
+all 109 positions.
+
+The gap to upstream's throughput is now the remaining cost of recomputing the set at all,
+plus the absence of vector kernels. Closing it further means the per-move delta after all,
+and the measurement above is what any such attempt has to beat.
 
 ## The quantisation is the specification
 
