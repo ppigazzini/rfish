@@ -40,6 +40,22 @@ See [08-idiomatic-rust.md](08-idiomatic-rust.md) §3.
 
 Nothing else crosses a thread boundary. There is no lock in the engine crate.
 
+## The threads vote
+
+The move played is the one the pool AGREES on, not the one thread 0 happened to end on:
+each thread contributes `(score - worst + 14) * depth` to its choice, summed across the
+threads that picked it.
+
+Two parts of that are load-bearing. Offsetting by the worst score keeps every weight
+non-negative, so a deeply searched losing move cannot outvote a shallow winning one by sign
+alone. And the `+ 14` floor is what makes agreement count at all — without it, threads whose
+score equals the worst contribute nothing, and a lone slightly-higher score outvotes two
+threads that agree.
+
+With one thread there is nothing to vote on and the result is thread 0's, which is what
+keeps `Threads 1` deterministic. `MultiPV` is excluded, because the caller asked for a
+ranked list rather than a single answer.
+
 ## Determinism
 
 `Threads 1` is fully deterministic: same position, same limits, same node count, same move.
@@ -60,8 +76,5 @@ away for a configuration change would cost strength for no reason.
 - **No NUMA model and no network replication.** Upstream replicates the NNUE weights per
   NUMA node and binds threads to it. There is no network to replicate yet; when M3 lands,
   this section says what happened.
-- **No thread voting.** Upstream lets the threads vote on the best move rather than taking
-  thread 0's. rfish takes thread 0's. That is a strength difference, not a correctness one,
-  and it is open work.
 - **No ponder.** `Ponder` is declared and `ponderhit` is accepted; the search does not yet
   convert a pondering search into a real one.

@@ -23,7 +23,8 @@ use crate::board::movegen::{generate_legal, move_to_uci};
 use crate::board::position::Position;
 use crate::board::types::{
     Bound, Color, MAX_PLY, Move, VALUE_DRAW, VALUE_INFINITE, VALUE_MATE, VALUE_MATE_IN_MAX_PLY,
-    VALUE_MATED_IN_MAX_PLY, VALUE_NONE, Value, mated_in, piece_value,
+    VALUE_MATED_IN_MAX_PLY, VALUE_NONE, VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY, Value,
+    mated_in, piece_value,
 };
 use crate::eval;
 use crate::eval::nnue::{Network, Scratch};
@@ -173,6 +174,76 @@ impl SearchWorker {
     fn evaluate(&mut self) -> Value {
         let optimism = self.optimism[self.pos.side_to_move().index()];
         eval::evaluate(&self.pos, self.network.as_deref(), &mut self.scratch, optimism)
+    }
+
+    /// How far the static evaluation of positions like this one has historically been from
+    /// what the search found.
+    ///
+    /// Four tables keyed by four different summaries of the position — the pawn structure,
+    /// the minor-piece configuration, and each side's non-pawn material. A position the
+    /// evaluation systematically misjudges is one every table has an opinion about, and the
+    /// weights are upstream's.
+    ///
+    /// Upstream also folds in a continuation-correction term keyed by the last two moves.
+    /// rfish does not have that table yet, so its weight is absent rather than approximated
+    /// — an invented term would be a different engine, not a partial port.
+    fn correction_value(&self) -> i32 {
+        let us = self.pos.side_to_move();
+        let st = self.pos.st();
+        let h = &self.histories;
+        let pcv = h.pawn_corr.get(st.pawn_key, us);
+        let micv = h.minor_corr.get(st.minor_piece_key, us);
+        let wnpcv = h.non_pawn_corr[0].get(st.non_pawn_key[0], us);
+        let bnpcv = h.non_pawn_corr[1].get(st.non_pawn_key[1], us);
+        15341 * pcv + 10569 * micv + 12906 * (wnpcv + bnpcv)
+    }
+
+    /// Apply the correction to a raw static evaluation.
+    ///
+    /// The clamp keeps it out of the tablebase range: a corrected evaluation that reached it
+    /// would be read as a proven result rather than an estimate.
+    #[inline]
+    fn corrected_eval(raw: Value, correction: i32) -> Value {
+        (raw + correction / 131_072)
+            .clamp(VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1)
+    }
+
+    /// Record how far the static evaluation was from what the search found.
+    ///
+    /// Only when the node was not in check, the best move was not a capture, and the sign of
+    /// the error agrees with whether a move improved on the evaluation at all — upstream's
+    /// three conditions, each of which excludes a case where the difference is not the
+    /// evaluation's fault.
+    fn update_correction(
+        &mut self,
+        best_value: Value,
+        static_eval: Value,
+        depth: i32,
+        has_best_move: bool,
+        in_check: bool,
+        best_was_capture: bool,
+    ) {
+        if in_check || best_was_capture || static_eval == VALUE_NONE {
+            return;
+        }
+        if (best_value > static_eval) != has_best_move {
+            return;
+        }
+        let limit = crate::search::history::CORRECTION_LIMIT;
+        let scale = if has_best_move { 12 } else { 18 };
+        let bonus = ((best_value - static_eval) * depth * scale / 128).clamp(-limit / 4, limit / 4);
+        let bonus = 1061 * bonus / 1024;
+
+        let us = self.pos.side_to_move();
+        let (pawn_key, minor_key, np) =
+            (self.pos.st().pawn_key, self.pos.st().minor_piece_key, self.pos.st().non_pawn_key);
+        self.histories.pawn_corr.update(pawn_key, us, bonus);
+        self.histories.minor_corr.update(minor_key, us, bonus * 150 / 128);
+        // The non-pawn tables are updated at a lower weight: material changes far less often
+        // than structure, so an error attributed to it is weaker evidence.
+        for (table, key) in self.histories.non_pawn_corr.iter_mut().zip(np.iter()) {
+            table.update(*key, us, bonus * 186 / 128);
+        }
     }
 
     /// Forget every history. Called on `ucinewgame`, never mid-game.
@@ -430,17 +501,27 @@ impl SearchWorker {
         let in_check = self.pos.in_check();
         self.stack[si].in_check = in_check;
         self.stack[si].move_count = 0;
+        // A node is "transposition PV" when it is on the principal variation now OR was when
+        // it was stored. The flag survives through the table, which is what lets a node the
+        // search has drifted away from still be treated as important.
+        self.stack[si].tt_pv = PV || (tt_hit && tt_data.is_pv);
 
         // The static evaluation. In check there is none: every move is forced, so a
         // standing estimate would be meaningless and every eval-based pruning rule below
         // is skipped.
-        let static_eval = if in_check {
+        let correction = self.correction_value();
+        let raw_eval = if in_check {
             VALUE_NONE
         } else if tt_hit && tt_data.eval != VALUE_NONE {
             tt_data.eval
         } else {
             self.evaluate()
         };
+        // The correction is applied to the value the SEARCH reasons about, never to the one
+        // stored in the table: the table's entry has to stay comparable across nodes whose
+        // histories differ.
+        let static_eval =
+            if in_check { VALUE_NONE } else { Self::corrected_eval(raw_eval, correction) };
         self.stack[si].static_eval = static_eval;
 
         // Is the position improving compared with two plies ago? A worsening position
@@ -552,15 +633,77 @@ impl SearchWorker {
                 continue;
             }
 
+            // Singular extension. If the transposition move is much better than every
+            // alternative, the node hinges on it, and searching it a ply deeper costs little
+            // against the risk of missing why. The alternatives are measured by re-searching
+            // this node with the move EXCLUDED, at half depth and a zero window.
+            let mut extension = 0;
+            if !root
+                && mv == tt_move
+                && excluded.is_none()
+                && depth >= 6
+                // Bound the extension chain by the distance from the root: a node already
+                // twice as deep as the iteration asked for has extended enough.
+                && ply < 2 * self.root_depth
+                && tt_hit
+                && tt_value != VALUE_NONE
+                && tt_value.abs() < VALUE_MATE_IN_MAX_PLY
+                && matches!(tt_data.bound, Bound::Lower | Bound::Exact)
+                && tt_data.depth >= depth - 3
+            {
+                let singular_beta =
+                    tt_value - (59 + 66 * i32::from(self.stack[si].tt_pv && !PV)) * depth / 63;
+                let singular_depth = (depth - 1) / 2;
+
+                self.stack[si].excluded_move = mv;
+                let v = self.node::<false>(
+                    singular_beta - 1,
+                    singular_beta,
+                    singular_depth,
+                    ply,
+                    cut_node,
+                    tt,
+                );
+                self.stack[si].excluded_move = Move::NONE;
+
+                if v < singular_beta {
+                    // ONE ply, never more. Upstream extends by up to three and bounds the
+                    // total elsewhere; without those bounds a chain of double extensions
+                    // makes the child deeper than its parent and the search does not
+                    // terminate. That is not a hypothetical -- it hung a bench here.
+                    extension = 1;
+                } else if v >= beta {
+                    // Multi-cut. The transposition move was assumed to fail high, and with
+                    // it excluded the node STILL fails high -- so more than one move does,
+                    // and the whole subtree can be skipped.
+                    return v;
+                } else if cut_node {
+                    // Neither singular nor multi-cut, at a node expected to fail high: search
+                    // the move shallower in favour of the alternatives.
+                    extension = -1;
+                }
+            }
+
             self.stack[si].current_move = mv;
             self.stack[si].moved_piece = moved;
+            // Clear the child's principal variation before searching it. A child that ends in
+            // quiescence -- which an extension of -1 can now cause at depth 1 -- writes no PV
+            // at all, and without this clear the parent would splice in the line left by a
+            // DIFFERENT sibling. That produces a reported PV whose moves are not legal from
+            // the root, which is exactly how it was caught.
+            self.stack[si + 1].pv.clear();
             self.pos.do_move_checked(mv, gives_check);
 
             // Late move reductions: search a late, quiet move shallower, and re-search at
             // full depth only if it turns out to beat alpha. The reduction is what makes a
             // depth-30 search possible at all.
             let mut score;
-            let new_depth = depth - 1;
+            // Never deeper than the parent -- an extension that outgrows its own depth is how
+            // an extension chain stops terminating -- and never clamped UP off zero, because
+            // zero is what drops into quiescence. Clamping the low end to one made a depth-1
+            // node recurse to a depth-1 child forever; the search hung, and no test caught it
+            // because every test was a search.
+            let new_depth = (depth - 1 + extension).clamp(0, depth);
             if depth >= 2 && move_count > 1 + u32::from(root) as i32 && !capture {
                 let mut r = reduction(depth, move_count);
                 if !PV {
@@ -664,6 +807,20 @@ impl SearchWorker {
             self.update_histories(best_move, depth, ply, &searched_quiets, &searched_captures);
         }
 
+        // Feed the static evaluation's error back into the correction tables, so a position
+        // shaped like this one starts closer to the truth next time.
+        if excluded.is_none() {
+            let best_was_capture = !best_move.is_none() && self.pos.is_capture(best_move);
+            self.update_correction(
+                best_value,
+                static_eval,
+                depth,
+                !best_move.is_none(),
+                in_check,
+                best_was_capture,
+            );
+        }
+
         if excluded.is_none() {
             let bound = if best_value >= beta {
                 Bound::Lower
@@ -673,7 +830,7 @@ impl SearchWorker {
                 Bound::Upper
             };
             let _ = original_alpha;
-            tt.store(probe, best_move, value_to_tt(best_value, ply), static_eval, depth, bound, PV);
+            tt.store(probe, best_move, value_to_tt(best_value, ply), raw_eval, depth, bound, PV);
         }
 
         best_value

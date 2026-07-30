@@ -52,9 +52,10 @@ state. Check the state against the tree before acting on it:
   `SyzygyPath`, recognises table names and reports a maximum cardinality. There is no
   prober. With no path set the cardinality is 0 and the search's tablebase step never
   enters, which is why the option surface is live without changing any search. M5.
-- **Lazy-SMP** — **wired.** `Threads` builds a worker set and a `go` runs N workers over
-  one root through `std::thread::scope`. There is no NUMA model and no network
-  replication, because there is no network yet.
+- **Lazy-SMP** — **wired, with the best-move vote.** `Threads` builds a worker set, a `go`
+  runs N workers over one root through `std::thread::scope`, and the move played is the one
+  the pool agrees on. There is no NUMA model and no network replication — there are weights
+  to replicate now, so that is real open work rather than a blocked item.
 - **The option model** — the `uci` handshake advertises the full option set and the
   handshake golden pins it byte for byte. `UCI_LimitStrength`, `UCI_Elo` and `nodestime`
   are **declared but not acted on**; the rest are wired.

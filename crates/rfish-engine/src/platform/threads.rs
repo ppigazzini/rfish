@@ -24,6 +24,7 @@
 use std::sync::Arc;
 
 use crate::board::position::Position;
+use crate::board::types::Move;
 use crate::eval::nnue::Network;
 use crate::search::tt::TranspositionTable;
 use crate::search::worker::{InfoSink, SearchResult, SearchWorker, SilentSink};
@@ -129,12 +130,12 @@ impl ThreadPool {
         let (main, helpers) = self.workers.split_at_mut(1);
         let main = &mut main[0];
 
-        let mut result = std::thread::scope(|scope| {
+        let (mut result, votes) = std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(helpers.len());
             for w in helpers.iter_mut() {
                 let (pos, limits) = (pos, limits);
                 handles.push(scope.spawn(move || {
-                    w.search(pos, limits, tt, multi_pv, move_overhead, &mut SilentSink);
+                    w.search(pos, limits, tt, multi_pv, move_overhead, &mut SilentSink)
                 }));
             }
             // The main thread searches on this thread rather than a spawned one, so a
@@ -142,15 +143,71 @@ impl ThreadPool {
             let r = main.search(pos, limits, tt, multi_pv, move_overhead, sink);
             // Every helper must see the stop before this scope can join them.
             self.shared.request_stop();
-            for h in handles {
-                let _ = h.join();
-            }
-            r
+            let votes: Vec<SearchResult> =
+                handles.into_iter().filter_map(|h| h.join().ok()).collect();
+            (r, votes)
         });
+
+        // Thread voting. The helpers searched the same root and may have found something
+        // thread 0 did not, so the move played is the one the pool agrees on rather than the
+        // one thread 0 happened to end on.
+        //
+        // With one thread there is nothing to vote on and this reduces to thread 0's answer,
+        // which is what keeps `Threads 1` deterministic. `MultiPV` is excluded because the
+        // caller asked for a ranked list, not a single answer.
+        if !votes.is_empty() && multi_pv == 1 {
+            result = elect(std::iter::once(result).chain(votes));
+        }
 
         result.nodes = self.shared.node_count().max(result.nodes);
         result
     }
+}
+
+/// Choose the move a set of finished searches agrees on.
+///
+/// Each candidate contributes `(score - worst + 14) * depth`, summed over the threads that
+/// chose it. Two parts of that are load-bearing:
+///
+/// - **Offsetting by the worst score** keeps every weight non-negative, so a deeply searched
+///   losing move cannot outvote a shallow winning one by sign alone.
+/// - **The `+ 14` floor** is what makes AGREEMENT count. Without it, threads whose scores are
+///   equal to the worst contribute nothing, and a lone slightly-higher score outvotes two
+///   threads that agree. Upstream carries the same constant for the same reason.
+fn elect(results: impl Iterator<Item = SearchResult>) -> SearchResult {
+    let all: Vec<SearchResult> = results.filter(|r| r.best_move.is_ok()).collect();
+    let Some(first) = all.first().cloned() else {
+        return SearchResult {
+            best_move: Move::NONE,
+            ponder_move: None,
+            score: 0,
+            depth: 0,
+            nodes: 0,
+        };
+    };
+    let min_score = all.iter().map(|r| r.score).min().unwrap_or(0);
+
+    let mut tally: Vec<(Move, i64)> = Vec::new();
+    for r in &all {
+        let weight = i64::from(r.score - min_score + 14) * i64::from(r.depth.max(1));
+        match tally.iter_mut().find(|(m, _)| *m == r.best_move) {
+            Some((_, w)) => *w += weight,
+            None => tally.push((r.best_move, weight)),
+        }
+    }
+
+    let mut best = first;
+    let mut best_weight = i64::MIN;
+    for r in &all {
+        let total = tally.iter().find(|(m, _)| *m == r.best_move).map_or(0, |(_, w)| *w);
+        // Ties go to the deeper search, then to the higher score -- never to iteration
+        // order, which would make the answer depend on how the threads happened to finish.
+        if (total, r.depth, r.score) > (best_weight, best.depth, best.score) {
+            best_weight = total;
+            best = r.clone();
+        }
+    }
+    best
 }
 
 impl Default for ThreadPool {
@@ -234,6 +291,46 @@ mod tests {
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let r = pool.search(&pos, &depth_limits(4), &tt, 1, 10, &mut SilentSink);
         assert!(r.best_move.is_ok());
+    }
+
+    /// The vote must never invent a move: it can only choose among what the threads found.
+    #[test]
+    fn the_vote_chooses_among_the_candidates_and_prefers_agreement() {
+        let mk = |m: u16, score: i32, depth: i32| SearchResult {
+            best_move: Move::from_raw(m),
+            ponder_move: None,
+            score,
+            depth,
+            nodes: 0,
+        };
+        // Two threads agree on move 20 at a modest score; one prefers 30 slightly higher.
+        // Agreement plus depth carries it.
+        let winner = elect([mk(20, 10, 12), mk(30, 12, 12), mk(20, 10, 12)].into_iter());
+        assert_eq!(winner.best_move, Move::from_raw(20));
+
+        // A single deep, decisive thread beats two shallow dissenters.
+        let winner = elect([mk(40, 900, 20), mk(50, 0, 3), mk(60, 0, 3)].into_iter());
+        assert_eq!(winner.best_move, Move::from_raw(40));
+
+        // One candidate: the vote is the identity.
+        assert_eq!(elect([mk(7, 5, 9)].into_iter()).best_move, Move::from_raw(7));
+        // No candidate: no move, rather than a panic.
+        assert!(elect(std::iter::empty()).best_move.is_none());
+    }
+
+    /// `Threads 1` must stay deterministic: with no helpers there is nothing to vote on.
+    #[test]
+    fn one_thread_is_unaffected_by_the_vote() {
+        let mut a = ThreadPool::new(1);
+        let tt = TranspositionTable::new(8);
+        let pos = Position::from_fen(START_FEN, false).expect("valid");
+        let first = a.search(&pos, &depth_limits(7), &tt, 1, 10, &mut SilentSink);
+
+        let mut b = ThreadPool::new(1);
+        let tt2 = TranspositionTable::new(8);
+        let second = b.search(&pos, &depth_limits(7), &tt2, 1, 10, &mut SilentSink);
+        assert_eq!(first.best_move, second.best_move);
+        assert_eq!(first.score, second.score);
     }
 
     #[test]

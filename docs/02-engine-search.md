@@ -97,9 +97,17 @@ The pruning set, in the order the node applies it:
    genuinely bad option and the assumption fails.
 6. **Internal iterative reduction** — a PV or cut node with no transposition move has no
    ordering to work with.
-7. Per move: **late move pruning**, **futility**, **SEE pruning** for quiets and captures.
+7. Per move: **singular extensions** and multi-cut, **late move pruning**, **futility**,
+   **SEE pruning** for quiets and captures.
 8. **Late move reductions**, with a re-search at full depth when the reduced search beats
    alpha.
+
+The static evaluation is **corrected** before any of it: four tables record how far the
+evaluation of positions sharing a pawn structure, a minor-piece configuration or a
+non-pawn material count has historically been from what the search found, and the node
+starts from the corrected value. Upstream also folds in a continuation-correction term keyed
+by the last two moves; rfish does not have that table, and its weight is absent rather than
+approximated.
 
 The search **never prints**. It reports through the `InfoSink` trait, which the shell
 implements as UCI `info` lines and a test implements as a no-op. That is what keeps the
@@ -109,13 +117,36 @@ engine crate free of the transport.
 some platforms, and at a few million nodes per second the granularity is well under a
 millisecond either way.
 
+## Singular extensions, and the two bugs they introduced
+
+If the transposition move is much better than every alternative, the node hinges on it and
+it is searched a ply deeper. "Much better" is measured by re-searching the node with that
+move **excluded**, at half depth and a zero window. Three outcomes:
+
+- everything else falls short → **extend** by a ply;
+- the node still fails high without it → **multi-cut**: more than one move works, so the
+  whole subtree can be skipped;
+- neither, at a node expected to fail high → **reduce** the move in favour of the others.
+
+Two bugs came out of adding it, and both are worth knowing because neither was caught by
+anything except running the thing:
+
+- **The extension must not clamp the child's depth UP.** Writing `new_depth.clamp(1, depth)`
+  made a depth-1 node recurse into a depth-1 child forever. Zero is what drops into
+  quiescence, and clamping it away removed the search's base case. Every test was a search,
+  so every test hung.
+- **The child's principal variation must be cleared before each move.** A child that ends in
+  quiescence writes no PV, and without the clear the parent spliced in the line a DIFFERENT
+  sibling left behind — producing a reported PV whose moves were not legal from the root.
+  That one a test did catch.
+
 ## What is not faithful yet
 
-The pruning *set* is upstream's; the pruning *constants* are not, and neither is the exact
-ordering of the correction-history and optimism terms. Those land with the NNUE evaluation,
-because several of them are tuned against it and mean nothing over the classical
-scaffolding. Until then the bench signature is rfish's own number — see
-[CONTRIBUTING.md](../CONTRIBUTING.md), "Two different numbers".
+The pruning *set* is upstream's; the pruning *constants* are not. Several are tuned against
+the NNUE evaluation, which now exists, so fitting them is finally a measurable exercise
+rather than a guess. Until then the bench signature is rfish's own number — see
+[CONTRIBUTING.md](../CONTRIBUTING.md), "Two different numbers". At upstream's own depth 13
+rfish searches about 3.45 million nodes against upstream's 3.18 million, which is how close
+the trees are.
 
-Also open: singular extensions, the `Skill`/`UCI_Elo` strength limiter, and the multi-thread
-best-move vote.
+Also open: the `UCI_Elo` strength limiter, and pondering.
