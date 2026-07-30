@@ -86,13 +86,19 @@ Positions in check are excluded, because upstream's `eval` refuses to score one.
 
 ### `tb`
 
-Syzygy discovery against real tables: a path holding them is recognised, and an empty path
-leaves the search untouched.
+The differential tablebase gate: rfish's WDL verdict and DTZ distance must equal a pristine
+upstream build's, position by position.
 
-The prober is not written, so this gates the half that exists **and** the property that makes
-the other half's absence safe — with no path set the cardinality is zero, the search's
-tablebase step never enters, and the signature is unaffected. SKIPs without a
-`resources/syzygy/` directory.
+A tablebase answer is exact, so "close" is meaningless — an index computed one off reads a
+different position's entry and returns a confident wrong verdict. A golden pinning rfish's
+own output would pin whatever it currently does; only the comparison catches that.
+
+It also checks the property that makes an unconfigured engine safe: with no path set nothing
+is discovered, no probe fires, and the signature is unaffected.
+
+SKIPs without `resources/syzygy/` or without an upstream build. Every entry in the battery is
+LEGAL — an illegal position makes the oracle exit rather than answer, which reads to a gate
+as a broken engine rather than as a position to skip.
 
 ### `docs-lint`
 

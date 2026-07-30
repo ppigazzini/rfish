@@ -99,6 +99,7 @@ pub struct SearchWorker {
     limits: Limits,
     budget: TimeBudget,
     nodes: u64,
+    tb_hits: u64,
     sel_depth: i32,
     root_depth: i32,
     completed_depth: i32,
@@ -112,6 +113,11 @@ pub struct SearchWorker {
     network: Option<Arc<Network>>,
     /// Per-thread evaluation buffers, so a search allocates nothing per node.
     scratch: Scratch,
+    /// The tablebases, shared read-only across every thread.
+    tablebases: Option<Arc<crate::platform::syzygy::TableRegistry>>,
+    tb_probe_depth: i32,
+    tb_probe_limit: u32,
+    tb_use_rule50: bool,
 }
 
 impl core::fmt::Debug for SearchWorker {
@@ -142,6 +148,7 @@ impl SearchWorker {
                 maximum: std::time::Duration::MAX,
             },
             nodes: 0,
+            tb_hits: 0,
             sel_depth: 0,
             root_depth: 0,
             completed_depth: 0,
@@ -151,7 +158,30 @@ impl SearchWorker {
             optimism: [0; 2],
             network: None,
             scratch: Scratch::default(),
+            tablebases: None,
+            tb_probe_depth: 1,
+            tb_probe_limit: 7,
+            tb_use_rule50: true,
         }
+    }
+
+    /// Point this worker at a tablebase registry, or at none.
+    pub fn set_tablebases(&mut self, tb: Option<Arc<crate::platform::syzygy::TableRegistry>>) {
+        self.tablebases = tb;
+    }
+
+    /// The registry this worker is using, if any.
+    #[must_use]
+    pub fn tablebases(&self) -> Option<Arc<crate::platform::syzygy::TableRegistry>> {
+        self.tablebases.clone()
+    }
+
+    /// How deep a node must be before it is worth probing, and how many pieces a table
+    /// covers. Both come from UCI options.
+    pub fn set_tb_limits(&mut self, probe_depth: i32, probe_limit: u32, use_rule50: bool) {
+        self.tb_probe_depth = probe_depth;
+        self.tb_probe_limit = probe_limit;
+        self.tb_use_rule50 = use_rule50;
     }
 
     /// Point this worker at a network, or at none.
@@ -274,6 +304,7 @@ impl SearchWorker {
         self.limits = limits.clone();
         self.budget = timeman::allocate(limits, pos.side_to_move(), move_overhead);
         self.nodes = 0;
+        self.tb_hits = 0;
         self.sel_depth = 0;
         self.completed_depth = 0;
         self.best_move_changes = 0.0;
@@ -496,6 +527,16 @@ impl SearchWorker {
             }
         {
             return tt_value;
+        }
+
+        // Step 6: the tablebases. Below the piece limit the answer is exact, so the whole
+        // subtree can be replaced by it. Only at a zeroed halfmove clock: a tablebase knows
+        // the distance to the next irreversible move, not to mate, so with a running clock
+        // its verdict and the fifty-move rule can disagree.
+        if !root && excluded.is_none() && self.pos.rule50_count() == 0 {
+            if let Some(v) = self.probe_tablebases(depth, ply, alpha, beta, tt, probe) {
+                return v;
+            }
         }
 
         let in_check = self.pos.in_check();
@@ -973,6 +1014,70 @@ impl SearchWorker {
         out
     }
 
+    /// Replace this node with a tablebase verdict, when one is available.
+    ///
+    /// The score is stored in the table so a later visit does not re-probe — a probe reads a
+    /// file, which is far more expensive than the search it replaces at these depths.
+    fn probe_tablebases(
+        &mut self,
+        depth: i32,
+        ply: i32,
+        alpha: Value,
+        beta: Value,
+        tt: &TranspositionTable,
+        probe: super::tt::TTProbe,
+    ) -> Option<Value> {
+        let tb = self.tablebases.as_ref()?;
+        let pieces = self.pos.piece_total();
+        if pieces > self.tb_probe_limit.min(tb.max_cardinality())
+            || (pieces == self.tb_probe_limit.min(tb.max_cardinality())
+                && depth < self.tb_probe_depth)
+        {
+            return None;
+        }
+        let wdl = tb.probe_wdl(&self.pos).ok()?;
+        self.tb_hits += 1;
+
+        // `Syzygy50MoveRule` off means a cursed win counts as a win: the caller has told us
+        // the fifty-move rule does not apply to this game.
+        let draw_score = i32::from(self.tb_use_rule50);
+        let value = match wdl {
+            crate::platform::syzygy::Wdl::Loss => {
+                crate::board::types::VALUE_TB_LOSS_IN_MAX_PLY + ply + 1
+            }
+            crate::platform::syzygy::Wdl::Win => {
+                crate::board::types::VALUE_TB_WIN_IN_MAX_PLY - ply - 1
+            }
+            crate::platform::syzygy::Wdl::BlessedLoss => VALUE_DRAW - 2 * draw_score,
+            crate::platform::syzygy::Wdl::CursedWin => VALUE_DRAW + 2 * draw_score,
+            crate::platform::syzygy::Wdl::Draw => VALUE_DRAW,
+        };
+
+        let bound = match (wdl as i32).cmp(&0) {
+            std::cmp::Ordering::Greater => Bound::Lower,
+            std::cmp::Ordering::Less => Bound::Upper,
+            std::cmp::Ordering::Equal => Bound::Exact,
+        };
+        if bound == Bound::Exact
+            || (bound == Bound::Lower && value >= beta)
+            || (bound == Bound::Upper && value <= alpha)
+        {
+            // Stored at a depth that outranks anything the search could reach here: the
+            // answer is exact, so nothing deeper can improve on it.
+            tt.store(
+                probe,
+                Move::NONE,
+                value_to_tt(value, ply),
+                VALUE_NONE,
+                (depth + 6).min(MAX_PLY as i32 - 1),
+                bound,
+                false,
+            );
+            return Some(value);
+        }
+        None
+    }
+
     /// Reward the move that caused a cutoff and punish the ones that did not.
     ///
     /// Punishing the failures is as important as rewarding the winner: without it every
@@ -1113,7 +1218,7 @@ impl SearchWorker {
             nodes,
             nps: nodes * 1000 / elapsed,
             hashfull: tt.hashfull(),
-            tb_hits: 0,
+            tb_hits: self.tb_hits,
             time_ms: elapsed,
             pv: &pv,
         };

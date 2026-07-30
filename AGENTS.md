@@ -48,10 +48,11 @@ state. Check the state against the tree before acting on it:
   `crates/rfish-engine/src/eval/classical.rs` is now only the fallback for a run with NO net
   on disk. It is **scaffolding with a scheduled deletion date**: do not tune it, do not
   extend it, and do not let it acquire callers NNUE will not satisfy.
-- **Syzygy** — **discovery only.** `crates/rfish-engine/src/platform/syzygy.rs` resolves a
-  `SyzygyPath`, recognises table names and reports a maximum cardinality. There is no
-  prober. With no path set the cardinality is 0 and the search's tablebase step never
-  enters, which is why the option surface is live without changing any search. M5.
+- **Syzygy** — **ported and verified.** `crates/rfish-engine/src/platform/syzygy/` holds
+  the whole prober: discovery, the Recursive-Pairing decoder, the index computation, and
+  the WDL and DTZ probes. `cargo xtask tb` compares both against a pristine upstream build
+  position by position. Open: the 5-man cursed-win branches (they need a 5-man set to
+  exercise), a block cache for 7-man tables, and using the root ranking in move ordering.
 - **Lazy-SMP** — **wired, with the best-move vote.** `Threads` builds a worker set, a `go`
   runs N workers over one root through `std::thread::scope`, and the move played is the one
   the pool agrees on. There is no NUMA model and no network replication — there are weights

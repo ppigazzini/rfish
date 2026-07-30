@@ -1,0 +1,153 @@
+# Three-man positions for the differential Syzygy gate.
+#
+# `cargo xtask tb` drives rfish and a pristine upstream build over each of these and
+# compares the WDL verdict and the DTZ distance.
+#
+# Every entry is LEGAL. An illegal one -- where the side not to move is in check -- makes
+# the oracle exit rather than answer, which reads to a gate as a broken engine rather than
+# as a position to skip. The generator's own filter missed several, so the list was sieved
+# by feeding it through rfish and keeping what its FEN parser accepted.
+#
+# The battery covers every table (KQvK, KRvK, KBvK, KNvK, KPvK), both colours to move, and
+# the four cases the index computation folds differently: the corner, the edge, the centre
+# and the long a1-h8 diagonal. It also covers the two paths that are easy to get wrong and
+# that no single position exercises:
+#
+#   - BLACK STRONGER. A file stores KRvK and never KvKR, so a position where the lone king
+#     is White has to be mirrored before the lookup. Positions below with the piece on the
+#     black side reach it.
+#   - CHANGE_STM. A DTZ file stores one side to move only. When the probe wants the other,
+#     the answer comes from a one-ply search that minimises the distance, not from the file.
+
+4k3/8/8/8/8/8/8/Q3K3 w - - 0 1
+4k3/8/8/8/8/5Q2/8/4K3 w - - 0 1
+8/8/8/8/8/8/8/2Q1K2k w - - 0 1
+Q7/8/5k2/8/8/8/8/4K3 w - - 0 1
+8/8/8/8/3Q4/6k1/8/4K3 w - - 0 1
+4k3/8/8/8/8/8/8/K6Q w - - 0 1
+4k3/6Q1/8/8/8/8/8/K7 w - - 0 1
+8/8/5k2/8/8/8/8/K1Q5 w - - 0 1
+8/8/8/k7/3Q4/8/8/K7 w - - 0 1
+8/8/8/8/8/6k1/8/K6Q w - - 0 1
+Q7/8/5k2/8/3K4/8/8/8 w - - 0 1
+8/6Q1/8/k7/3K4/8/8/8 w - - 0 1
+8/8/8/8/Q2K4/6k1/8/8 w - - 0 1
+4k2K/8/8/8/3Q4/8/8/8 w - - 0 1
+7K/6Q1/8/8/8/8/8/7k w - - 0 1
+7K/8/5k2/8/8/8/8/2Q5 w - - 0 1
+7K/8/8/8/Q7/6k1/8/8 w - - 0 1
+4k3/8/2K5/8/3Q4/8/8/8 w - - 0 1
+8/6Q1/2K5/8/8/8/8/7k w - - 0 1
+8/8/2K2k2/8/8/8/8/2Q5 w - - 0 1
+8/8/2K5/8/Q7/6k1/8/8 w - - 0 1
+4k3/8/8/8/3R4/8/8/4K3 w - - 0 1
+8/8/8/8/8/8/8/R3K2k w - - 0 1
+8/6R1/8/8/8/8/8/4K2k w - - 0 1
+8/8/5k2/8/8/8/8/2R1K3 w - - 0 1
+8/8/1R6/k7/8/8/8/4K3 w - - 0 1
+8/8/8/8/R7/6k1/8/4K3 w - - 0 1
+8/8/8/8/3R4/8/8/K6k w - - 0 1
+8/8/5k2/8/8/8/8/K6R w - - 0 1
+8/6R1/5k2/8/8/8/8/K7 w - - 0 1
+8/8/8/4R3/8/6k1/8/K7 w - - 0 1
+4k3/8/8/8/3K4/8/8/7R w - - 0 1
+4k3/8/1R6/8/3K4/8/8/8 w - - 0 1
+8/6R1/8/8/3K4/8/8/7k w - - 0 1
+8/8/5k2/8/R2K4/8/8/8 w - - 0 1
+8/8/8/8/3K4/6k1/8/7R w - - 0 1
+8/8/1R6/8/3K4/6k1/8/8 w - - 0 1
+4k2K/8/8/8/R7/8/8/8 w - - 0 1
+7K/8/8/4R3/8/8/8/7k w - - 0 1
+7K/8/5k2/8/8/8/8/7R w - - 0 1
+7K/6R1/5k2/8/8/8/8/8 w - - 0 1
+7K/8/8/k7/8/8/8/2R5 w - - 0 1
+R6K/8/8/8/8/6k1/8/8 w - - 0 1
+7K/8/1R6/8/8/6k1/8/8 w - - 0 1
+4k3/8/2K5/8/R7/8/8/8 w - - 0 1
+8/8/2K5/4R3/8/8/8/7k w - - 0 1
+8/8/2K2k2/8/8/8/8/7R w - - 0 1
+8/6R1/2K2k2/8/8/8/8/8 w - - 0 1
+8/8/2K5/k7/8/8/8/2R5 w - - 0 1
+R7/8/2K5/8/8/6k1/8/8 w - - 0 1
+8/8/1RK5/8/8/6k1/8/8 w - - 0 1
+8/8/8/4B3/8/8/8/4K2k w - - 0 1
+8/8/5k2/8/8/8/8/4K2B w - - 0 1
+8/8/8/k7/8/8/8/2B1K3 w - - 0 1
+B7/8/8/8/8/6k1/8/4K3 w - - 0 1
+8/8/1B6/8/8/6k1/8/4K3 w - - 0 1
+4k3/8/8/8/8/5B2/8/K7 w - - 0 1
+8/8/8/8/B7/8/8/K6k w - - 0 1
+B7/8/8/k7/8/8/8/K7 w - - 0 1
+8/8/8/8/8/5Bk1/8/K7 w - - 0 1
+4k3/8/8/8/3K4/8/8/2B5 w - - 0 1
+8/8/8/4B3/3K4/8/8/7k w - - 0 1
+8/8/5k2/8/3K4/8/8/7B w - - 0 1
+8/8/1B3k2/8/3K4/8/8/8 w - - 0 1
+8/8/8/k7/3K4/5B2/8/8 w - - 0 1
+8/8/8/8/3K4/6k1/8/2B5 w - - 0 1
+B3k2K/8/8/8/8/8/8/8 w - - 0 1
+4k2K/8/1B6/8/8/8/8/8 w - - 0 1
+7K/8/8/k7/8/8/8/7B w - - 0 1
+7K/6B1/8/k7/8/8/8/8 w - - 0 1
+7K/8/8/8/8/6k1/8/2B5 w - - 0 1
+B3k3/8/2K5/8/8/8/8/8 w - - 0 1
+4k3/8/1BK5/8/8/8/8/8 w - - 0 1
+8/8/2K5/k7/8/8/8/7B w - - 0 1
+8/6B1/2K5/k7/8/8/8/8 w - - 0 1
+8/8/2K5/8/8/6k1/8/2B5 w - - 0 1
+N3k3/8/8/8/8/8/8/4K3 w - - 0 1
+4k3/8/1N6/8/8/8/8/4K3 b - - 0 1
+8/8/8/8/8/5N2/8/4K2k b - - 0 1
+8/8/5k2/4N3/8/8/8/4K3 b - - 0 1
+8/8/8/k7/8/8/8/4K2N b - - 0 1
+8/6N1/8/k7/8/8/8/4K3 b - - 0 1
+8/8/8/8/N7/6k1/8/4K3 w - - 0 1
+4k3/8/8/4N3/8/8/8/K7 w - - 0 1
+8/8/8/8/3N4/8/8/K6k b - - 0 1
+8/8/5k2/8/8/8/8/K6N b - - 0 1
+8/6N1/5k2/8/8/8/8/K7 b - - 0 1
+8/8/8/k7/N7/8/8/K7 b - - 0 1
+8/8/8/8/8/6k1/8/K1N5 w - - 0 1
+N3k3/8/8/8/3K4/8/8/8 w - - 0 1
+8/8/8/8/3K4/8/8/N6k b - - 0 1
+8/8/1N6/8/3K4/8/8/7k b - - 0 1
+8/8/5k2/8/3K4/5N2/8/8 b - - 0 1
+8/8/8/k7/3K4/8/8/2N5 b - - 0 1
+8/8/8/4N3/3K4/6k1/8/8 w - - 0 1
+4k2K/8/8/8/8/8/8/7N w - - 0 1
+7K/8/8/8/N7/8/8/7k b - - 0 1
+7K/8/5k2/8/3N4/8/8/8 b - - 0 1
+7K/8/8/k7/8/8/8/N7 b - - 0 1
+7K/8/8/k7/8/5N2/8/8 b - - 0 1
+7K/8/8/8/8/6k1/8/2N5 w - - 0 1
+N3k3/8/2K5/8/8/8/8/8 w - - 0 1
+4k3/8/1NK5/8/8/8/8/8 b - - 0 1
+8/8/2K5/8/8/5N2/8/7k b - - 0 1
+8/8/2K2k2/4N3/8/8/8/8 b - - 0 1
+8/8/2K5/k7/8/8/8/7N b - - 0 1
+8/6N1/2K5/k7/8/8/8/8 b - - 0 1
+8/8/2K5/8/N7/6k1/8/8 w - - 0 1
+4k3/8/8/8/8/5P2/8/4K3 w - - 0 1
+8/6P1/8/8/8/8/8/4K2k w - - 0 1
+8/8/1P3k2/8/8/8/8/4K3 b - - 0 1
+8/8/8/8/3P4/6k1/8/4K3 b - - 0 1
+4k3/8/8/4P3/8/8/8/K7 b - - 0 1
+8/8/8/8/P7/8/8/K6k b - - 0 1
+8/6P1/5k2/8/8/8/8/K7 w - - 0 1
+8/8/1P6/k7/8/8/8/K7 w - - 0 1
+4k3/8/8/4P3/3K4/8/8/8 w - - 0 1
+8/8/8/8/3K4/5P2/8/7k w - - 0 1
+8/8/1P3k2/8/3K4/8/8/8 b - - 0 1
+8/8/8/8/P2K4/6k1/8/8 b - - 0 1
+4k2K/8/8/8/8/5P2/8/8 b - - 0 1
+7K/6P1/8/8/8/8/8/7k b - - 0 1
+7K/8/8/k7/3P4/8/8/8 w - - 0 1
+7K/8/8/4P3/8/6k1/8/8 w - - 0 1
+4k3/8/2K5/8/P7/8/8/8 w - - 0 1
+8/8/2K5/8/8/5P2/8/7k w - - 0 1
+8/6P1/2K2k2/8/8/8/8/8 b - - 0 1
+8/8/1PK5/k7/8/8/8/8 b - - 0 1
+3qk3/8/8/8/8/8/8/4K3 w - - 0 1
+3rk3/8/8/8/8/8/8/4K3 b - - 0 1
+4k3/8/8/8/8/8/4p3/4K3 b - - 0 1
+4k3/8/8/8/8/8/3n4/4K3 w - - 0 1

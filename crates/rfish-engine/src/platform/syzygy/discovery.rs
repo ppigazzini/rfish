@@ -1,27 +1,10 @@
-//! The Syzygy endgame tablebase prober.
+//! Resolving a `SyzygyPath` into a set of tables.
 //!
-//! # Status
+//! Kept apart from the prober because it is what the UCI layer needs before any position
+//! exists: the option's effect, the reported cardinality and the "which files am I looking
+//! for" rules are all answerable without reading a byte of table data.
 //!
-//! **Not ported yet.** What is here is the discovery half: the `SyzygyPath` option's
-//! semantics, which files a path is expected to contain, and the maximum cardinality that
-//! follows from them. Probing — the WDL and DTZ decoders, the table registry and the root
-//! ranking — is milestone M5. See `__DEV/PORTING.md`.
-//!
-//! Landing discovery first is not an accident of scope. `SyzygyProbeLimit` and
-//! `Syzygy50MoveRule` are UCI options whose presence and defaults the handshake golden
-//! pins, and the search's step-6 probe is skipped entirely when the cardinality is zero —
-//! which it is until a path is set. So the option surface can be correct, and gated,
-//! before a single table is read.
-//!
-//! # No memory mapping
-//!
-//! Upstream maps each table file into the address space. A mapping is `unsafe` in Rust for
-//! a real reason — the file can be truncated under the map, and the program then reads
-//! unmapped memory — so the prober will read with ordinary positioned file reads instead.
-//! The tables are read a few hundred bytes at a time behind a block cache, which is what
-//! upstream's mapping effectively provides anyway.
-//!
-//! Golden: `Stockfish/src/syzygy/tbprobe.cpp`.
+//! Golden: `Stockfish/src/syzygy/tbprobe.cpp: Tablebases::init`.
 
 use std::path::PathBuf;
 

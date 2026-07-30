@@ -16,7 +16,7 @@ use rfish_engine::board::movegen::{move_to_uci, parse_uci_move, perft_divide};
 use rfish_engine::board::position::{Position, START_FEN};
 use rfish_engine::board::types::Color;
 use rfish_engine::eval::nnue;
-use rfish_engine::platform::syzygy::Tablebases;
+use rfish_engine::platform::syzygy::TableRegistry;
 use rfish_engine::platform::threads::ThreadPool;
 use rfish_engine::search::tt::TranspositionTable;
 use rfish_engine::search::worker::{DepthReport, InfoSink, score_to_uci};
@@ -75,7 +75,7 @@ pub(crate) struct Engine {
     options: Options,
     tt: TranspositionTable,
     pool: ThreadPool,
-    tablebases: Tablebases,
+    tablebases: Option<Arc<TableRegistry>>,
     network: Option<Arc<nnue::Network>>,
 }
 
@@ -98,14 +98,7 @@ impl Engine {
         let options = Options::default();
         let tt = TranspositionTable::new(options.spin("Hash") as usize);
         let pool = ThreadPool::new(options.spin("Threads") as usize);
-        Engine {
-            pos: Position::startpos(),
-            options,
-            tt,
-            pool,
-            tablebases: Tablebases::default(),
-            network: None,
-        }
+        Engine { pos: Position::startpos(), options, tt, pool, tablebases: None, network: None }
     }
 
     /// Handle one command line. Returns `false` on `quit`.
@@ -132,6 +125,18 @@ impl Engine {
             }
             "d" => {
                 let _ = writeln!(out, "{}", self.pos);
+                // The tablebase view of the position, in upstream's own format so a
+                // differential gate can diff the two engines line for line. Printed here
+                // because it is the only place a probe's answer is readable with no search
+                // around it.
+                if let Some(tb) = self.tablebases.as_deref() {
+                    if let Ok(wdl) = tb.probe_wdl(&self.pos) {
+                        let _ = writeln!(out, "Tablebases WDL: {}", wdl as i32);
+                    }
+                    if let Ok(dtz) = tb.probe_dtz(&self.pos) {
+                        let _ = writeln!(out, "Tablebases DTZ: {dtz}");
+                    }
+                }
             }
             "eval" => self.cmd_eval(out),
             "bench" => self.cmd_bench(&rest, out),
@@ -196,19 +201,36 @@ impl Engine {
                 self.pool.clear();
             }
             "threads" => self.pool.resize(self.options.spin("Threads") as usize),
-            "syzygypath" => {
-                self.tablebases = Tablebases::discover(self.options.text("SyzygyPath"));
-                if self.tablebases.is_available() {
-                    let _ = writeln!(
-                        out,
-                        "info string Found tablebases up to {} pieces",
-                        self.tablebases.max_cardinality()
-                    );
+            "syzygypath" | "syzygyprobedepth" | "syzygyprobelimit" | "syzygy50moverule" => {
+                if name.eq_ignore_ascii_case("SyzygyPath") {
+                    let reg = TableRegistry::discover(self.options.text("SyzygyPath"));
+                    if reg.is_empty() {
+                        self.tablebases = None;
+                    } else {
+                        let _ = writeln!(
+                            out,
+                            "info string Found {} tablebases up to {} pieces",
+                            reg.len(),
+                            reg.max_cardinality()
+                        );
+                        self.tablebases = Some(Arc::new(reg));
+                    }
                 }
+                self.apply_tb_options();
             }
             "evalfile" => self.load_network(out),
             _ => {}
         }
+    }
+
+    /// Push the tablebase registry and its bounding options into the pool.
+    fn apply_tb_options(&mut self) {
+        self.pool.set_tablebases(
+            &self.tablebases,
+            self.options.spin("SyzygyProbeDepth") as i32,
+            self.options.spin("SyzygyProbeLimit") as u32,
+            self.options.check("Syzygy50MoveRule"),
+        );
     }
 
     /// Load the network named by `EvalFile`, reporting either way.

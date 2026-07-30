@@ -384,35 +384,94 @@ fn markdown_link_targets(line: &str) -> Vec<&str> {
     out
 }
 
-/// Syzygy discovery: a path holding real tables must be recognised, and one that does not
-/// must leave the search untouched.
+/// The differential Syzygy gate: rfish's WDL verdict and DTZ distance must equal a pristine
+/// upstream build's, position by position.
 ///
-/// The PROBER is not written — see `docs/05-tablebases.md` — so this gate checks the half
-/// that exists, and checks the property that makes the other half's absence safe: with no
-/// path set the cardinality is zero, the search's tablebase step never enters, and the
-/// signature is unaffected.
+/// A tablebase answer is exact, so "close" is meaningless: an index computed one off reads a
+/// different position's entry and returns a confident wrong verdict. Only a differential
+/// comparison catches that, which is why this gate drives both engines rather than pinning
+/// rfish's own output in a golden.
+///
+/// A position where upstream declines to answer — an illegal one, where the side not to move
+/// is in check — is skipped by both sides rather than counted as a mismatch.
+///
+/// Needs the 3-man table set and an upstream binary; either missing is a SKIP.
 pub(crate) fn tb() -> Result<Outcome, String> {
     let engine = build_engine(GATE_PROFILE)?;
     let dir = resources_dir().join("syzygy");
-    if !dir.is_dir() {
+    if !dir.join("KQvK.rtbw").is_file() {
         return Ok(Outcome::Skipped(format!(
-            "{} is absent; fetch the 3-man set into it",
+            "{} holds no tables; fetch the 3-man set into it",
             dir.display()
         )));
     }
 
+    // Discovery first, and the property that makes a missing path safe: no tables, no
+    // effect on the search, so the bench signature cannot move.
     let set = format!("setoption name SyzygyPath value {}", dir.display());
-    let out = drive(&engine, &[&set, "isready"])?;
-    let found = out.lines().find(|l| l.contains("Found tablebases up to"));
-    let Some(line) = found else {
-        return Ok(Outcome::Fail(format!("no tablebases discovered in {}", dir.display())));
-    };
-    println!("tb: {}", line.trim());
-
-    // And the property that makes the missing prober safe: no path, no effect.
+    let found = drive(&engine, &[&set, "isready"])?;
+    if !found.contains("Found 5 tablebases up to 3 pieces") {
+        return Ok(Outcome::Fail(format!("discovery failed in {}", dir.display())));
+    }
     let empty = drive(&engine, &["setoption name SyzygyPath value <empty>", "isready"])?;
-    let quiet = !empty.contains("Found tablebases");
-    Ok(Outcome::check(quiet, "an empty SyzygyPath still reported tablebases"))
+    if empty.contains("Found ") {
+        return Ok(Outcome::Fail("an empty SyzygyPath still reported tablebases".to_string()));
+    }
+
+    let Some(oracle) = find_oracle() else {
+        println!("tb: discovery green; the differential half needs an upstream build");
+        return Ok(Outcome::Skipped(
+            "no upstream binary; build ../Stockfish/src with `make -j build ARCH=x86-64-avx2`"
+                .to_string(),
+        ));
+    };
+    let oracle_dir = oracle.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    let oracle_set = format!("setoption name SyzygyPath value {}", dir.display());
+
+    let path = workspace_root().join("tools/cases/tb.fens");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(Outcome::Skipped(format!("{} does not exist", path.display())));
+    };
+
+    let mut checked = 0;
+    let mut skipped = 0;
+    let mut failures = Vec::new();
+    for fen in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let pos = format!("position fen {fen}");
+        let ours = tb_verdict(&drive(&engine, &[&set, &pos, "d"])?);
+        let theirs = tb_verdict(&drive_at(&oracle, &oracle_dir, &[&oracle_set, &pos, "d"])?);
+        if theirs.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        checked += 1;
+        if ours != theirs {
+            failures.push(format!("{fen}: rfish {ours:?} != upstream {theirs:?}"));
+        }
+    }
+
+    for f in failures.iter().take(8) {
+        eprintln!("  {f}");
+    }
+    println!(
+        "tb: {} of {checked} positions match upstream on WDL and DTZ ({skipped} illegal, skipped)",
+        checked - failures.len()
+    );
+    Ok(Outcome::check(failures.is_empty(), format!("{} tablebase mismatches", failures.len())))
+}
+
+/// The WDL verdict and DTZ distance an engine's `d` output reported, in order.
+fn tb_verdict(out: &str) -> Vec<i64> {
+    out.lines()
+        .filter(|l| {
+            l.trim_start().starts_with("Tablebases WDL:")
+                || l.trim_start().starts_with("Tablebases DTZ:")
+        })
+        .filter_map(|l| {
+            // Upstream appends a parenthesised rank; take the first number only.
+            l.split(':').nth(1)?.split_whitespace().next()?.parse().ok()
+        })
+        .collect()
 }
 
 /// The differential NNUE gate: rfish's raw network output must equal upstream's, exactly.

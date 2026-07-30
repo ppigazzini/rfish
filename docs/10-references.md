@@ -53,4 +53,4 @@ They are **not** goldens. The differential reference is always upstream.
   several places and were reproduced here against a pristine upstream build. They are facts
   about chess, not about any engine.
 - **Syzygy tablebases** — <https://github.com/syzygy1/tb>. The table format and the naming
-  convention `crates/rfish-engine/src/platform/syzygy.rs` recognises.
+  convention the prober in `crates/rfish-engine/src/platform/syzygy/` recognises.

@@ -67,10 +67,12 @@ impl ThreadPool {
         // A new worker inherits whatever network the pool is using, or `Threads 4` after
         // `EvalFile` would leave three workers evaluating with the classical fallback.
         let network = self.workers.first().and_then(SearchWorker::network);
+        let tb = self.workers.first().and_then(SearchWorker::tablebases);
         self.workers.truncate(n);
         while self.workers.len() < n {
             let mut w = SearchWorker::new(self.workers.len(), Arc::clone(&self.shared));
             w.set_network(network.clone());
+            w.set_tablebases(tb.clone());
             self.workers.push(w);
         }
     }
@@ -100,6 +102,21 @@ impl ThreadPool {
     pub fn set_network(&mut self, network: &Option<Arc<Network>>) {
         for w in &mut self.workers {
             w.set_network(network.clone());
+        }
+    }
+
+    /// Point every worker at a tablebase registry, and at the option values that bound
+    /// when it is consulted.
+    pub fn set_tablebases(
+        &mut self,
+        tb: &Option<Arc<crate::platform::syzygy::TableRegistry>>,
+        probe_depth: i32,
+        probe_limit: u32,
+        use_rule50: bool,
+    ) {
+        for w in &mut self.workers {
+            w.set_tablebases(tb.clone());
+            w.set_tb_limits(probe_depth, probe_limit, use_rule50);
         }
     }
 
