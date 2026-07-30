@@ -163,7 +163,7 @@ works because release wraps a bare `+` will pass `cargo xtask signature` and fai
 
 ---
 
-## 8. SIMD, and why there is none yet
+## 8. SIMD: what the constraint actually cost
 
 Upstream's NNUE kernels are hand-written intrinsics behind `#if` per instruction set.
 `std::arch` intrinsics are `unsafe` in Rust; `std::simd` is nightly. Both are out.
@@ -172,11 +172,18 @@ What is in: **ordinary loops over fixed-size arrays**, which LLVM vectorises und
 `-C target-cpu`. `cargo xtask build --arch <tier>` sets it; the default build sets nothing,
 because the bench anchor has to be reproducible on a machine nobody here owns.
 
-**This is untested, because the NNUE forward pass is not written yet.** When it lands, the
-first measurement is autovectorised-scalar against upstream's intrinsics at the same tier,
-and the answer goes in this section. Do not assume in advance which way it goes, and do not
-propose a dependency on a SIMD crate before it has been measured — the whole point is to
-find out.
+**The forward pass is bit-exact with upstream** — `cargo xtask nnue-check` proves it
+position by position. So the arithmetic cost nothing; only the speed did.
+
+And most of the speed gap is NOT the missing intrinsics. rfish recomputes the accumulator
+from scratch per evaluation where upstream updates it incrementally, and that alone accounts
+for the bulk of an eleven-fold nodes-per-second difference. Until the incremental path
+lands, an intrinsics-versus-autovectorisation comparison would be measuring the wrong thing:
+both sides would be dominated by a term only one of them pays.
+
+**So the honest state is: the constraint has not yet been shown to cost anything on this
+axis, because a larger algorithmic difference is in the way.** Do not cite this section as
+evidence either direction until the accumulator is incremental.
 
 ---
 
@@ -213,6 +220,8 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | Idea | Status |
 |---|---|
 | `std::simd` / `stdarch` intrinsics for the NNUE kernels | **Rejected by constraint**, not by measurement — nightly and `unsafe` respectively. Not a measurement result; do not cite it as one. |
+| Comparing autovectorised NNUE kernels against upstream's intrinsics | **Premature.** The from-scratch accumulator dominates, so the comparison would measure that instead. Do it after the incremental path lands. |
+| Optimising the classical evaluation | **Pointless.** It runs only when no net is on disk, and it has a deletion date. |
 | `memmap2` for the Syzygy tables | **Rejected.** The crate's soundness contract cannot be met (a table file can be truncated under the map), and positioned reads behind a block cache give what the mapping actually provides. |
 | Const-evaluating the magic tables | **Not attempted.** 88 772 entries with a subset enumeration each is far more const-eval than the Zobrist tables' ~800 draws; `LazyLock` costs one predicted branch per lookup. Measure before changing. |
 | Making `Bitboard::iter` borrow instead of copy | **Rejected by design.** Iterating by value is what lets a loop mutate the board it came from, which is upstream's `while (b) pop_lsb(b)` over a local with the local made explicit. |

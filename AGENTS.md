@@ -37,11 +37,17 @@ disagree, Stockfish wins.
 Do not document, gate, or optimise around the current shape as if it were the intended end
 state. Check the state against the tree before acting on it:
 
-- **NNUE** — **not ported.** `crates/rfish-engine/src/eval/nnue.rs` is the file format and
-  the loader; the forward pass, the feature transformer and the incremental accumulator are
-  not written. `crates/rfish-engine/src/eval/classical.rs` is **scaffolding with a
-  scheduled deletion date**: do not tune it, do not extend it, and do not let it acquire
-  callers NNUE will not satisfy. This is milestone M3.
+- **NNUE** — **ported, and bit-exact.** All three feature sets, the feature transformer,
+  the PSQT head and the eight output stacks are in
+  `crates/rfish-engine/src/eval/nnue/`, and `cargo xtask nnue-check` proves the raw network
+  output equals a pristine upstream build's on every position in `tools/cases/eval.fens`.
+  What is NOT done is the **incremental accumulator**: the accumulator is recomputed from
+  scratch per evaluation, which is correct and roughly an order of magnitude slower than
+  upstream. That is the open half of M3, and it needs the board zone to maintain a per-move
+  threat delta first.
+  `crates/rfish-engine/src/eval/classical.rs` is now only the fallback for a run with NO net
+  on disk. It is **scaffolding with a scheduled deletion date**: do not tune it, do not
+  extend it, and do not let it acquire callers NNUE will not satisfy.
 - **Syzygy** — **discovery only.** `crates/rfish-engine/src/platform/syzygy.rs` resolves a
   `SyzygyPath`, recognises table names and reports a maximum cardinality. There is no
   prober. With no path set the cardinality is 0 and the search's tablebase step never
@@ -53,11 +59,11 @@ state. Check the state against the tree before acting on it:
   handshake golden pins it byte for byte. `UCI_LimitStrength`, `UCI_Elo` and `nodestime`
   are **declared but not acted on**; the rest are wired.
 
-`tools/signature.golden` is **rfish's own number**, not upstream's, and it is measured at
-the depth `cargo xtask signature` uses rather than upstream's 13 — the classical
-scaffolding prunes far worse, and depth 13 over the full list takes hours. Raise the depth
-in the same commit that lands NNUE. Read both facts from
-`crates/xtask/src/gates.rs` and the golden's own header, never from prose.
+`tools/signature.golden` is **rfish's own number**, not upstream's. It is now measured at
+upstream's own depth 13 — that became affordable when NNUE landed and the tree stopped
+being enormous — but the COUNT still differs, because the search's pruning constants are not
+upstream's yet. Read the depth from `crates/xtask/src/gates.rs` and the number from the
+golden's own header, never from prose.
 
 ## Setup
 
@@ -95,7 +101,8 @@ ports. Run it unpiped, or redirect to a log and test `$?`.
 |---|---|
 | `signature-update` / `golden-update` on a **red** gate launders a bug into the anchor. Fix the code, then re-derive. | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | `tools/perft.table` is **not** a golden. Those counts are facts about chess; a mismatch is always a movegen bug. | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| The engine must run from `resources/` — it looks for its net relative to the working directory, and a run from the repo root silently finds none. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
+| The engine must run from `resources/` — it looks for its net relative to the working directory, and a run from the repo root silently finds none, falls back to the classical scaffolding, and reports a node count that looks entirely plausible. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
+| A measurement without a net is a measurement of a different engine. Check for the `info string NNUE evaluation using …` line before believing any node count. | [docs/03-engine-eval.md](docs/03-engine-eval.md) |
 | Release builds have `overflow-checks = false`; every intended wrap says `wrapping_*` in the source. A bare `+` that wraps in release and traps in `gate` is a bug the gate profile is there to catch. | [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) |
 | The default build sets no `-C target-cpu`. `cargo xtask build --arch <tier>` does, and it changes what the NNUE loops vectorise to — so a perf number without its tier is not a number. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
 | "Improving" on upstream. A cleaner formulation that moves a rounding boundary moves the node count. | [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) |

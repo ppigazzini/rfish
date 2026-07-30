@@ -66,6 +66,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "golden-update" => gates::golden(true),
         "docs-lint" => gates::docs_lint(),
         "unsafe-lint" => gates::unsafe_lint(),
+        "nnue-check" => gates::nnue_check(),
         "net" => net::fetch(args),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
@@ -92,6 +93,7 @@ cargo xtask <step> — the rfish build driver
     clippy                cargo clippy -D warnings
     docs-lint             no dead doc links, no named paths that do not exist
     unsafe-lint           no `unsafe` and no allow(unsafe_code) anywhere
+    nnue-check            the network's output equals upstream's, position by position
 
   Regenerate a golden — DANGEROUS, read CONTRIBUTING.md first
     signature-update      re-derive tools/signature.golden

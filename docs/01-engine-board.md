@@ -119,6 +119,12 @@ a bug here.
 
 ## What is not here yet
 
-- **Threat deltas.** The current NNUE feature set reads a per-move threat delta that
-  `Position::do_move` would have to maintain. Nothing computes it, because nothing consumes
-  it. It lands with M3.
+- **Threat deltas.** The NNUE feature transformer could be updated incrementally if
+  `do_move` recorded which threat and pawn-pair features a move creates and destroys.
+  Nothing computes it, so [03-engine-eval.md](03-engine-eval.md)'s accumulator is rebuilt
+  from scratch every evaluation — which is correct, and roughly an order of magnitude slower
+  than upstream.
+
+  This is the single largest remaining performance item in the whole port, and it lives
+  here rather than in the evaluation zone: the evaluation cannot become incremental until
+  the board tells it what changed.

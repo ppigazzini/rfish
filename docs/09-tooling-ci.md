@@ -34,7 +34,8 @@ from the passes, and never counts one as green.
 Listed in the order `parity` runs them. See [CONTRIBUTING.md](../CONTRIBUTING.md) for what
 each asserts.
 
-`fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `test` → `perft` → `golden` → `signature`
+`fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `test` → `perft` → `golden` → `nnue-check`
+→ `signature`
 
 Cheap and structural first, so a formatting mistake is reported in seconds rather than
 after a two-minute bench.
@@ -66,6 +67,22 @@ Each `tools/cases/*.uci` script is driven into the engine and its output compare
 Lines whose content depends on the clock or the machine are filtered before comparison —
 `info depth`, `Total time`, `Nodes/second`, the compiler banner. Without that filter every
 golden would be a record of one machine's timing rather than of the engine's behaviour.
+
+### `nnue-check`
+
+The differential evaluation gate, and the one that says the NNUE port is a PORT rather than
+an approximation. It drives rfish and a pristine upstream build over the same positions and
+compares the RAW network output — the number upstream's `eval` prints as "internal units".
+
+Comparing final evaluations would not do: the optimism blend and the fifty-move damping sit
+on top and would mask a forward-pass error.
+
+It needs two things a fresh clone does not have — the 90 MiB net (`cargo xtask net`) and an
+upstream binary (`cd ../Stockfish/src && make -j build ARCH=x86-64-avx2`) — and reports
+SKIPPED for either. **It is deliberately not a CI step**: a gate that can only skip in CI
+teaches contributors to ignore a skip. `parity` names it when it could not run.
+
+Positions in check are excluded, because upstream's `eval` refuses to score one.
 
 ### `docs-lint`
 
@@ -138,7 +155,7 @@ The lanes:
 |---|---|
 | `lint` | `fmt`, `clippy`, `unsafe-lint`, `docs-lint` |
 | `test` | `cargo xtask test` on three platforms |
-| `gates` | `perft`, `golden`, `signature` on Linux |
+| `gates` | `net`, `perft`, `golden`, `signature` on Linux |
 | `msrv` | the crate builds on the declared minimum Rust version |
 
 `pre-commit` wires the fast half of the same set to run before a commit exists.

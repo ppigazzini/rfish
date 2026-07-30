@@ -8,10 +8,13 @@ The goal is a **bit-exact 1:1 clone**: the same `bench` node signature, the same
 NNUE evaluation, Syzygy tablebases and Lazy-SMP threading. `../Stockfish` is the **golden**
 — where rfish and Stockfish disagree, Stockfish wins.
 
-**The port is in progress.** The board, the search, the transposition table, the threads
-and the UCI shell are written and gated; the NNUE forward pass and the Syzygy prober are
-not. Run `cargo xtask parity` for the current state of every gate, and see
-[docs/](docs/README.md) for what each zone does and does not do yet.
+**The port is in progress.** The board, the search, the transposition table, the threads,
+the UCI shell and the **NNUE evaluation** are written and gated — `cargo xtask nnue-check`
+proves the network's output is identical to a pristine upstream build's, position by
+position. The Syzygy prober is not written, and the NNUE accumulator is recomputed rather
+than updated incrementally, which costs about an order of magnitude in speed. Run
+`cargo xtask parity` for the current state of every gate, and see [docs/](docs/README.md)
+for what each zone does and does not do yet.
 
 ## Why safe Rust
 
@@ -25,7 +28,7 @@ same idea another way:
 | an unsynchronised 10-byte transposition entry | atomic words, `Relaxed` — the same race, defined |
 | a persistent thread pool holding raw worker pointers | `std::thread::scope`, one lend per search |
 | `mmap` of each Syzygy table | positioned file reads |
-| SIMD intrinsics in the NNUE kernels | loops over fixed-size arrays, autovectorised |
+| SIMD intrinsics in the NNUE kernels | loops over fixed-size arrays, autovectorised — **bit-exact with upstream** |
 
 None of those are workarounds. Each removes a class of bug the C++ has to avoid by
 convention — a dangling `StateInfo`, a worker outliving its data, a table truncated under

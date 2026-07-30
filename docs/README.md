@@ -11,7 +11,7 @@ Read in order. Each page owns a zone of the source and is the live claim about i
 | [00-architecture.md](00-architecture.md) | the zone split, the crate boundary, the dependency direction |
 | [01-engine-board.md](01-engine-board.md) | `crates/rfish-engine/src/board/` — types, bitboards, attacks, position, movegen |
 | [02-engine-search.md](02-engine-search.md) | `crates/rfish-engine/src/search/` — TT, histories, move picker, search, time |
-| [03-engine-eval.md](03-engine-eval.md) | `crates/rfish-engine/src/eval/` — the network loader and the classical scaffolding |
+| [03-engine-eval.md](03-engine-eval.md) | `crates/rfish-engine/src/eval/` — the NNUE forward pass and the classical fallback |
 | [04-multithreading.md](04-multithreading.md) | `crates/rfish-engine/src/platform/threads.rs` — Lazy-SMP without a pool |
 | [05-tablebases.md](05-tablebases.md) | `crates/rfish-engine/src/platform/syzygy.rs` — discovery today, probing later |
 | [06-platform.md](06-platform.md) | what the platform layer deliberately does NOT contain |

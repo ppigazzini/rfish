@@ -80,7 +80,19 @@ pub(crate) fn cargo() -> String {
 /// live. Running it from the repository root would find no net and produce an unrelated
 /// number — and the number would look plausible.
 pub(crate) fn drive(engine: &std::path::Path, script: &[&str]) -> Result<String, String> {
-    let cwd = crate::resources_dir();
+    drive_at(engine, &crate::resources_dir(), script)
+}
+
+/// Feed `script` to a binary running from `cwd`.
+///
+/// The oracle keeps its net beside itself rather than in this repository's `resources/`, so
+/// a differential gate has to be able to say where each side runs.
+pub(crate) fn drive_at(
+    engine: &std::path::Path,
+    cwd: &std::path::Path,
+    script: &[&str],
+) -> Result<String, String> {
+    let cwd = cwd.to_path_buf();
     std::fs::create_dir_all(&cwd).map_err(|e| format!("{}: {e}", cwd.display()))?;
 
     let mut child = Command::new(engine)

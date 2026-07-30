@@ -61,8 +61,8 @@ fn rfish_default_net() -> &'static str {
     // xtask deliberately does not depend on the engine crate -- a gate that needs the thing
     // it is checking in order to build is a gate that cannot report a build failure. The
     // name is read from the source instead, at the one place it is defined.
-    const FALLBACK: &str = "nn-0ee0657fb25e.nnue";
-    let path = crate::workspace_root().join("crates/rfish-engine/src/eval/nnue.rs");
+    const FALLBACK: &str = "nn-ab28990d4ea3.nnue";
+    let path = crate::workspace_root().join("crates/rfish-engine/src/eval/nnue/mod.rs");
     let Ok(text) = std::fs::read_to_string(path) else { return FALLBACK };
     text.lines()
         .find_map(|l| {
@@ -97,7 +97,7 @@ mod tests {
     /// wrong in the same manner.
     fn rfish_engine_default_net_literal() -> String {
         let text = std::fs::read_to_string(
-            crate::workspace_root().join("crates/rfish-engine/src/eval/nnue.rs"),
+            crate::workspace_root().join("crates/rfish-engine/src/eval/nnue/mod.rs"),
         )
         .expect("the nnue module exists");
         let line = text

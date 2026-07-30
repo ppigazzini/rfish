@@ -22,7 +22,12 @@ fn main() {
     if !args.is_empty() {
         // Arguments form ONE command line, so `stockfish bench 16 1 13` works. A second
         // command needs a second invocation, or standard input.
+        // The network is loaded here too, not only on the interactive path. Forgetting it
+        // makes `stockfish bench` measure the classical fallback while reporting a node
+        // count that looks entirely plausible -- exactly the kind of wrong number an anchor
+        // must never be derived from.
         let mut engine = uci::Engine::new();
+        engine.load_network(&mut out);
         let line = args.join(" ");
         engine.handle(&line, &mut out);
         let _ = out.flush();

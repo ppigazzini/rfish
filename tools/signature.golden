@@ -1,4 +1,4 @@
-# rfish bench node signature: the full default entry list at depth 7,
+# rfish bench node signature: the full default entry list at depth 13,
 # Threads 1, Hash 16, and a SINGLE table clear before the run -- the table and
 # the history block carry across positions. Every one of those four facts changes
 # the number; see crates/rfish/src/bench.rs.
@@ -9,4 +9,4 @@
 #
 # Regenerate ONLY for an intended behaviour change, and say what moved it in
 # the commit body. Updating this on a red gate launders a bug into the anchor.
-107390014
+2070797

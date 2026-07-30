@@ -18,23 +18,57 @@ pub mod nnue;
 
 use crate::board::position::Position;
 use crate::board::types::{
-    Color, VALUE_DRAW, VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY, Value,
+    Color, PieceType, VALUE_DRAW, VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY, Value,
 };
 
 /// The static evaluation of `pos`, from the side to move's point of view.
 ///
-/// `optimism` is the search's per-colour optimism term. It is threaded through even though
-/// the classical scaffolding ignores it, because the NNUE path blends it into the final
-/// score and the call sites must not have to change when that path lands.
+/// `optimism` is the search's per-colour optimism term, and it is not a decoration: the
+/// blend below scales it by how much the network's two heads DISAGREE, so a position the
+/// network is unsure about lets the search's own expectation weigh more.
+///
+/// With no network resident this falls back to [`classical`], which ignores both.
 #[must_use]
-pub fn evaluate(pos: &Position, optimism: [Value; 2]) -> Value {
-    let _ = optimism;
-    let v = classical::evaluate(pos);
+pub fn evaluate(
+    pos: &Position,
+    network: Option<&nnue::Network>,
+    scratch: &mut nnue::Scratch,
+    optimism: Value,
+) -> Value {
+    let v = match network {
+        Some(net) => nnue_value(pos, net, scratch, optimism),
+        None => classical::evaluate(pos),
+    };
 
     // Damp the score as the fifty-move counter runs out: a winning position that cannot be
     // converted in the remaining plies is not worth its material.
-    let v = v * (200 - pos.rule50_count()) / 200;
+    let v = v - v * pos.rule50_count() / 199;
     v.clamp(VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1)
+}
+
+/// Upstream's blend of the two network heads with the search's optimism.
+///
+/// Every constant is upstream's and every one was fitted against this network; changing one
+/// is a strength change, not a refactor.
+fn nnue_value(
+    pos: &Position,
+    net: &nnue::Network,
+    scratch: &mut nnue::Scratch,
+    optimism: Value,
+) -> Value {
+    let out = net.evaluate(pos, scratch);
+    let mut nnue = i64::from(out.psqt + out.positional);
+    let mut optimism = i64::from(optimism);
+
+    // How far apart the material head and the positional head are. A large gap means the
+    // position is sharp, and both terms below react to it.
+    let complexity = i64::from((out.psqt - out.positional).abs());
+    optimism += optimism * complexity / 476;
+    nnue -= nnue * complexity / 18236;
+
+    let material =
+        534 * i64::from(pos.count_both(PieceType::Pawn)) + i64::from(pos.non_pawn_material_total());
+    ((nnue * (77871 + material) + optimism * (7191 + material)) / 77871) as Value
 }
 
 /// True when neither side has enough material to force mate.
@@ -79,10 +113,16 @@ mod tests {
     use super::*;
     use crate::board::position::START_FEN;
 
+    /// Evaluate with no network, which is the fallback path.
+    fn eval_classical(pos: &Position) -> Value {
+        let mut scratch = nnue::Scratch::default();
+        evaluate(pos, None, &mut scratch, 0)
+    }
+
     #[test]
     fn the_start_position_is_close_to_equal() {
         let pos = Position::from_fen(START_FEN, false).expect("valid");
-        let v = evaluate(&pos, [0, 0]);
+        let v = eval_classical(&pos);
         assert!(v.abs() < 100, "start position scored {v}");
     }
 
@@ -98,7 +138,7 @@ mod tests {
         for (a, b) in pairs {
             let pa = Position::from_fen(a, false).expect("valid");
             let pb = Position::from_fen(b, false).expect("valid");
-            assert_eq!(evaluate(&pa, [0, 0]), evaluate(&pb, [0, 0]), "{a} vs {b}");
+            assert_eq!(eval_classical(&pa), eval_classical(&pb), "{a} vs {b}");
         }
     }
 
@@ -106,8 +146,8 @@ mod tests {
     fn an_extra_queen_is_worth_more_than_an_extra_pawn() {
         let pawn = Position::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1", false).expect("valid");
         let queen = Position::from_fen("4k3/8/8/8/8/8/3Q4/4K3 w - - 0 1", false).expect("valid");
-        assert!(evaluate(&queen, [0, 0]) > evaluate(&pawn, [0, 0]));
-        assert!(evaluate(&pawn, [0, 0]) > 0);
+        assert!(eval_classical(&queen) > eval_classical(&pawn));
+        assert!(eval_classical(&pawn) > 0);
     }
 
     #[test]
@@ -130,6 +170,6 @@ mod tests {
     fn the_rule50_damping_shrinks_an_advantage() {
         let fresh = Position::from_fen("4k3/8/8/8/8/8/3Q4/4K3 w - - 0 1", false).expect("valid");
         let stale = Position::from_fen("4k3/8/8/8/8/8/3Q4/4K3 w - - 90 60", false).expect("valid");
-        assert!(evaluate(&stale, [0, 0]) < evaluate(&fresh, [0, 0]));
+        assert!(eval_classical(&stale) < eval_classical(&fresh));
     }
 }

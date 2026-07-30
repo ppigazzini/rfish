@@ -6,20 +6,21 @@
 
 use std::process::Command;
 
-use crate::runner::{GATE_PROFILE, Outcome, build_engine, cargo, drive, engine_path, node_total};
-use crate::{capture, have, run, workspace_root};
+use crate::runner::{
+    GATE_PROFILE, Outcome, build_engine, cargo, drive, drive_at, engine_path, node_total,
+};
+use crate::{capture, have, resources_dir, run, workspace_root};
 
 /// The bench depth the signature gate uses.
 ///
-/// **Not upstream's 13.** rfish evaluates with the classical scaffolding until milestone M3
-/// lands NNUE, and a scaffolding evaluation prunes far worse — depth 13 over the full list
-/// takes hours rather than seconds. Seven is the depth at which the gate still runs in
-/// under a minute, which is the property that decides whether anyone runs it.
+/// **Upstream's own 13.** It was lower while the evaluation was the classical scaffolding,
+/// which prunes far worse; with the NNUE forward pass resident the whole list runs at depth
+/// 13 in well under a minute, so the anchor is now measured where upstream measures it.
 ///
-/// Raise it to 13 in the SAME commit that lands the NNUE forward pass, and re-derive the
-/// golden then. Until that happens `tools/signature.golden` is rfish's own number, not
-/// upstream's; see `__DEV/PORTING.md`, "Two different numbers".
-const SIGNATURE_DEPTH: &str = "7";
+/// The NUMBER still differs from upstream's, because the search's pruning constants are not
+/// upstream's yet. `tools/signature.golden` is therefore rfish's own count at upstream's
+/// depth — see `__DEV/PORTING.md`, "Two different numbers".
+const SIGNATURE_DEPTH: &str = "13";
 const SIGNATURE_HASH: &str = "16";
 const SIGNATURE_THREADS: &str = "1";
 
@@ -383,6 +384,90 @@ fn markdown_link_targets(line: &str) -> Vec<&str> {
     out
 }
 
+/// The differential NNUE gate: rfish's raw network output must equal upstream's, exactly.
+///
+/// This is the gate that says the evaluation is a PORT rather than an approximation. It
+/// drives both engines over the same positions and compares the number upstream's `eval`
+/// prints as "internal units" — the network alone, with no optimism blend and no fifty-move
+/// damping on top, so a mismatch localises to the forward pass rather than to the terms
+/// around it.
+///
+/// Requires a built upstream binary and a net. Either missing is a SKIP, not a failure: a
+/// contributor without a 90 MiB download still gets every other gate.
+pub(crate) fn nnue_check() -> Result<Outcome, String> {
+    let engine = build_engine(GATE_PROFILE)?;
+    let net = resources_dir().join(default_net_name());
+    if !net.is_file() {
+        return Ok(Outcome::Skipped(format!("{} is absent; run `cargo xtask net`", net.display())));
+    }
+    let Some(oracle) = find_oracle() else {
+        return Ok(Outcome::Skipped(
+            "no upstream binary; build ../Stockfish/src with `make -j build ARCH=x86-64-avx2`"
+                .to_string(),
+        ));
+    };
+    let oracle_dir = oracle.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+
+    let path = workspace_root().join("tools/cases/eval.fens");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(Outcome::Skipped(format!("{} does not exist", path.display())));
+    };
+
+    let mut checked = 0;
+    let mut failures = Vec::new();
+    for fen in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let script = [format!("position fen {fen}"), "eval".to_string()];
+        let refs: Vec<&str> = script.iter().map(String::as_str).collect();
+        let ours = internal_units(&drive(&engine, &refs)?);
+        let theirs = internal_units(&drive_at(&oracle, &oracle_dir, &refs)?);
+        // Upstream refuses to evaluate a position in check, so one where it declines is a
+        // position neither side scores -- not a mismatch.
+        if theirs.is_none() {
+            continue;
+        }
+        checked += 1;
+        if ours != theirs {
+            failures.push(format!("{fen}: rfish {ours:?} != upstream {theirs:?}"));
+        }
+    }
+
+    for f in failures.iter().take(8) {
+        eprintln!("  {f}");
+    }
+    println!(
+        "nnue-check: {} of {checked} positions match upstream exactly",
+        checked - failures.len()
+    );
+    Ok(Outcome::check(failures.is_empty(), format!("{} evaluation mismatches", failures.len())))
+}
+
+/// The raw network output an `eval` printed, in upstream's internal units.
+fn internal_units(out: &str) -> Option<i64> {
+    out.lines()
+        .find(|l| l.trim_start().starts_with("NNUE evaluation"))
+        .and_then(|l| l.split_whitespace().nth(2))
+        .and_then(|w| w.trim_start_matches('+').parse().ok())
+}
+
+/// A pristine upstream binary, if one has been built.
+fn find_oracle() -> Option<std::path::PathBuf> {
+    let src = workspace_root().parent()?.join("Stockfish/src");
+    ["stockfish-new", "stockfish"].iter().map(|n| src.join(n)).find(|p| p.is_file())
+}
+
+/// The net name the engine looks for, read from its own constant.
+fn default_net_name() -> String {
+    let path = workspace_root().join("crates/rfish-engine/src/eval/nnue/mod.rs");
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find(|l| l.trim_start().starts_with("pub const DEFAULT_NET"))
+                .and_then(|l| l.split('"').nth(1).map(str::to_string))
+        })
+        .unwrap_or_default()
+}
+
 /// The port's defining constraint: no `unsafe` anywhere, and no way to re-enable it.
 ///
 /// `#![forbid(unsafe_code)]` in the workspace manifest already makes the compiler reject
@@ -469,6 +554,7 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         ("test", test),
         ("perft", perft),
         ("golden", || golden(false)),
+        ("nnue-check", nnue_check),
         ("signature", || signature(false)),
     ];
 

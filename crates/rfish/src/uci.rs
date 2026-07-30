@@ -9,6 +9,7 @@
 
 use std::fmt::Write as _;
 use std::io::{BufRead, Write};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rfish_engine::board::movegen::{move_to_uci, parse_uci_move, perft_divide};
@@ -75,7 +76,7 @@ pub(crate) struct Engine {
     tt: TranspositionTable,
     pool: ThreadPool,
     tablebases: Tablebases,
-    network: Option<nnue::Network>,
+    network: Option<Arc<nnue::Network>>,
 }
 
 impl core::fmt::Debug for Engine {
@@ -214,20 +215,29 @@ impl Engine {
     ///
     /// A missing net is NOT an error: rfish runs on the classical scaffolding and says so,
     /// which is what makes every gate above the evaluation runnable before M3 lands.
-    fn load_network(&mut self, out: &mut impl Write) {
+    pub(crate) fn load_network(&mut self, out: &mut impl Write) {
         let name = self.options.text("EvalFile").to_string();
-        self.network = nnue::find_and_load(&name);
-        match &self.network {
-            Some(net) => {
-                let _ = writeln!(out, "info string NNUE evaluation using {} (loaded)", net.name());
+        self.network = match nnue::find_and_load(&name) {
+            Some(Ok(net)) => {
+                let _ = writeln!(out, "info string NNUE evaluation using {}", net.name());
+                Some(Arc::new(net))
+            }
+            // A file that exists but does not load is reported as the failure it is. Falling
+            // back silently would leave the engine playing on the scaffolding while the user
+            // believes it has its evaluation.
+            Some(Err(e)) => {
+                let _ = writeln!(out, "info string Failed to load {name}: {e}");
+                None
             }
             None => {
                 let _ = writeln!(
                     out,
                     "info string NNUE file {name} not found; using the classical evaluation"
                 );
+                None
             }
-        }
+        };
+        self.pool.set_network(&self.network);
     }
 
     fn cmd_newgame(&mut self) {
@@ -346,13 +356,29 @@ impl Engine {
     }
 
     fn cmd_eval(&self, out: &mut impl Write) {
-        let v = rfish_engine::eval::evaluate(&self.pos, [0, 0]);
-        let source = if self.network.is_some() { "NNUE" } else { "classical" };
         let _ = writeln!(out, "\n{}", self.pos);
+        let mut scratch = nnue::Scratch::default();
+
+        // The raw network output, in the internal units upstream's `eval` prints. This is
+        // the number the differential gate compares: it is the network alone, with no
+        // optimism blend and no fifty-move damping on top, so a mismatch localises to the
+        // forward pass rather than to the terms around it.
+        if let Some(net) = self.network.as_deref() {
+            let raw = net.evaluate(&self.pos, &mut scratch);
+            let _ = writeln!(
+                out,
+                "\nNNUE evaluation  {:+} (side to move, internal units)",
+                raw.psqt + raw.positional
+            );
+        }
+
+        let v = rfish_engine::eval::evaluate(&self.pos, self.network.as_deref(), &mut scratch, 0);
+        let source = if self.network.is_some() { "NNUE" } else { "classical" };
+        let white = if self.pos.side_to_move() == Color::White { v } else { -v };
         let _ = writeln!(
             out,
-            "\nFinal evaluation: {:+.2} ({source}, white side)",
-            f64::from(if self.pos.side_to_move() == Color::White { v } else { -v }) / 208.0
+            "Final evaluation  {:+.2} ({source}, white side)",
+            f64::from(white) / 208.0
         );
     }
 
@@ -569,11 +595,13 @@ mod tests {
         assert!(!engine.handle("quit", &mut out));
     }
 
+    /// The `eval` output names WHICH evaluation produced the number. A run without a net
+    /// is not a failure, but it is a different engine, and the output has to say so.
     #[test]
     fn eval_prints_a_number_and_names_its_source() {
         let out = drive(&["position startpos", "eval"]);
-        assert!(out.contains("Final evaluation:"));
-        assert!(out.contains("classical") || out.contains("NNUE"));
+        assert!(out.contains("Final evaluation"), "{out}");
+        assert!(out.contains("classical") || out.contains("NNUE"), "{out}");
     }
 
     #[test]

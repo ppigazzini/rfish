@@ -24,6 +24,7 @@
 use std::sync::Arc;
 
 use crate::board::position::Position;
+use crate::eval::nnue::Network;
 use crate::search::tt::TranspositionTable;
 use crate::search::worker::{InfoSink, SearchResult, SearchWorker, SilentSink};
 use crate::state::{Limits, SharedState};
@@ -62,9 +63,14 @@ impl ThreadPool {
         if n == self.workers.len() {
             return;
         }
+        // A new worker inherits whatever network the pool is using, or `Threads 4` after
+        // `EvalFile` would leave three workers evaluating with the classical fallback.
+        let network = self.workers.first().and_then(SearchWorker::network);
         self.workers.truncate(n);
         while self.workers.len() < n {
-            self.workers.push(SearchWorker::new(self.workers.len(), Arc::clone(&self.shared)));
+            let mut w = SearchWorker::new(self.workers.len(), Arc::clone(&self.shared));
+            w.set_network(network.clone());
+            self.workers.push(w);
         }
     }
 
@@ -84,6 +90,16 @@ impl ThreadPool {
     #[must_use]
     pub fn shared(&self) -> &Arc<SharedState> {
         &self.shared
+    }
+
+    /// Point every worker at `network`, or at none.
+    ///
+    /// One `Arc`, N workers: the weights are read-only for the whole search, so a clone per
+    /// thread would cost 112 MiB each for nothing.
+    pub fn set_network(&mut self, network: &Option<Arc<Network>>) {
+        for w in &mut self.workers {
+            w.set_network(network.clone());
+        }
     }
 
     /// Forget every history on every thread. Called on `ucinewgame`.

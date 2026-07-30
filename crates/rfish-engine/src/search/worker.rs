@@ -26,6 +26,7 @@ use crate::board::types::{
     VALUE_MATED_IN_MAX_PLY, VALUE_NONE, Value, mated_in, piece_value,
 };
 use crate::eval;
+use crate::eval::nnue::{Network, Scratch};
 use crate::state::{Limits, RootMove, STACK_BASE, STACK_SIZE, SharedState, StackEntry, TimeBudget};
 
 use super::history::{Histories, stat_bonus, stat_malus};
@@ -105,6 +106,11 @@ pub struct SearchWorker {
     /// How often the best root move changed, decayed each iteration. High values buy time.
     best_move_changes: f64,
     optimism: [Value; 2],
+    /// The network, shared read-only across every thread. `None` runs the classical
+    /// fallback, which is what a run with no net on disk does.
+    network: Option<Arc<Network>>,
+    /// Per-thread evaluation buffers, so a search allocates nothing per node.
+    scratch: Scratch,
 }
 
 impl core::fmt::Debug for SearchWorker {
@@ -142,7 +148,31 @@ impl SearchWorker {
             multi_pv: 1,
             best_move_changes: 0.0,
             optimism: [0; 2],
+            network: None,
+            scratch: Scratch::default(),
         }
+    }
+
+    /// Point this worker at a network, or at none.
+    ///
+    /// Shared by `Arc`: the weights are around 112 MiB and read-only for the whole search,
+    /// so every thread points at one copy. Upstream replicates them per NUMA node instead;
+    /// see `docs/04-multithreading.md`.
+    pub fn set_network(&mut self, network: Option<Arc<Network>>) {
+        self.network = network;
+    }
+
+    /// The network this worker is using, if any.
+    #[must_use]
+    pub fn network(&self) -> Option<Arc<Network>> {
+        self.network.clone()
+    }
+
+    /// The static evaluation of the worker's current position.
+    #[inline]
+    fn evaluate(&mut self) -> Value {
+        let optimism = self.optimism[self.pos.side_to_move().index()];
+        eval::evaluate(&self.pos, self.network.as_deref(), &mut self.scratch, optimism)
     }
 
     /// Forget every history. Called on `ucinewgame`, never mid-game.
@@ -348,7 +378,7 @@ impl SearchWorker {
                 return VALUE_DRAW;
             }
             if ply >= MAX_PLY as i32 - 1 {
-                return eval::evaluate(&self.pos, self.optimism);
+                return self.evaluate();
             }
 
             // Mate-distance pruning: a mate found closer to the root beats anything this
@@ -409,7 +439,7 @@ impl SearchWorker {
         } else if tt_hit && tt_data.eval != VALUE_NONE {
             tt_data.eval
         } else {
-            eval::evaluate(&self.pos, self.optimism)
+            self.evaluate()
         };
         self.stack[si].static_eval = static_eval;
 
@@ -673,7 +703,7 @@ impl SearchWorker {
             return VALUE_DRAW;
         }
         if ply >= MAX_PLY as i32 - 1 {
-            return eval::evaluate(&self.pos, self.optimism);
+            return self.evaluate();
         }
 
         let in_check = self.pos.in_check();
@@ -701,7 +731,7 @@ impl SearchWorker {
         let mut best_value = if in_check {
             -VALUE_INFINITE
         } else {
-            let v = eval::evaluate(&self.pos, self.optimism);
+            let v = self.evaluate();
             if v >= beta {
                 return v;
             }
