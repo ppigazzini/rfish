@@ -185,3 +185,21 @@ The lanes:
 | `msrv` | the crate builds on the declared minimum Rust version |
 
 `pre-commit` wires the fast half of the same set to run before a commit exists.
+
+### Two things about CI that are easy to get wrong, and were
+
+**`rust-toolchain.toml` beats whatever the workflow installs.** The msrv lane pins a
+toolchain with `dtolnay/rust-toolchain@<version>`, and a bare `cargo` in that lane then uses
+the toolchain FILE instead — silently testing stable while the lane reports green. The lane
+runs `cargo +<version>` explicitly for that reason. A lane that cannot fail is worth less
+than one that does not exist, because it is believed.
+
+**The cross lane uses `cargo check`, not `cargo build`.** The runner has no cross linker for
+either target, so a build fails at the link step having already proven everything the lane
+exists to prove — that no `cfg` has crept into engine code.
+
+**The declared MSRV is verified, not guessed.** `Cargo.toml` says 1.88 because 1.87 rejects
+the `let` chains in the move picker, the network path search and the tablebase registry, and
+1.88 builds clean. Raising it also changes what CLIPPY suggests: the lint set is MSRV-aware,
+so an API stabilised after the declared version is suppressed until the version moves. Bump
+the MSRV and expect new findings.

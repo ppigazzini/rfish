@@ -425,7 +425,10 @@ impl SearchWorker {
             self.root_moves[self.pv_index..].sort();
 
             if score <= alpha && alpha > -VALUE_INFINITE {
-                beta = (alpha + beta) / 2;
+                // `midpoint` rounds toward zero, exactly as `(alpha + beta) / 2` does for
+                // any pair whose sum fits -- so this is upstream's arithmetic, with the
+                // overflow the addition could in principle have removed.
+                beta = i32::midpoint(alpha, beta);
                 alpha = (score - delta).max(-VALUE_INFINITE);
                 fail_high_count = 0;
             } else if score >= beta && beta < VALUE_INFINITE {
@@ -460,7 +463,7 @@ impl SearchWorker {
         }
 
         self.nodes += 1;
-        if self.nodes % 1024 == 0 {
+        if self.nodes.is_multiple_of(1024) {
             self.shared.add_nodes(1024);
             self.check_limits();
         }
@@ -533,10 +536,12 @@ impl SearchWorker {
         // subtree can be replaced by it. Only at a zeroed halfmove clock: a tablebase knows
         // the distance to the next irreversible move, not to mate, so with a running clock
         // its verdict and the fifty-move rule can disagree.
-        if !root && excluded.is_none() && self.pos.rule50_count() == 0 {
-            if let Some(v) = self.probe_tablebases(depth, ply, alpha, beta, tt, probe) {
-                return v;
-            }
+        if !root
+            && excluded.is_none()
+            && self.pos.rule50_count() == 0
+            && let Some(v) = self.probe_tablebases(depth, ply, alpha, beta, tt, probe)
+        {
+            return v;
         }
 
         let in_check = self.pos.in_check();
@@ -796,7 +801,7 @@ impl SearchWorker {
                         if self.root_moves[idx].average_score == -VALUE_INFINITE {
                             score
                         } else {
-                            (self.root_moves[idx].average_score + score) / 2
+                            i32::midpoint(self.root_moves[idx].average_score, score)
                         };
                     let child = std::mem::take(&mut self.stack[si + 1].pv);
                     self.root_moves[idx].pv =
@@ -887,7 +892,7 @@ impl SearchWorker {
         tt: &TranspositionTable,
     ) -> Value {
         self.nodes += 1;
-        if self.nodes % 1024 == 0 {
+        if self.nodes.is_multiple_of(1024) {
             self.shared.add_nodes(1024);
             self.check_limits();
         }

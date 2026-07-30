@@ -6,7 +6,10 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Verified empirically, not guessed: 1.87 rejects the `let` chains in the move picker, the
+# network path search and the tablebase registry; 1.88 builds the workspace clean. The CI
+# msrv lane pins the same number and is what keeps this honest.
+rust-version = "1.88"
 license = "GPL-3.0-only"
 repository = "https://github.com/ppigazzini/rfish"
 authors = ["The rfish developers (see AUTHORS)"]

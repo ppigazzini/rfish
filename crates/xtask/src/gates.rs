@@ -369,15 +369,17 @@ fn markdown_link_targets(line: &str) -> Vec<&str> {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b']' && i + 1 < bytes.len() && bytes[i + 1] == b'(' {
-            if let Some(end) = line[i + 2..].find(')') {
-                let target = &line[i + 2..i + 2 + end];
-                if !target.is_empty() {
-                    out.push(target);
-                }
-                i += 2 + end;
-                continue;
+        if bytes[i] == b']'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'('
+            && let Some(end) = line[i + 2..].find(')')
+        {
+            let target = &line[i + 2..i + 2 + end];
+            if !target.is_empty() {
+                out.push(target);
             }
+            i += 2 + end;
+            continue;
         }
         i += 1;
     }
