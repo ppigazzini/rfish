@@ -35,9 +35,15 @@ Two behaviours worth knowing:
 
 Setting an option is not just recording it: `Hash` reallocates the table, `Threads` resizes
 the pool, `EvalFile` reloads the network, `SyzygyPath` rescans. **An option the engine
-records but never acts on is worse than one it does not declare** — `UCI_LimitStrength`,
-`UCI_Elo` and `nodestime` are currently in that state, and
-[AGENTS.md](../AGENTS.md) says so.
+records but never acts on is worse than one it does not declare**, and none are in that
+state: the handshake matches a pristine upstream build name for name and in order, and
+every name on it changes what the engine does.
+
+The values the SEARCH reads travel as one `SearchOptions` block rather than as loose
+parameters. The engine crate cannot see this option model — that is the zone boundary
+working — so the alternative is a growing argument list, and a declared struct at least
+makes the set of options the search depends on something a reader can look up instead of
+grep for.
 
 ## `bench.rs` — the benchmark
 

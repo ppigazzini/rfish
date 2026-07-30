@@ -1,9 +1,10 @@
 # The search zone
 
 `crates/rfish-engine/src/search/` — the transposition table, the histories, the move
-picker, the time manager and the alpha-beta search.
+picker, the time manager, the score model, the strength limiter and the alpha-beta search.
 
-Golden: `Stockfish/src/tt.cpp`, `history.h`, `movepick.cpp`, `timeman.cpp`, `search.cpp`.
+Golden: `Stockfish/src/tt.cpp`, `history.h`, `movepick.cpp`, `timeman.cpp`, `score.cpp`,
+`search.cpp`.
 
 ## `tt.rs` — the shared transposition table
 
@@ -72,9 +73,58 @@ Two numbers. The **optimum** is the point past which a new iteration should not 
 stopping between iterations is free, because the last completed one already has a best
 move. The **maximum** is the point past which the search stops wherever it is.
 
-Instability scales the optimum: a root move that keeps changing is a sign the current
-answer is not to be trusted, so the search buys more time rather than reporting it. The
-scaling is clamped by the maximum, always.
+Four factors scale the optimum between iterations, and each answers a different question
+about whether the current answer can be trusted. A **falling evaluation**, against the last
+move and against the last four iterations, says the position is turning and buys time. A
+best move that has been **stable** across iterations is unlikely to change now and sells it
+back. **Best-move changes**, pooled across every thread, buy time. And a best move that
+already accounts for most of the tree — its `effort` — has little left that could displace
+it, so it sells time too. The product is clamped by the maximum, always.
+
+The manager outlives one move, which is why it lives on the pool rather than in a worker.
+Two of its fields are whole-game state: the `nodestime` node budget is spent across the
+game, and the time-left factor is derived on the first move and reused. `ucinewgame` clears
+both.
+
+**Under `nodestime` the clock is not a clock.** The remaining time, the increment and the
+move overhead are all multiplied into node counts, and the search is measured against nodes
+searched. The `time` a GUI is told stays real milliseconds — it asked how long the engine
+thought, not how the engine chose to count.
+
+## `skill.rs` — playing below full strength
+
+A weakened engine must not simply search less deeply. That produces an opponent which
+blunders at random, which is no easier to plan against and no more fun to play. Upstream
+searches at FULL strength, keeps four principal variations behind the GUI's back, and picks
+among them with a bias that widens as the level drops — so every move it plays is one it
+genuinely considered.
+
+`UCI_Elo` wins over `Skill Level` when `UCI_LimitStrength` is set, because a GUI asking for
+a rating has asked the more specific question. The polynomial mapping one to the other is a
+fit against real games, so the ratings mean ratings rather than being a scale of the
+engine's own invention.
+
+The pick happens ONCE, at a depth set by the level, and later iterations do not revise it.
+That is what keeps a weak level weak when it has time to spare. The thread vote is also
+skipped while a handicap is active: it has chosen a weaker move on purpose, and a vote
+would put the best one back.
+
+Its generator is seeded from the clock — the one place in this engine where
+reproducibility is the wrong property, because two games at the same level should not
+follow the same script.
+
+## `score.rs` — what a score means
+
+The search works in units whose scale is a property of the network. Reporting them raw
+would make `cp 200` mean something different after every net change, so the reported
+centipawn is defined through a logistic fitted to real results, whose parameters depend on
+the material left on the board. The same evaluation therefore reports lower in an endgame,
+where there is less left to convert it with. `UCI_ShowWDL` reads the same model.
+
+Three kinds of score stay distinct rather than being flattened into one number: a **mate**
+is a distance, a **tablebase verdict** is a fact reported at a fixed magnitude above any
+evaluation and below any mate, and everything else is an estimate. Only the estimate goes
+through the model.
 
 ## `worker.rs` — the search
 
@@ -149,4 +199,7 @@ rather than a guess. Until then the bench signature is rfish's own number — se
 rfish searches about 3.45 million nodes against upstream's 3.18 million, which is how close
 the trees are.
 
-Also open: the `UCI_Elo` strength limiter, and pondering.
+The time manager, the strength limiter and pondering are no longer on that list: the clock
+model is `timeman.cpp` line for line, `Skill` is upstream's, and `ponderhit` converts a
+ponder into a real search while honouring a budget that ran out on the opponent's clock.
+None of them touch the signature, because a fixed-depth bench never consults a clock.

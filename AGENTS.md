@@ -50,16 +50,25 @@ state. Check the state against the tree before acting on it:
   extend it, and do not let it acquire callers NNUE will not satisfy.
 - **Syzygy** — **ported and verified.** `crates/rfish-engine/src/platform/syzygy/` holds
   the whole prober: discovery, the Recursive-Pairing decoder, the index computation, and
-  the WDL and DTZ probes. `cargo xtask tb` compares both against a pristine upstream build
-  position by position. Open: the 5-man cursed-win branches (they need a 5-man set to
-  exercise), a block cache for 7-man tables, and using the root ranking in move ordering.
+  the WDL and DTZ probes, and the root ranking feeds the search: `root_probe` orders the
+  root moves and switches the in-search probe off once the tables have settled the game.
+  `cargo xtask tb` compares WDL and DTZ against a pristine upstream build position by
+  position. Open: the 5-man cursed-win branches (they need a 5-man set to exercise; the
+  repo ships 3-man), a block cache for 7-man tables, and `syzygy_extend_pv` — upstream
+  walks a won PV out to mate, and rfish truncates where the search stopped.
 - **Lazy-SMP** — **wired, with the best-move vote.** `Threads` builds a worker set, a `go`
   runs N workers over one root through `std::thread::scope`, and the move played is the one
   the pool agrees on. There is no NUMA model and no network replication — there are weights
   to replicate now, so that is real open work rather than a blocked item.
-- **The option model** — the `uci` handshake advertises the full option set and the
-  handshake golden pins it byte for byte. `UCI_LimitStrength`, `UCI_Elo` and `nodestime`
-  are **declared but not acted on**; the rest are wired.
+- **The option model** — **every declared option is acted on.** The `uci` handshake matches
+  a pristine upstream build's name for name and in order, and the handshake golden pins it
+  byte for byte. `Skill Level`, `UCI_LimitStrength` and `UCI_Elo` run upstream's `Skill`;
+  `nodestime` converts the whole clock model into node counts; `Ponder` buys the current
+  move a quarter more time and `ponderhit` honours a budget that ran out while pondering.
+- **The score model** — **ported.** Reported centipawns go through upstream's fitted
+  win-rate model rather than being the search's internal units, so the number means the same
+  thing across net changes, and `UCI_ShowWDL` reports real chances. Mates, tablebase
+  verdicts and estimates stay three distinct kinds of score.
 
 `tools/signature.golden` is **rfish's own number**, not upstream's. It is now measured at
 upstream's own depth 13 — that became affordable when NNUE landed and the tree stopped

@@ -175,17 +175,24 @@ because the bench anchor has to be reproducible on a machine nobody here owns.
 **The forward pass is bit-exact with upstream** — `cargo xtask nnue-check` proves it
 position by position. So the arithmetic cost nothing; only the speed did.
 
-And most of the speed gap is NOT the missing intrinsics. rfish recomputes the accumulator
-from scratch per evaluation where upstream updates it incrementally, and that alone accounts
-for the bulk of an eleven-fold nodes-per-second difference. Until the incremental path
-lands, an intrinsics-versus-autovectorisation comparison would be measuring the wrong thing:
-both sides would be dominated by a term only one of them pays.
+For most of the port's life the speed gap was NOT the missing intrinsics. rfish recomputed
+the accumulator from scratch per evaluation where upstream updates it incrementally, and
+that term dominated everything else — an intrinsics-versus-autovectorisation comparison
+would have been measuring a cost only one side paid. Diffing the feature sets removed it,
+for a **1.48x** speedup measured as an A/B on the same machine under the same load
+(31.34/31.58/30.80 s of user CPU before, 21.35/20.29/21.23 s after).
+
+That ratio is the only NNUE speed number in this repository, and the restriction is
+deliberate. A ratio between two arms measured under identical conditions survives a noisy
+machine; an absolute nodes-per-second figure does not, and an earlier draft of this section
+carried one taken while five cores were busy with something else. It was wrong by a large
+factor and read as authoritative. Do not add an absolute throughput number here that was not
+taken on a quiet box at a named `--arch` tier.
 
 **So the honest state is: the constraint has not yet been shown to cost anything on this
-axis.** The largest algorithmic difference — a from-scratch accumulator — has since been
-removed by diffing feature sets, so an intrinsics-versus-autovectorisation comparison is now
-a fair one to run. It has not been run. Do not cite this section as evidence either way until
-someone does.
+axis.** The largest algorithmic difference is gone, so an intrinsics-versus-autovectorisation
+comparison is now a fair one to run. It has not been run. Do not cite this section as
+evidence either way until someone does.
 
 ---
 

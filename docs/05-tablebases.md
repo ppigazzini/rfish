@@ -107,5 +107,23 @@ rule does not apply. `SyzygyProbeDepth` and `SyzygyProbeLimit` bound where probi
 its cost — a probe reads a file, which is far more expensive than the search it replaces at
 shallow depths.
 
-With no path set the registry is empty, no probe fires, and the bench signature is
-unaffected. That property has its own check in the gate.
+**At the root the tables do more than answer a node.** Before the first iteration, a
+position within the piece limit and with no castling rights is ranked move by move:
+`root_probe` reads DTZ, falling back to `root_probe_wdl` when only WDL tables are present.
+Better moves rank higher, certain wins rank equally — unless the caller asked for distances,
+which is the case where mate is the only zeroing move and DTZ IS distance to mate. The root
+moves are then sorted stably by rank, so moves the tables cannot separate keep their
+generated order.
+
+Ranking the root also switches the in-search probe **off** for the rest of the move. Every
+move that survives the ranking preserves the result, so re-deriving from a file an answer
+already held is pure cost. The one exception is the case the ranking cannot finish: WDL
+answered, meaning no distance is known, and the root is not winning.
+
+What the tables say and what the search estimates are kept in separate fields. A ranked
+root move carries a `tb_score` alongside the search's `score`, and the reporter shows the
+former — the tables know the result exactly, and a search score is an estimate of a fact
+already established.
+
+With no path set the registry is empty, no probe fires, no ranking happens, and the bench
+signature is unaffected. That property has its own check in the gate.
