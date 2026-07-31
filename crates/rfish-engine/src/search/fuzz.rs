@@ -65,6 +65,60 @@ impl Rng {
     }
 }
 
+/// Walk a random line, checking the board's invariants at every ply, then unwind it.
+///
+/// Two things at once, because they need the same walk: the per-ply checks below, and the
+/// whole line undone move by move at the end. A key that desyncs and resyncs would pass the
+/// per-ply check and fail the unwind, which is the shape the fifty-move mixing bug had.
+fn walk_and_check(rng: &mut Rng, plies: usize, seed: u64) {
+    let mut pos = Position::from_fen(START_FEN, false).expect("the start position parses");
+    let key0 = pos.key();
+    let board0 = *pos.board();
+    let mut played = Vec::with_capacity(plies);
+
+    for ply in 0..plies {
+        let list = legal_moves(&pos);
+        if list.is_empty() {
+            break;
+        }
+        let tag = format!("ply {ply}");
+        check_move_list(&pos, seed, &tag);
+        check_make_unmake(&mut pos, seed, &tag);
+
+        let m = list[rng.below(list.len())];
+        played.push(m);
+        pos.do_move(m);
+    }
+
+    while let Some(m) = played.pop() {
+        pos.undo_move(m);
+    }
+    assert_eq!(pos.key(), key0, "seed {seed}: the key did not survive unwinding the whole line");
+    assert!(*pos.board() == board0, "seed {seed}: the board did not survive unwinding");
+}
+
+/// Parsing must reject or accept, never panic.
+///
+/// The FEN parser is the engine's only untrusted input besides the network file and the
+/// tablebases: a GUI can send anything after `position fen`. Nothing here asserts a
+/// PARTICULAR verdict -- a fuzzer has no way to know which strings are legal positions --
+/// only that reaching one is not a crash, and that a position it did accept is coherent
+/// enough to generate moves from.
+fn check_fen_parse(rng: &mut Rng, seed: u64) {
+    const ALPHABET: &[u8] = b"rnbqkpRNBQKP12345678/ -abcdefgh0123456789wKQkq";
+    let len = 1 + rng.below(90);
+    let text: String = (0..len).map(|_| ALPHABET[rng.below(ALPHABET.len())] as char).collect();
+
+    for chess960 in [false, true] {
+        if let Ok(pos) = Position::from_fen(&text, chess960) {
+            // Accepted. Then it must behave like a position: generating moves and asking
+            // for its key must not panic, and the list must still be well-formed.
+            check_move_list(&pos, seed, "fen");
+            let _ = pos.key();
+        }
+    }
+}
+
 /// One walk: play random legal moves, then search the position that results.
 ///
 /// Returns the search result so a caller can assert on it. A position with no legal moves
@@ -135,6 +189,12 @@ pub fn run_for(seed: u64, seconds: u64, plies: usize, depth: i32) -> usize {
     let mut rng = Rng(seed.max(1));
     let mut walks = 0usize;
     while std::time::Instant::now() < deadline {
+        // The board invariants and the parser get a share of every budget, not a separate
+        // step: they are cheap next to a search, and a soak that only searched would leave
+        // the classes below untested for as long as it ran.
+        walk_and_check(&mut rng, plies, seed);
+        check_fen_parse(&mut rng, seed);
+
         let (pos, result) = one_walk(&mut rng, plies, depth);
         let legal = legal_moves(&pos);
         if legal.is_empty() {
@@ -148,6 +208,61 @@ pub fn run_for(seed: u64, seconds: u64, plies: usize, depth: i32) -> usize {
         walks += 1;
     }
     walks
+}
+
+/// Play every legal move, undo it, and require the position to be exactly as it was.
+///
+/// The strongest single invariant in the board zone, and the one whose failures this port
+/// has actually paid for: AGENTS.md lists "key identity" among the four bug classes that
+/// cost the most, and every one of them is invisible to perft, which only counts leaves and
+/// so cannot notice a key that desynced and resynced. Checked per MOVE rather than once per
+/// line, so a category-specific fault -- castling, en passant, a promotion -- is attributed
+/// to the move that caused it instead of to the line that contained it.
+fn check_make_unmake(pos: &mut Position, seed: u64, tag: &str) {
+    let before_key = pos.key();
+    let before_raw = pos.raw_key();
+    let before_board = *pos.board();
+    let before_ep = pos.ep_square();
+    let before_rule50 = pos.rule50_count();
+    let before_checkers = pos.checkers();
+    let before_count = legal_moves(pos).len();
+
+    for m in legal_moves(pos) {
+        pos.do_move(m);
+        pos.undo_move(m);
+
+        assert_eq!(pos.key(), before_key, "seed {seed} {tag}: the table key desynced over {m:?}");
+        assert_eq!(pos.raw_key(), before_raw, "seed {seed} {tag}: the raw key desynced over {m:?}");
+        assert!(*pos.board() == before_board, "seed {seed} {tag}: the board changed over {m:?}");
+        assert_eq!(pos.ep_square(), before_ep, "seed {seed} {tag}: the ep square moved over {m:?}");
+        assert_eq!(
+            pos.rule50_count(),
+            before_rule50,
+            "seed {seed} {tag}: the fifty-move counter moved over {m:?}",
+        );
+        assert_eq!(pos.checkers(), before_checkers, "seed {seed} {tag}: checkers moved over {m:?}");
+        assert_eq!(
+            legal_moves(pos).len(),
+            before_count,
+            "seed {seed} {tag}: the legal move count changed over {m:?}",
+        );
+    }
+}
+
+/// A legal move list must contain no null move and no duplicate.
+///
+/// A duplicate is not a crash and not a wrong perft count -- perft would count the position
+/// twice and so would a naive checker. It IS a wrong search: the move picker would search
+/// the same move twice and the node count would move.
+fn check_move_list(pos: &Position, seed: u64, tag: &str) {
+    let list = legal_moves(pos);
+    for (i, &m) in list.iter().enumerate() {
+        assert!(m != Move::NONE, "seed {seed} {tag}: a null move is in the legal list");
+        assert!(
+            !list[i + 1..].contains(&m),
+            "seed {seed} {tag}: {m:?} appears twice in the legal list",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -166,6 +281,25 @@ mod tests {
     #[test]
     fn a_long_walk_reaches_the_late_game_states() {
         run(0xD1B5_4A32_D192_ED03, 4, 90, 3);
+    }
+
+    /// Every legal move of every position along a line makes and unmakes cleanly, and the
+    /// line unwinds to the position it started from.
+    #[test]
+    fn make_and_unmake_restore_the_position_exactly() {
+        let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+        for _ in 0..6 {
+            walk_and_check(&mut rng, 40, 0x2545_F491_4F6C_DD1D);
+        }
+    }
+
+    /// A parser reached with nonsense rejects or accepts; it does not panic.
+    #[test]
+    fn the_fen_parser_survives_nonsense() {
+        let mut rng = Rng(0x8A5C_D789_635D_2DFF);
+        for _ in 0..4000 {
+            check_fen_parse(&mut rng, 0x8A5C_D789_635D_2DFF);
+        }
     }
 
     /// The scheduled soak. `#[ignore]` because it spends a wall-clock budget rather than

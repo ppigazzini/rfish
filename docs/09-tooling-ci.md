@@ -204,6 +204,30 @@ coverage guidance and keeps the part that finds bugs here: real positions off ev
 and bench list. It runs under the `gate` profile, so `debug_assert!` and `overflow-checks`
 are both on — this port's equivalent of the sanitiser build the sibling fuzzes under.
 
+**What it checks, beyond "did not crash".** ../zfish carries eight fuzz targets in
+`src/engine/board/fuzz_targets.zig` and the interesting ones are not the search — they are
+board invariants a crash-only fuzzer would walk straight past. Ported here:
+
+| invariant | why a crash-only run misses it |
+|---|---|
+| make then unmake restores the key, the board, the ep square, the clock and the checkers | nothing crashes; the position is just quietly wrong afterwards |
+| a whole line unwinds to the position it started from | a key that desyncs and RESYNCS passes every per-ply check |
+| the legal list holds no null move and no duplicate | a duplicate is not a crash and not a wrong perft count — it is a move searched twice |
+| the move count is the same after making and unmaking every move | catches a state restore that is close but not exact |
+| a nonsense FEN is rejected or accepted, never a panic | the parser is untrusted input; a GUI can send anything |
+
+The make/unmake checks run per MOVE, not per line, so a category-specific fault — castling,
+en passant, a promotion — is attributed to the move that caused it. AGENTS.md lists key
+identity among the four bug classes that cost this port the most, and notes that all four are
+invisible to perft: perft counts leaves, so a key that desyncs and resyncs is exactly what it
+cannot see.
+
+**The harness was checked against an injected defect**, not just observed to pass. Making
+`undo_move` leave the fifty-move counter one too high fails
+`make_and_unmake_restore_the_position_exactly` and names the move: `ply 0: the fifty-move
+counter moved over a2a3`. A green fuzz target that has never been shown to go red is a
+decoration.
+
 **Known open finding, from the first real run.** `go` with a malformed argument -- seed 999,
 `go value Hash binc isready SyzygyPath` -- is silently accepted by rfish, which then searches
 unbounded and stops answering. A pristine upstream build REJECTS it:
