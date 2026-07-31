@@ -252,6 +252,13 @@ which is exactly how a `check --target` lane passes while proving nothing.
 That trap used to be worked around in the msrv lane with an explicit `cargo +<version>`.
 The lane is gone (above), and with it the only place the two could disagree.
 
+**The toolchain is read with `sed`, not `grep -oP`.** `-P` is a GNU extension. macOS ships
+BSD grep, which rejects the flag outright, and Git Bash on Windows is frequently built
+without PCRE. The `msrv` lane got away with `grep -oP` for as long as it existed because it
+ran only on `ubuntu-latest`; the step that replaced it runs in the three-OS `test` matrix,
+where the same line breaks two of the three. A shell one-liner that has only ever run on
+Linux is not portable, it is untested.
+
 **The cross lane uses `cargo check`, not `cargo build`.** The runner has no cross linker for
 either target, so a build fails at the link step having already proven everything the lane
 exists to prove — that no `cfg` has crept into engine code.
