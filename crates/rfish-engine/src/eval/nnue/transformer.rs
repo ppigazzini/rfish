@@ -119,12 +119,16 @@ impl EvalScratch {
     }
 }
 
-/// Accumulator entries held in registers at once by the fold.
+/// Accumulator entries the fold carries at once.
 ///
-/// Sixty-four `i16` is eight 128-bit registers — enough to keep the sweep's running values
-/// off the stack on the narrowest tier rfish builds for, and small enough that it still does
-/// on that tier rather than spilling.
-const TILE: usize = 64;
+/// Measured rather than reasoned: 32, 64, 128 and 256 were all built and run, and the curve
+/// is not monotonic in either direction. On `bench 16 1 8` at nehalem, whole-run search
+/// instructions were 4,093M / 3,673M / 3,598M / 4,037M. Too small and the per-tile sweep
+/// overhead — the copy in and the copy out — is paid too many times; too large and the
+/// running values no longer stay in registers across the row loop. 128 is the peak on this
+/// tier; a tier with more or wider registers may well peak elsewhere, so re-measure rather
+/// than assuming this number travels.
+const TILE: usize = 128;
 
 /// [`FT_MAX_VAL`] at the accumulator's own width.
 const FT_MAX: i16 = FT_MAX_VAL as i16;
