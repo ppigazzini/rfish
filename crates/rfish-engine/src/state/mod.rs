@@ -441,30 +441,46 @@ pub const STACK_SIZE: usize = MAX_PLY + 10;
 /// independent fact about the node that some pruning rule reads on its own, and upstream
 /// keeps them as separate flags for the same reason.
 #[allow(clippy::struct_excessive_bools)]
+#[repr(C)]
 ///
 /// Upstream indexes this array from `-7`, so a node can look back seven plies without a
 /// bounds test. Here the array starts at zero and the search offsets by [`STACK_BASE`],
 /// which is the same trick with the offset written down instead of hidden in a pointer.
 #[derive(Clone, Debug)]
 pub struct StackEntry {
-    /// The move being searched at this ply.
-    pub current_move: Move,
     /// The best move found so far below this ply.
-    pub pv: Vec<Move>,
-    /// Whether `pv` was written by the child that was supposed to write it.
     ///
-    /// Upstream nulls a stack entry's PV pointer before each move and only points it at
-    /// real storage for the searches that produce a principal variation. A child that
-    /// never ran a PV search leaves the pointer null, and splicing it in contributes
-    /// nothing. Without this flag the parent would splice in whatever a DIFFERENT sibling
-    /// left behind, producing a reported line whose moves are not legal from the root.
-    pub pv_valid: bool,
+    /// Upstream holds a `PVMoves*` here and this is its owned equivalent, in the same
+    /// position in the declaration. Holding the buffer BESIDE the stack instead, so the
+    /// entry shrinks from 72 bytes to upstream's 56, was measured and was worse: it costs
+    /// a second bounds-checked index and a second cache line at every PV node, +3.9M
+    /// search instructions on `bench 16 1 8` against no measurable gain.
+    pub pv: Vec<Move>,
+    /// The plane of the continuation history this node's move selects.
+    ///
+    /// A plain index, not an option. Plane zero is a REAL plane — the one a move by
+    /// [`Piece::NONE`] to a1 would select, which no move can — so it serves as the
+    /// sentinel for "no previous move" while still being readable. Upstream points at it
+    /// the same way, and the move picker reads it unconditionally.
+    pub continuation: usize,
+    /// The plane of the continuation CORRECTION history this node's move selects.
+    pub continuation_correction: usize,
     /// The static evaluation of this node.
     pub static_eval: Value,
-    /// Which move was excluded by a singular-extension search, or [`Move::NONE`].
-    pub excluded_move: Move,
+    /// The combined history score of the move being searched, reused by the reduction
+    /// arithmetic and by the parent's fail-low bonus.
+    pub stat_score: i32,
     /// How many moves have been searched at this ply.
     pub move_count: i32,
+    /// How many children of this node have failed high.
+    pub cutoff_count: i32,
+    /// The reduction applied to the child currently being searched, read back by that
+    /// child as `priorReduction` to undo an over-reduction in hindsight.
+    pub reduction: i32,
+    /// The move being searched at this ply.
+    pub current_move: Move,
+    /// Which move was excluded by a singular-extension search, or [`Move::NONE`].
+    pub excluded_move: Move,
     /// True when the side to move is in check at this node.
     pub in_check: bool,
     /// True when this node is on the principal variation now, or was when it was stored.
@@ -477,23 +493,16 @@ pub struct StackEntry {
     /// known-best line are relaxed here: the line is the one the search most needs to keep
     /// resolving, and pruning it away costs the iteration its own answer.
     pub follow_pv: bool,
-    /// How many children of this node have failed high.
-    pub cutoff_count: i32,
-    /// The reduction applied to the child currently being searched, read back by that
-    /// child as `priorReduction` to undo an over-reduction in hindsight.
-    pub reduction: i32,
-    /// The combined history score of the move being searched, reused by the reduction
-    /// arithmetic and by the parent's fail-low bonus.
-    pub stat_score: i32,
-    /// The plane of the continuation history this node's move selects.
+    /// Whether this ply's principal variation was written by the child that was supposed
+    /// to write it.
     ///
-    /// A plain index, not an option. Plane zero is a REAL plane — the one a move by
-    /// [`Piece::NONE`] to a1 would select, which no move can — so it serves as the
-    /// sentinel for "no previous move" while still being readable. Upstream points at it
-    /// the same way, and the move picker reads it unconditionally.
-    pub continuation: usize,
-    /// The plane of the continuation CORRECTION history this node's move selects.
-    pub continuation_correction: usize,
+    /// Upstream nulls a stack entry's PV pointer before each move and only points it at
+    /// real storage for the searches that produce a principal variation. A child that
+    /// never ran a PV search leaves the pointer null, and splicing it in contributes
+    /// nothing. Without this flag the parent would splice in whatever a DIFFERENT sibling
+    /// left behind, producing a reported line whose moves are not legal from the root. The
+    /// buffer itself lives beside the stack, not in it.
+    pub pv_valid: bool,
 }
 
 impl Default for StackEntry {
