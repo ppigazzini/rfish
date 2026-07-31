@@ -96,9 +96,51 @@ was contended:
 what proves the evaluation did not change. `cargo xtask nnue-check` still matches upstream on
 all 109 positions.
 
-The gap to upstream's throughput is now the remaining cost of recomputing the set at all,
-plus the absence of vector kernels. Closing it further means the per-move delta after all,
-and the measurement above is what any such attempt has to beat.
+Applying the diff is one sweep of the accumulator, not one per changed feature: the merge
+walk collects what changed and a tiled fold applies the whole collection, so the accumulator
+is read once and written once however many rows go into it. That is the shape of upstream's
+`update_accumulator_incremental`, and it is safe here for a reason worth stating — the
+accumulator is wrapping `i16` and the PSQT head `i32`, and both are associative and
+commutative under the additions applied, so collecting before applying cannot change a value.
+
+### One slot, not a stack — measured
+
+The cache is a SINGLE slot holding the last position evaluated anywhere, not one slot per
+ply. Upstream keeps a stack and always updates a child from its parent, so its diff is
+always one move's worth; the obvious inference is that rfish should too, and it was tried:
+`EvalScratch` grew a `Vec<Option<Cached>>` indexed by ply, `evaluate` took a ply, and the
+base became the nearest filled ancestor.
+
+**It was worse — 4,769M search instructions to 5,197M** on `bench 16 1 8`. Updating from the
+parent means COPYING the parent's 4 KiB accumulator into the child's slot first, on every
+evaluation. The single slot pays nothing at all in the common case, because a depth-first
+search evaluates a node and then its child, and the slot already holds the parent; it loses
+only on a subtree return. Copying every time to make the bad case cheap cost more than the
+bad case did. Do not re-derive this.
+
+### What the gap is now
+
+Against a pristine upstream build at the same tier, on `bench 16 1 8` with the same 166,964
+nodes and startup subtracted by a `quit`-only run:
+
+| | search instructions | ratio |
+|---|---|---|
+| before this work | 6,592,566,790 | 3.367 |
+| sparse first affine layer | 4,769,344,411 | 2.436 |
+| static affine output width | 4,436,458,866 | 2.266 |
+| one fold per accumulator sweep | 3,715,310,646 | 1.897 |
+| sixteen-bit pairwise step | 3,673,041,357 | 1.876 |
+| **upstream** | **1,958,088,252** | **1.000** |
+
+What remains splits roughly three ways: the first affine layer, where upstream's four-way
+byte dot product does in one instruction what takes four here and no rewrite closes that
+without intrinsics; the accumulator fold, now within about a third of upstream's incremental
+update; and recomputing the active set at all, which is the per-move delta this section
+declined to write and the only one of the three a code change could still remove.
+
+The search spine is NOT part of this gap and has not been for some time: measured the same
+way with a material evaluation on both sides, rfish is at **1.022×** upstream's instructions
+and ahead of it on every cache axis. See `docs/09-tooling-ci.md` for the method.
 
 ## The quantisation is the specification
 
