@@ -39,9 +39,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the pinned toolchain
+        id: rt
+        shell: bash
+        # From rust-toolchain.toml, never repeated here. That file OVERRIDES whatever the
+        # action installs, so a hard-coded channel in this workflow would install one
+        # toolchain and then silently run a different one -- with the wrong components and,
+        # in the cross lane, without the target's std.
+        run: echo "channel=$(grep -m1 -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: ${{ steps.rt.outputs.channel }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       # Formatting first: it is the cheapest gate and it blocks everything after it, so a
@@ -64,9 +72,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the pinned toolchain
+        id: rt
+        shell: bash
+        # From rust-toolchain.toml, never repeated here. That file OVERRIDES whatever the
+        # action installs, so a hard-coded channel in this workflow would install one
+        # toolchain and then silently run a different one -- with the wrong components and,
+        # in the cross lane, without the target's std.
+        run: echo "channel=$(grep -m1 -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: ${{ steps.rt.outputs.channel }}
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       # The `gate` profile: release code generation PLUS the debug assertions the search
       # states its invariants with. A release-only run turns a violated invariant into a
@@ -81,9 +97,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the pinned toolchain
+        id: rt
+        shell: bash
+        # From rust-toolchain.toml, never repeated here. That file OVERRIDES whatever the
+        # action installs, so a hard-coded channel in this workflow would install one
+        # toolchain and then silently run a different one -- with the wrong components and,
+        # in the cross lane, without the target's std.
+        run: echo "channel=$(grep -m1 -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: ${{ steps.rt.outputs.channel }}
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       # The network is a runtime input, not a build product, and the signature is measured
       # WITH it. Keyed by the module that names it: a net never changes content under a
@@ -104,31 +128,12 @@ jobs:
       # contributors to ignore a skip. They run locally, and `cargo xtask parity` names them
       # when it could not run them.
 
-  msrv:
-    name: msrv
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # Read the version from the manifest rather than repeating it here. A second copy is a
-      # second thing to forget.
-      - name: Read MSRV from the workspace manifest
-        id: msrv
-        run: |
-          version=$(grep -m1 -oP 'rust-version\s*=\s*"\K[^"]+' Cargo.toml)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "MSRV is $version"
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: ${{ steps.msrv.outputs.version }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      # `cargo +<version>`, NOT a bare `cargo`. This repository has a rust-toolchain.toml,
-      # and it OVERRIDES whatever toolchain the action just installed -- so a bare `cargo`
-      # silently tests stable and the lane proves nothing while looking green. The explicit
-      # `+toolchain` is the only thing that beats the file.
-      - run: cargo +${{ steps.msrv.outputs.version }} build --workspace --locked
+  # NO msrv lane. It ran `cargo +<rust-version> build` and that cannot pass: the engine
+  # enables `portable_simd`, which is rejected outright on a stable channel, so the lane
+  # would fail on its first line for a reason no contributor could act on. The toolchain
+  # requirement is now a PIN rather than a floor -- `rust-toolchain.toml` names one dated
+  # nightly and every lane above reads it from there -- and a floor lane tests nothing a
+  # pin does not already fix. See docs/09-tooling-ci.md.
 
   cross-build:
     name: cross-build (${{ matrix.target }})
@@ -142,9 +147,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the pinned toolchain
+        id: rt
+        shell: bash
+        # From rust-toolchain.toml, never repeated here. That file OVERRIDES whatever the
+        # action installs, so a hard-coded channel in this workflow would install one
+        # toolchain and then silently run a different one -- with the wrong components and,
+        # in the cross lane, without the target's std.
+        run: echo "channel=$(grep -m1 -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: ${{ steps.rt.outputs.channel }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       # `check`, not `build`: the runner has no cross LINKER for either target, so a build
