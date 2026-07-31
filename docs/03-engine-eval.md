@@ -144,7 +144,9 @@ nodes and startup subtracted by a `quit`-only run:
 | unrolled threat attacker dispatch | 3,548,072,611 | 1.812 |
 | chunk-walked sparse weight rows | 3,528,438,652 | 1.802 |
 | `std::simd` non-zero scan in the sparse layer | 3,202,332,317 | 1.635 |
-| accumulator cache, one slot per king square | 3,095,210,600 | **1.581** |
+| accumulator cache, one slot per king square | 3,095,210,600 | 1.581 |
+| king-piece features from a board diff | 2,986,237,131 | 1.525 |
+| one threat scan for both perspectives | 2,979,106,126 | **1.521** |
 | **upstream** | **1,958,088,252** | **1.000** |
 
 ### Falsified, with numbers
@@ -181,7 +183,7 @@ autovectoriser does.
 
 | | nps | vs upstream |
 |---|---|---|
-| rfish | 587,905 | 1.88x |
+| rfish | 588,396 | 1.78x |
 | ../zfish | 1,019,707 | 1.08x |
 | upstream, avx512icl | 1,102,610 | 1.00 |
 
@@ -191,11 +193,25 @@ too. The counts MATCH. Whatever is left is therefore per-feature overhead and th
 recomputing the active set at all; it is not that this design applies more features than
 upstream's per-move delta does.
 
-That bounds what the remaining work can buy. Recomputing the sets and sorting them is about
-535M of the 1,137M gap, and it is the only part a code change removes — the per-move delta
-would land this near **1.3x**, not at 1.0. Below that needs the first affine layer to match
-`vpdpbusd`, which `std::simd` has no operation for, so a further constraint would have to go
-before parity is even the right word.
+### How much of the delta is done
+
+The delta splits in two, and the halves are not equally hard.
+
+**The king-piece half is done**, and it needed nothing from the board zone. Two placements
+differ on some set of squares, and each contributes at most one feature to remove and one to
+add — a diff of the BOARD, not of the move, so there is no case analysis and no `do_move`
+plumbing. That removed the set, its sort and its merge walk outright, worth 109M.
+
+**The threat half is not**, and it is the one upstream needs `update_piece_threats` for. A
+single square changing moves many threats at once: every threat from the moved piece, every
+threat to it, and every slider whose ray it blocked or opened. There is no board diff that
+expresses that, which is why it is still a full recomputation and a sort. It is worth roughly
+another 160M — the remaining scan, the two sorts, and the merge walk — and it is the piece
+that trades this design's correct-by-construction property for case analysis a gate would
+have to police.
+
+Below that: the first affine layer would have to match `vpdpbusd`, which `std::simd` has no
+operation for, so a further constraint would have to go before parity is even the right word.
 
 What remains splits roughly three ways. The first affine layer, where upstream's four-way
 byte dot does in one instruction what takes four here — four separate attempts to recover
