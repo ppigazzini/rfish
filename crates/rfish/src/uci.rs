@@ -19,7 +19,7 @@ use rfish_engine::eval::nnue;
 use rfish_engine::platform::syzygy::TableRegistry;
 use rfish_engine::platform::threads::ThreadPool;
 use rfish_engine::search::tt::TranspositionTable;
-use rfish_engine::search::worker::{DepthReport, InfoSink};
+use rfish_engine::search::worker::{DepthReport, InfoSink, SearchResult};
 use rfish_engine::state::{Limits, SearchOptions};
 
 use crate::bench::{BenchEntry, BenchSpec, parse_entry};
@@ -383,24 +383,7 @@ impl Engine {
             self.pool.search(&self.pos, &limits, &self.tt, &opts, &mut sink)
         };
 
-        let best = if result.best_move.is_none() {
-            "(none)".to_string()
-        } else {
-            move_to_uci(&self.pos, result.best_move)
-        };
-        match result.ponder_move {
-            Some(p) if self.options.check("Ponder") => {
-                // The ponder move is named in the position AFTER the best move, which is
-                // the only place its castling notation is well defined.
-                let mut after = self.pos.clone();
-                after.do_move(result.best_move);
-                let _ = writeln!(out, "bestmove {best} ponder {}", move_to_uci(&after, p));
-            }
-            _ => {
-                let _ = writeln!(out, "bestmove {best}");
-            }
-        }
-        let _ = out.flush();
+        emit_bestmove(out, &self.pos, &result);
     }
 
     fn parse_limits(&self, args: &[&str]) -> Limits {
@@ -544,6 +527,10 @@ impl Engine {
                         self.pool.search(&pos, &limits, &self.tt, &opts, &mut sink)
                     };
                     total_nodes += result.nodes;
+                    // Upstream's bench runs each entry through the same path a `go` takes,
+                    // so every position ends with its own `bestmove`. A harness that reads
+                    // the played move rather than the node total needs it.
+                    emit_bestmove(out, &pos, &result);
                 }
             }
         }
@@ -555,6 +542,33 @@ impl Engine {
         let _ = writeln!(out, "Nodes/second    : {}", u128::from(total_nodes) * 1000 / ms);
         let _ = out.flush();
     }
+}
+
+/// Write the `bestmove` line that ends a search.
+///
+/// The ponder move is emitted whenever the principal variation has one, NOT only when the
+/// `Ponder` option is on. The option says whether the engine may think on the opponent's
+/// clock; it does not say whether the GUI is allowed to be told what reply was expected,
+/// and upstream reports it either way.
+fn emit_bestmove(out: &mut impl Write, pos: &Position, result: &SearchResult) {
+    let best = if result.best_move.is_none() {
+        "(none)".to_string()
+    } else {
+        move_to_uci(pos, result.best_move)
+    };
+    match result.ponder_move {
+        Some(p) => {
+            // The ponder move is named in the position AFTER the best move, which is the
+            // only place its castling notation is well defined.
+            let mut after = pos.clone();
+            after.do_move(result.best_move);
+            let _ = writeln!(out, "bestmove {best} ponder {}", move_to_uci(&after, p));
+        }
+        None => {
+            let _ = writeln!(out, "bestmove {best}");
+        }
+    }
+    let _ = out.flush();
 }
 
 /// Read commands from `input` until `quit` or end of stream.
@@ -676,8 +690,16 @@ mod tests {
         assert!(out.contains("info depth 1 "));
         assert!(out.contains(" pv "));
         assert_eq!(out.matches("bestmove ").count(), 1);
-        let best = out.rsplit("bestmove ").next().expect("a bestmove line").trim();
+        let line = out.rsplit("bestmove ").next().expect("a bestmove line").trim();
+        // The line is `<move>` or `<move> ponder <move>`; both moves are plain UCI.
+        let mut fields = line.split_whitespace();
+        let best = fields.next().expect("a best move");
         assert_eq!(best.len(), 4, "bestmove '{best}' is not a UCI move");
+        if let Some(kw) = fields.next() {
+            assert_eq!(kw, "ponder");
+            let ponder = fields.next().expect("a ponder move after the keyword");
+            assert_eq!(ponder.len(), 4, "ponder '{ponder}' is not a UCI move");
+        }
     }
 
     #[test]
