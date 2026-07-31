@@ -13,8 +13,9 @@ units", with no optimism blend and no fifty-move damping on top. Every position 
 which is what makes it a check on the feature indexing rather than on a list the port was
 written against.
 
-What is **not** done is the incremental accumulator. See "The accumulator is recomputed"
-below.
+What is **not** done is upstream's per-move accumulator delta. See "The accumulator is
+updated by diffing feature sets" below, which also carries the measured gap to upstream and
+the list of attempts that failed to close it.
 
 ## Shape
 
@@ -133,6 +134,7 @@ nodes and startup subtracted by a `quit`-only run:
 | 128-wide fold tile | 3,598,539,776 | 1.838 |
 | merged threat-index tables | 3,589,208,299 | 1.833 |
 | unrolled threat attacker dispatch | 3,548,072,611 | 1.812 |
+| chunk-walked sparse weight rows | 3,528,438,652 | 1.802 |
 | **upstream** | **1,958,088,252** | **1.000** |
 
 ### Falsified, with numbers
