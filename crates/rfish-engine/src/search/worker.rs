@@ -17,6 +17,7 @@
 //! Golden: `Stockfish/src/search.cpp`.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::board::movegen::{generate_legal, move_to_uci};
 use crate::board::position::Position;
@@ -110,6 +111,7 @@ pub struct SearchWorker {
     root_moves: Vec<RootMove>,
     shared: Arc<SharedState>,
     limits: Limits,
+    opts: SearchOptions,
     budget: TimeBudget,
     nodes: u64,
     tb_hits: u64,
@@ -167,6 +169,7 @@ impl SearchWorker {
             root_moves: Vec::new(),
             shared,
             limits: Limits::default(),
+            opts: SearchOptions::default(),
             budget: TimeBudget::default(),
             nodes: 0,
             tb_hits: 0,
@@ -395,6 +398,7 @@ impl SearchWorker {
     ) -> SearchResult {
         self.pos = pos.clone();
         self.limits = limits.clone();
+        self.opts = *opts;
         self.budget = budget;
         self.nodes = 0;
         self.tb_hits = 0;
@@ -1420,23 +1424,161 @@ impl SearchWorker {
         }
     }
 
+    /// Trim the reported PV to what the tables vouch for, then walk it out to mate.
+    ///
+    /// A search that hands back "this is won" and a five-move line has answered the wrong
+    /// question: the operator wants to see the win. The tables can supply the rest, and
+    /// they can also expose the opposite problem — a PV whose later moves quietly throw the
+    /// result away, which the search never noticed because it stopped believing the score
+    /// once the tablebase supplied it.
+    ///
+    /// Two steps, both upstream's. Step one walks the existing PV while every move stays
+    /// top-ranked and truncates at the first that does not. Step two extends by repeatedly
+    /// playing the shortest win, breaking ties between equal distances by restricting the
+    /// opponent's mobility — without handing them a capture, which would shorten the game
+    /// for the wrong reason.
+    ///
+    /// The result is a plausible continuation, NOT a proven mating line: only for simple
+    /// endgames like `KRvK` is minimal DTZ also minimal distance to mate.
+    fn syzygy_extend_pv(&mut self, v: &mut Value) {
+        let Some(tb) = self.tablebases.clone() else { return };
+        let rule50 = self.tb_use_rule50;
+        let start = Instant::now();
+
+        // Never spend more than half the move overhead on this. It is presentation, and a
+        // game lost on time because the PV looked nice is not a trade worth making.
+        let overhead = self.opts.move_overhead;
+        let uses_clock = self.limits.uses_time_management();
+        let timed_out =
+            |start: &Instant| uses_clock && 2 * start.elapsed().as_millis() as u64 > overhead;
+
+        let mut pos = self.pos.clone();
+        let mut pv = self.root_moves[self.pv_index].pv.clone();
+        if pv.is_empty() {
+            return;
+        }
+
+        // Step 0: play the root move itself, with no correction. `MultiPV` reports lines
+        // that are not the best one, and correcting this move would report a different one.
+        pos.do_move(pv[0]);
+        let mut ply = 1usize;
+
+        // Step 1: walk while the tables still rank each PV move top.
+        while ply < pv.len() {
+            let pv_move = pv[ply];
+            let Some(ranked) = self.rank_for_extension(&tb, &pos, false) else { break };
+            let Some(best) = ranked.iter().map(|r| r.rank).max() else { break };
+            let Some(this) = ranked.iter().find(|r| r.mv == pv_move).map(|r| r.rank) else { break };
+            if best != this {
+                break;
+            }
+
+            ply += 1;
+            pos.do_move(pv_move);
+
+            // A repetition or a fifty-move draw inside a won line is not part of the win.
+            if (rule50 && pos.is_draw(ply as i32)) || pos.is_repetition(ply as i32) {
+                pos.undo_move(pv_move);
+                ply -= 1;
+                break;
+            }
+            if timed_out(&start) {
+                break;
+            }
+        }
+        pv.truncate(ply);
+
+        // Step 2: extend by playing the shortest win each time, as a reader of the tables
+        // would.
+        while !(rule50 && pos.is_draw(0)) {
+            if timed_out(&start) {
+                break;
+            }
+            let legal = generate_legal(&pos);
+            if legal.is_empty() {
+                break; // Mate: the line is complete.
+            }
+
+            // Seed each move with how much it restricts the opponent, counting a reply that
+            // captures as far worse than one that does not.
+            let mut cand: Vec<(Move, i32)> = Vec::with_capacity(legal.len());
+            for &m in legal.as_slice() {
+                pos.do_move(m);
+                let penalty: i32 = generate_legal(&pos)
+                    .iter()
+                    .map(|&opp| if pos.is_capture(opp) { 100 } else { 1 })
+                    .sum();
+                pos.undo_move(m);
+                cand.push((m, -penalty));
+            }
+            // Order by that first, so the DTZ sort below — which is stable — keeps it as
+            // the tie-break between moves the tables rank equally.
+            cand.sort_by_key(|&(_, pen)| core::cmp::Reverse(pen));
+
+            // Ranked by distance this time: the winner wants the shortest win, and the
+            // loser the longest defeat, which is the same ordering seen from each side.
+            let Some(ranked) = self.rank_for_extension(&tb, &pos, true) else { break };
+            cand.sort_by_key(|&(m, _)| {
+                core::cmp::Reverse(ranked.iter().find(|r| r.mv == m).map_or(i32::MIN, |r| r.rank))
+            });
+
+            let chosen = cand[0].0;
+            pv.push(chosen);
+            pos.do_move(chosen);
+        }
+
+        // Reaching a draw here is exceptional, and only possible when the position was set
+        // up with a fifty-move counter the tables cannot rank exactly. The score follows the
+        // line actually found rather than the one the search believed.
+        if pos.is_draw(0) {
+            *v = VALUE_DRAW;
+        }
+
+        self.root_moves[self.pv_index].pv = pv;
+    }
+
+    /// Rank every legal move of `pos`, for the PV extension only.
+    ///
+    /// Returns `None` unless the DTZ tables answer for the whole position, because a
+    /// partially ranked list would let the extension play a move nothing vouched for.
+    fn rank_for_extension(
+        &self,
+        tb: &crate::platform::syzygy::TableRegistry,
+        pos: &Position,
+        rank_dtz: bool,
+    ) -> Option<Vec<crate::platform::syzygy::RankedRootMove>> {
+        if pos.piece_total() > tb.max_cardinality()
+            || pos.can_castle(crate::board::types::CastlingRights::ANY)
+        {
+            return None;
+        }
+        tb.root_probe(pos, self.tb_use_rule50, rank_dtz)
+    }
+
     /// Emit one `info` line for the current PV slot.
     fn report(
-        &self,
+        &mut self,
         depth: i32,
         score: Value,
         bound: Option<bool>,
         tt: &TranspositionTable,
         sink: &mut dyn InfoSink,
     ) {
-        let rm = &self.root_moves[self.pv_index];
         // With the root in the tables, show what the tables say. A mate score is left alone:
         // a forced mate is more specific than "this is a win", so it outranks the verdict.
-        let score = if self.root_in_tb && score.abs() < VALUE_MATE_IN_MAX_PLY {
-            rm.tb_score
-        } else {
-            score
-        };
+        let is_tb_score = self.root_in_tb && score.abs() < VALUE_MATE_IN_MAX_PLY;
+        let mut score = if is_tb_score { self.root_moves[self.pv_index].tb_score } else { score };
+
+        // A proven win whose PV stops in mid-air tells the operator nothing about how it is
+        // won. Walk it out to mate while the tables can still vouch for every move.
+        if super::score::is_decisive(score)
+            && score.abs() < VALUE_MATE_IN_MAX_PLY
+            && (bound.is_none() || is_tb_score)
+        {
+            self.syzygy_extend_pv(&mut score);
+        }
+
+        let rm = &self.root_moves[self.pv_index];
         // Real milliseconds even under `nodestime`: a GUI reading `time` wants wall clock,
         // and the node budget is the engine's business rather than the GUI's.
         let elapsed = self.budget.elapsed_time().max(1) as u64;
@@ -1698,6 +1840,50 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), 3);
+    }
+
+    /// The shipped 3-man set, or `None` when it is absent and the test must skip.
+    fn table_dir() -> Option<String> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)?
+            .join("resources/syzygy");
+        dir.join("KRvK.rtbw").is_file().then(|| dir.to_string_lossy().into_owned())
+    }
+
+    /// A sink that keeps the last line it was handed.
+    #[derive(Default)]
+    struct LastPv(Vec<String>);
+
+    impl InfoSink for LastPv {
+        fn depth_finished(&mut self, r: &DepthReport<'_>) {
+            self.0 = r.pv.to_vec();
+        }
+    }
+
+    #[test]
+    fn a_won_tablebase_pv_is_walked_out_to_mate() {
+        let Some(dir) = table_dir() else { return };
+        let tb = Arc::new(crate::platform::syzygy::TableRegistry::discover(&dir));
+
+        let pos = Position::from_fen("8/8/8/8/4k3/8/1R6/4K3 w - - 0 1", false).expect("valid");
+        let mut w = SearchWorker::new(0, SharedState::new());
+        w.set_tablebases(Some(tb));
+        let tt = TranspositionTable::new(8);
+        let limits = Limits { depth: Some(6), start: Some(Instant::now()), ..Limits::default() };
+        let mut sink = LastPv::default();
+        w.search(&pos, &limits, &tt, &SearchOptions::default(), TimeBudget::default(), &mut sink);
+
+        // Replay the reported line. It must be legal throughout and end in mate -- a PV that
+        // stops while the position is still won is the thing this feature exists to fix.
+        let mut walk = pos.clone();
+        assert!(!sink.0.is_empty(), "no PV was reported");
+        for uci in &sink.0 {
+            let m = crate::board::movegen::parse_uci_move(&walk, uci)
+                .unwrap_or_else(|| panic!("PV move {uci} is not legal in {walk}"));
+            walk.do_move(m);
+        }
+        assert!(generate_legal(&walk).is_empty() && walk.in_check(), "the PV does not end in mate");
     }
 
     #[test]

@@ -53,13 +53,17 @@ state. Check the state against the tree before acting on it:
   the WDL and DTZ probes, and the root ranking feeds the search: `root_probe` orders the
   root moves and switches the in-search probe off once the tables have settled the game.
   `cargo xtask tb` compares WDL and DTZ against a pristine upstream build position by
-  position. Open: the 5-man cursed-win branches (they need a 5-man set to exercise; the
-  repo ships 3-man), a block cache for 7-man tables, and `syzygy_extend_pv` — upstream
-  walks a won PV out to mate, and rfish truncates where the search stopped.
+  position, and `syzygy_extend_pv` walks a won PV out to mate. Open, and both blocked on
+  table data rather than on code: the 5-man cursed-win branches (they need a 5-man set to
+  exercise; the repo ships 3-man) and a block cache for 7-man tables (which would be
+  gigabytes resident without one).
 - **Lazy-SMP** — **wired, with the best-move vote.** `Threads` builds a worker set, a `go`
   runs N workers over one root through `std::thread::scope`, and the move played is the one
-  the pool agrees on. There is no NUMA model and no network replication — there are weights
-  to replicate now, so that is real open work rather than a blocked item.
+  the pool agrees on. There is no NUMA model and no network replication, and that is
+  **blocked rather than pending**: replication is only worth its 112 MiB per copy if threads
+  can be pinned to the node holding their copy, and `std` exposes no affinity API — pinning
+  and node-local allocation are both FFI. See [docs/06-platform.md](docs/06-platform.md).
+  Do not "fix" this by adding a crate or an `unsafe` block.
 - **The option model** — **every declared option is acted on.** The `uci` handshake matches
   a pristine upstream build's name for name and in order, and the handshake golden pins it
   byte for byte. `Skill Level`, `UCI_LimitStrength` and `UCI_Elo` run upstream's `Skill`;

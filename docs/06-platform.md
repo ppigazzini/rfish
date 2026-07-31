@@ -23,8 +23,27 @@ Syzygy prober reads with positioned file reads instead; see
 of the search. There is no pool to own, no join to forget, and no lifetime to assert by
 hand. See [04-multithreading.md](04-multithreading.md).
 
-**NUMA.** There is nothing to replicate until the network lands, and binding threads to
-nodes without replicated weights is worse than not binding them.
+**NUMA.** Upstream keeps one copy of the network per NUMA node and binds each thread to
+the node holding the copy it reads. rfish keeps one `Arc<Network>` for the whole pool.
+
+The old reason for this ("nothing to replicate until the network lands") expired when the
+network landed. The real one is sharper, and it is the first case in this port where the
+no-`unsafe` constraint blocks a feature outright rather than redirecting it:
+
+- Topology discovery is **fine** — `/sys/devices/system/node/*/cpulist` is a text file, and
+  reading it needs nothing but `std::fs`.
+- Pinning a thread to a node is **not possible in safe Rust**. `std` exposes no affinity
+  API at all; `sched_setaffinity` and `SetThreadAffinityMask` are FFI, which means `unsafe`
+  or a dependency, and the engine crate has neither.
+- Placing an allocation on a node is **not possible either**. `mbind`/`set_mempolicy` are
+  FFI for the same reason, and the only alternative is first-touch — which delivers locality
+  only if the touching thread is pinned, and it cannot be.
+
+Replicating without placement control would cost 112 MiB per replica to buy locality that
+nothing guarantees. That is not a trade to make speculatively, and it cannot be measured
+here: this machine reports a single node, so every arm of the experiment would return the
+same number. **The item is blocked, not pending.** Reopen it if `std` ever grows an affinity
+API, or if the zero-dependency rule is revisited on purpose rather than by accident.
 
 **Timing.** `std::time::Instant` is monotonic on every platform rfish targets, which is the
 only property the time manager needs. There is no per-platform clock module.
