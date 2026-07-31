@@ -143,6 +143,7 @@ nodes and startup subtracted by a `quit`-only run:
 | merged threat-index tables | 3,589,208,299 | 1.833 |
 | unrolled threat attacker dispatch | 3,548,072,611 | 1.812 |
 | chunk-walked sparse weight rows | 3,528,438,652 | 1.802 |
+| `std::simd` non-zero scan in the sparse layer | 3,202,332,317 | **1.635** |
 | **upstream** | **1,958,088,252** | **1.000** |
 
 ### Falsified, with numbers
@@ -159,8 +160,14 @@ attempt starts past them rather than at them.
 | folding both feature kinds in a single sweep | 3,599M → 3,800M |
 | per-ply stack again, with the parent read fused into the fold | 3,528M → 3,806M |
 | fold tile of 32 / of 256 | 4,093M / 4,037M against 3,599M at 128 |
+| the fold rewritten with `std::simd`, one vector and two | a wash at `native`, worse at `nehalem` |
 
-The last four all say the same thing: the sparse layer's inner loop and the fold are
+The fold entry is worth reading with the disassembly beside it: it was ALREADY emitting
+`vpaddw` on four `zmm` registers, so explicit SIMD had nothing left to give it. Check what
+the compiler emits before rewriting a kernel by hand — the sparse layer's branch was worth
+`std::simd` and the fold was not, and only `objdump` distinguishes them.
+
+The scalar entries all say the same thing: the sparse layer's inner loop and the fold are
 at a local optimum for what LLVM will emit from safe scalar Rust, and reshaping the
 arithmetic to *look* more like upstream's vector kernels makes it worse, because the
 shapes upstream chose are the ones its instructions reward and not the ones the

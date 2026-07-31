@@ -21,11 +21,22 @@ exists to demonstrate. When a construct appears to need `unsafe`, the answer is 
 construct — see [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md), which records the
 one that worked for every case so far. Do not:
 
-- reach for `std::simd`, `stdarch` intrinsics, or any nightly feature (the toolchain is
-  pinned to **stable** in `rust-toolchain.toml`, and the pin is deliberate);
+- reach for `stdarch` intrinsics, or for any crate that wraps them — every intrinsic in
+  `std::arch` is an `unsafe fn`, which is the whole reason they are out;
 - add a crates.io dependency to get an `unsafe` block written somewhere else — the engine
   crate has **zero** dependencies and that is a reviewed property, not an accident;
 - "temporarily" allow it behind a `cfg`.
+
+**`std::simd` is the ONE exception, and it is not an exception to the rule above.** It is
+safe — it needs no `unsafe` block — so `forbid(unsafe_code)` is untouched and
+`cargo xtask unsafe-lint` still asserts it. It costs a **nightly** toolchain, pinned to a
+dated one in `rust-toolchain.toml`, and that pin was bought deliberately: the NNUE
+evaluation sat at 1.8x a pristine upstream build while ../zfish, writing the same kernels
+with Zig's `@Vector`, sat near 0.9x, and the disassembly said rfish's autovectorised loops
+were already as good as that route gets. Use it in the NNUE kernels where a measurement
+says it pays. Do NOT use it as a first resort elsewhere: five scalar reformulations of the
+same kernels made things WORSE, and the reason is in
+[docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) section 12.
 
 ## The golden
 
