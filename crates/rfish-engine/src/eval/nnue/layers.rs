@@ -95,9 +95,12 @@ impl AffineLayer {
     }
 
     /// `output[o] = bias[o] + sum_i weight[o][i] * input[i]`.
-    pub fn propagate(&self, input: &[u8], output: &mut [i32]) {
+    ///
+    /// `N` is the output width, static for the same reason as in
+    /// [`AffineLayer::propagate_sparse`].
+    pub fn propagate<const N: usize>(&self, input: &[u8], output: &mut [i32; N]) {
         debug_assert!(input.len() >= self.input_dims);
-        debug_assert_eq!(output.len(), self.output_dims);
+        debug_assert_eq!(N, self.output_dims);
         let rows = self.weights.chunks_exact(self.padded_dims);
         for ((out, bias), row) in output.iter_mut().zip(self.biases.iter()).zip(rows) {
             let mut sum = *bias;
@@ -128,12 +131,16 @@ impl AffineLayer {
     /// 60% outright. Measured, `bench 16 1 8` at `nehalem`, against the same net and the
     /// same 166 964 nodes: groups of four 5,783,523,617 instructions, groups of one
     /// 4,769,344,411.
-    pub fn propagate_sparse(&self, input: &[u8], output: &mut [i32]) {
+    /// `N` is the output width, static so the accumulators can stay in registers. Through a
+    /// `&mut [i32]` the compiler must assume the stores alias the weights it is reading and
+    /// spills all of them on every input; through a fixed-size array taken by value it does
+    /// not have to.
+    pub fn propagate_sparse<const N: usize>(&self, input: &[u8], output: &mut [i32; N]) {
         debug_assert!(input.len() >= self.input_dims);
-        debug_assert_eq!(output.len(), self.output_dims);
+        debug_assert_eq!(N, self.output_dims);
 
-        output.copy_from_slice(&self.biases);
-        let stride = self.output_dims;
+        let mut acc = [0i32; N];
+        acc.copy_from_slice(&self.biases);
         for (i, &x) in input[..self.input_dims].iter().enumerate() {
             if x == 0 {
                 continue;
@@ -141,11 +148,12 @@ impl AffineLayer {
             let x = i32::from(x);
             // Every output's weight for THIS input, contiguously — one broadcast multiply
             // over a short fixed run, which is the shape the vectoriser wants.
-            let block = &self.sparse[i * stride..i * stride + stride];
-            for (out, &w) in output.iter_mut().zip(block.iter()) {
+            let block = &self.sparse[i * N..i * N + N];
+            for (out, &w) in acc.iter_mut().zip(block.iter()) {
                 *out += i32::from(w) * x;
             }
         }
+        *output = acc;
     }
 
     /// How many outputs this layer has.
