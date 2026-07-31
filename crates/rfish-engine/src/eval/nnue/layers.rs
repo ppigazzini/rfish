@@ -39,6 +39,9 @@ pub struct AffineLayer {
     output_dims: usize,
     biases: Vec<i32>,
     weights: Vec<i8>,
+    /// The same weights in the order [`AffineLayer::propagate_sparse`] walks them, or empty
+    /// when that path is not enabled for this layer. See [`AffineLayer::enable_sparse`].
+    sparse: Vec<i8>,
 }
 
 impl AffineLayer {
@@ -52,6 +55,23 @@ impl AffineLayer {
             output_dims,
             biases: vec![0; output_dims],
             weights: vec![0; output_dims * padded_dims],
+            sparse: vec![0; input_dims * output_dims],
+        }
+    }
+
+    /// Rebuild the transposed weight copy [`AffineLayer::propagate_sparse`] reads.
+    ///
+    /// Maintained as an invariant rather than offered as an opt-in: every path that changes
+    /// the weights ends here, so no caller can leave the two copies disagreeing. The dense
+    /// weights stay as they were read, so [`AffineLayer::write`] still round-trips the file.
+    fn rebuild_sparse(&mut self) {
+        for o in 0..self.output_dims {
+            for i in 0..self.input_dims {
+                // Transposed: every output's weight for one input, contiguously. That is
+                // the run `propagate_sparse` sweeps once it has decided an input is worth
+                // visiting at all.
+                self.sparse[i * self.output_dims + o] = self.weights[o * self.padded_dims + i];
+            }
         }
     }
 
@@ -63,6 +83,7 @@ impl AffineLayer {
     pub fn read(&mut self, r: &mut NetReader<impl std::io::Read>) -> Result<(), NetError> {
         r.i32s(&mut self.biases)?;
         r.i8s(&mut self.weights)?;
+        self.rebuild_sparse();
         Ok(())
     }
 
@@ -84,6 +105,46 @@ impl AffineLayer {
                 sum += i32::from(*w) * i32::from(x);
             }
             *out = sum;
+        }
+    }
+
+    /// The same result as [`AffineLayer::propagate`], skipping the inputs that are zero.
+    ///
+    /// This is upstream's `AffineTransformSparseInput`, and it is the first layer's whole
+    /// cost model. The activation feeding it clamps at zero from below, so most of its 1024
+    /// outputs ARE zero — and a zero input contributes zero to every output, so the chunks
+    /// containing only zeros can be skipped outright. The result is bit-identical by
+    /// construction rather than by approximation: nothing is dropped that could have
+    /// contributed.
+    ///
+    /// Inputs are tested ONE at a time, where upstream's kernel tests four. The two engines
+    /// are skipping zeros against different cost models. Upstream's `vpdpbusd` dots four
+    /// bytes in a single instruction, so a group of four costs it what a group of one costs
+    /// and the coarser test comes free. rfish has no such instruction and pays per multiply,
+    /// so the only thing that matters is how much work a test can skip — and a group is
+    /// skippable only when EVERY input in it is zero. At this layer's density four is the
+    /// wrong number: with roughly 40% of the inputs non-zero, a group of four survives the
+    /// test about 87% of the time and almost nothing is skipped, where a group of one skips
+    /// 60% outright. Measured, `bench 16 1 8` at `nehalem`, against the same net and the
+    /// same 166 964 nodes: groups of four 5,783,523,617 instructions, groups of one
+    /// 4,769,344,411.
+    pub fn propagate_sparse(&self, input: &[u8], output: &mut [i32]) {
+        debug_assert!(input.len() >= self.input_dims);
+        debug_assert_eq!(output.len(), self.output_dims);
+
+        output.copy_from_slice(&self.biases);
+        let stride = self.output_dims;
+        for (i, &x) in input[..self.input_dims].iter().enumerate() {
+            if x == 0 {
+                continue;
+            }
+            let x = i32::from(x);
+            // Every output's weight for THIS input, contiguously — one broadcast multiply
+            // over a short fixed run, which is the shape the vectoriser wants.
+            let block = &self.sparse[i * stride..i * stride + stride];
+            for (out, &w) in output.iter_mut().zip(block.iter()) {
+                *out += i32::from(w) * x;
+            }
         }
     }
 
