@@ -38,6 +38,18 @@ fn boxed<T: Copy, const N: usize>(fill: T) -> Box<[T; N]> {
     }
 }
 
+/// A `Box<[Line<[i16; N]>; R]>` with every entry `v`, for the two tables a raw 16-bit move
+/// indexes.
+///
+/// A row here is 128 KiB, and `clippy::large_stack_arrays` flags the literal on sight. It
+/// does not survive to the stack in an optimised build, and in an unoptimised one it is one
+/// frame on its way into the heap vector — the same trade [`boxed`] already documents.
+/// Written once so the suppression is stated once rather than at each table.
+#[allow(clippy::large_stack_arrays)]
+fn boxed_rows<const R: usize, const N: usize>(v: i16) -> Box<[Line<[i16; N]>; R]> {
+    boxed(Line([v; N]))
+}
+
 /// A table row forced onto a cache-line boundary.
 ///
 /// The history tables are the largest randomly indexed structures the search touches, and
@@ -106,16 +118,17 @@ fn apply_gravity(entry: &mut i16, bonus: i32, limit: i32) {
 /// "Butterfly" is the classic name: the index ignores which piece moved, so two different
 /// pieces travelling the same path share a counter.
 ///
-/// Stored FLAT rather than as nested arrays: a row is 128 KiB, and any construction that
-/// names the row type puts one of those on the stack on its way to the heap.
+/// One row per colour, each row on a cache-line boundary. A flat `Box<[i16]>` carried the
+/// alignment of an `i16`, so the allocator's sixteen-byte offset skewed the whole table for
+/// the life of the process; [`Line`] states the requirement the hardware actually has.
 #[derive(Debug)]
 pub struct ButterflyHistory {
-    table: Box<[i16]>,
+    table: Box<[Line<[i16; MOVE_HISTORY_SIZE]>; COLOR_NB]>,
 }
 
 impl Default for ButterflyHistory {
     fn default() -> ButterflyHistory {
-        ButterflyHistory { table: vec![0; COLOR_NB * MOVE_HISTORY_SIZE].into_boxed_slice() }
+        ButterflyHistory { table: boxed_rows(0) }
     }
 }
 
@@ -124,22 +137,18 @@ impl ButterflyHistory {
     #[inline(always)]
     #[must_use]
     pub fn get(&self, c: Color, mv: u16) -> i32 {
-        i32::from(self.table[c.index() * MOVE_HISTORY_SIZE + mv as usize])
+        i32::from(self.table[c.index()][mv as usize])
     }
 
     /// Move the stored score toward `bonus`.
     #[inline(always)]
     pub fn update(&mut self, c: Color, mv: u16, bonus: i32) {
-        apply_gravity(
-            &mut self.table[c.index() * MOVE_HISTORY_SIZE + mv as usize],
-            bonus,
-            MAIN_HISTORY_LIMIT,
-        );
+        apply_gravity(&mut self.table[c.index()][mv as usize], bonus, MAIN_HISTORY_LIMIT);
     }
 
     /// Reset every entry to `v`.
     pub fn fill(&mut self, v: i16) {
-        self.table.iter_mut().for_each(|x| *x = v);
+        self.table.iter_mut().for_each(|row| row.fill(v));
     }
 
     /// Scale every entry by `num / den`.
@@ -147,21 +156,21 @@ impl ButterflyHistory {
     /// Upstream decays the butterfly table between moves rather than clearing it: the
     /// previous move's ordering is still evidence, just weaker than the current one's.
     pub fn decay(&mut self, num: i32, den: i32) {
-        self.table.iter_mut().for_each(|x| *x = (i32::from(*x) * num / den) as i16);
+        self.table
+            .iter_mut()
+            .for_each(|row| row.iter_mut().for_each(|x| *x = (i32::from(*x) * num / den) as i16));
     }
 }
 
 /// Quiet-move history for the plies nearest the root, where ordering matters most.
 #[derive(Debug)]
 pub struct LowPlyHistory {
-    table: Box<[i16]>,
+    table: Box<[Line<[i16; MOVE_HISTORY_SIZE]>; LOW_PLY_HISTORY_SIZE]>,
 }
 
 impl Default for LowPlyHistory {
     fn default() -> LowPlyHistory {
-        LowPlyHistory {
-            table: vec![0; LOW_PLY_HISTORY_SIZE * MOVE_HISTORY_SIZE].into_boxed_slice(),
-        }
+        LowPlyHistory { table: boxed_rows(0) }
     }
 }
 
@@ -169,22 +178,18 @@ impl LowPlyHistory {
     #[inline(always)]
     #[must_use]
     pub fn get(&self, ply: usize, mv: u16) -> i32 {
-        i32::from(self.table[ply * MOVE_HISTORY_SIZE + mv as usize])
+        i32::from(self.table[ply][mv as usize])
     }
 
     #[inline(always)]
     pub fn update(&mut self, ply: usize, mv: u16, bonus: i32) {
-        apply_gravity(
-            &mut self.table[ply * MOVE_HISTORY_SIZE + mv as usize],
-            bonus,
-            MAIN_HISTORY_LIMIT,
-        );
+        apply_gravity(&mut self.table[ply][mv as usize], bonus, MAIN_HISTORY_LIMIT);
     }
 
     /// Reset every entry to `v`. Upstream refills this at the start of every iteration,
     /// not on `ucinewgame`.
     pub fn fill(&mut self, v: i16) {
-        self.table.iter_mut().for_each(|x| *x = v);
+        self.table.iter_mut().for_each(|row| row.fill(v));
     }
 }
 
