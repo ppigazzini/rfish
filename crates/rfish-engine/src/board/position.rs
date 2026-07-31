@@ -252,6 +252,16 @@ impl Position {
         self.states.last_mut().expect("the state chain is never empty")
     }
 
+    /// The whole placement, for a caller that compares two of them square by square.
+    ///
+    /// The NNUE accumulator diffs the board it last saw against this one to derive the
+    /// king-piece features that changed, which is cheaper than rebuilding the set.
+    #[inline]
+    #[must_use]
+    pub fn board(&self) -> &[Piece; SQUARE_NB] {
+        &self.board
+    }
+
     /// The piece standing on `sq`, or [`Piece::NONE`].
     #[inline(always)]
     #[must_use]
