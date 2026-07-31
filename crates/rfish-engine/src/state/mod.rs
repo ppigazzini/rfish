@@ -287,12 +287,31 @@ impl SharedState {
 
     /// Clear the signals and counters for a new search.
     pub fn reset(&self) {
-        self.stop.store(false, Ordering::Relaxed);
+        // NOT the stop flag -- see [`SharedState::clear_stop`], which owns it. Clearing it
+        // here would discard a `stop` that arrived between the `go` being READ and the
+        // search starting, which is the normal case when a GUI pipes both at once.
         self.nodes.store(0, Ordering::Relaxed);
         self.tb_hits.store(0, Ordering::Relaxed);
         self.best_move_changes.store(0, Ordering::Relaxed);
         self.increase_depth.store(true, Ordering::Relaxed);
         self.stop_on_ponderhit.store(false, Ordering::Relaxed);
+    }
+
+    /// Drop a previous search's stop request.
+    ///
+    /// Split out of [`SharedState::reset`] because the two happen at different TIMES. The
+    /// counters are reset when a search starts; the stop flag has to be cleared when the
+    /// command that starts it is first OBSERVED, which is earlier and, in the shipped
+    /// binary, on another thread. A `stop` sitting in the same buffer behind a `go` is seen
+    /// by the input reader before the main loop has dispatched the `go` at all, so anything
+    /// that cleared this later would throw the request away and leave the search unstoppable
+    /// -- which is exactly what a fuzz run found.
+    ///
+    /// Upstream has no equivalent because it reads and dispatches on one thread: its `go` is
+    /// fully dispatched before the next line is looked at. rfish reads ahead so that a `stop`
+    /// can reach a search that is already running, and this is the cost of that.
+    pub fn clear_stop(&self) {
+        self.stop.store(false, Ordering::Relaxed);
     }
 
     /// True while the search is thinking on the opponent's clock.
@@ -605,6 +624,11 @@ mod tests {
         shared.request_stop();
         shared.add_nodes(100);
         shared.reset();
+        // `reset` leaves the request alone: a stop can arrive before the search it is meant
+        // for has started, and only `clear_stop` -- called when the command is observed --
+        // is early enough to be allowed to drop one.
+        assert!(shared.stopped(), "reset must not discard a pending stop");
+        shared.clear_stop();
         assert!(!shared.stopped());
         assert_eq!(shared.node_count(), 0);
     }

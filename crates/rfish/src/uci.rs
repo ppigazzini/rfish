@@ -92,6 +92,15 @@ pub(crate) struct Engine {
     network: Option<Arc<nnue::Network>>,
     /// The processor topology the `NumaPolicy` option selected.
     numa: NumaConfig,
+    /// Whether an input reader is clearing the stop flag on this engine's behalf.
+    ///
+    /// There are two ways in: the shipped binary, which reads ahead on its own thread, and a
+    /// direct `handle` call from a test or a golden harness, which has no reader at all. The
+    /// stop flag must be cleared exactly once per search command, at the earliest point that
+    /// OBSERVES it -- the reader where there is one, `handle` where there is not. Doing it in
+    /// both would race the reader and undo a real `stop`; doing it in neither leaves a stale
+    /// one to truncate the next search. Both mistakes were made before this flag existed.
+    reader_owns_stop: bool,
 }
 
 impl core::fmt::Debug for Engine {
@@ -122,6 +131,7 @@ impl Engine {
             tablebases: None,
             network: None,
             numa,
+            reader_owns_stop: false,
         }
     }
 
@@ -491,6 +501,11 @@ impl Engine {
     }
 
     fn cmd_go(&mut self, args: &[&str], out: &mut impl Write) {
+        // With no reader thread ahead of this call, here is the earliest point that observes
+        // the command, so here is where the previous search's stop is dropped.
+        if !self.reader_owns_stop {
+            self.pool.shared().clear_stop();
+        }
         // `go perft N` is a movegen command, not a search: answer it and return.
         if let Some(i) = args.iter().position(|&t| t == "perft") {
             let depth: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -616,6 +631,9 @@ impl Engine {
     }
 
     fn cmd_bench(&mut self, args: &[&str], out: &mut impl Write) {
+        if !self.reader_owns_stop {
+            self.pool.shared().clear_stop();
+        }
         let spec = BenchSpec::parse(args);
         let entries: Vec<String> =
             if spec.entries.is_empty() { vec![self.pos.fen()] } else { spec.entries.clone() };
@@ -759,6 +777,8 @@ pub(crate) fn run(input: impl BufRead + Send + 'static, output: impl Write) {
     engine.report_configuration(&mut output);
     engine.load_network(&mut output);
 
+    // The reader below clears the stop flag, so `handle` must not: see `reader_owns_stop`.
+    engine.reader_owns_stop = true;
     let shared = Arc::clone(engine.pool.shared());
     let (tx, rx) = std::sync::mpsc::channel::<String>();
 
@@ -767,10 +787,19 @@ pub(crate) fn run(input: impl BufRead + Send + 'static, output: impl Write) {
     std::thread::spawn(move || {
         for line in input.lines() {
             let Ok(line) = line else { break };
-            match line.trim() {
+            let trimmed = line.trim();
+            let starts_search = trimmed == "go"
+                || trimmed == "bench"
+                || trimmed.starts_with("go ")
+                || trimmed.starts_with("bench ");
+            match trimmed {
                 "stop" => shared.request_stop(),
                 "ponderhit" => shared.ponder_hit(),
                 "quit" if shared.searching_unbounded() => shared.request_stop(),
+                // Cleared HERE, where the command is read, and not where the search starts:
+                // a `stop` behind it in the same buffer reaches this thread first, and
+                // clearing any later would drop it.
+                _ if starts_search => shared.clear_stop(),
                 _ => {}
             }
             if tx.send(line).is_err() {

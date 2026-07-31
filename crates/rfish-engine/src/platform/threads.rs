@@ -198,6 +198,12 @@ impl ThreadPool {
         }
 
         self.shared.set_searching_unbounded(false);
+        // Drop the stop this search raised to bring its own helpers home, so the next one
+        // does not inherit it and abort at depth zero. Only the search's OWN leftover is
+        // cleared, and only once it is over: a `stop` that arrives before the next search
+        // starts belongs to that next search, and dropping it here would be the very bug
+        // this split exists to prevent. See `SharedState::clear_stop`.
+        self.shared.clear_stop();
         result.nodes = self.shared.node_count().max(result.nodes);
 
         // Charge the game-long node budget for what this move spent, less the increment it

@@ -34,9 +34,6 @@ use crate::runner::{GATE_PROFILE, Outcome, build_engine, cargo};
 /// runner's own timeout kills it with no evidence.
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long a `stop` is given to land in a search that is already running.
-const STOP_PAUSE: Duration = Duration::from_millis(120);
-
 /// Tokens a mutation is built from.
 ///
 /// Half of these are legal UCI and half are not, on purpose. A fuzzer that only emits
@@ -121,24 +118,18 @@ fn drive_bounded(engine: &Path, cwd: &Path, script: &[String]) -> Result<Option<
         }
         stdin.flush().map_err(|e| format!("writing to the engine: {e}"))?;
 
-        // Then drain, one `stop` per line in the burst, each after a pause.
+        // One `stop` per line of the burst, and no pauses. A burst can legitimately start an
+        // UNBOUNDED search -- `go infinite`, `go mate 1`, or a bare `go` with no limit -- and
+        // it can contain SEVERAL, each needing its own stop, because the commands queued
+        // behind the first are not dispatched until it returns.
         //
-        // Two things make this necessary. A burst can legitimately start an UNBOUNDED search
-        // -- `go infinite`, `go mate 1`, or a bare `go` with no limit -- and it can contain
-        // SEVERAL of them, each of which has to be ended separately, because the commands
-        // queued behind the first are not dispatched until it returns.
-        //
-        // The pause is the other half. A GUI ends a search by sending `stop` while it runs;
-        // delivering it in the same buffer instead races the start of the search, and rfish
-        // currently loses that race -- the reader thread reads ahead and requests the stop
-        // before the main loop has dispatched the `go`, whose `SharedState::reset` then
-        // clears it. That divergence from upstream is real and reproduced in
-        // docs/09-tooling-ci.md; it is a concurrency fix rather than a parser one, so this
-        // step reproduces a GUI's timing rather than re-finding it every night.
+        // Buffering them all is safe now and was not always: a `stop` behind a `go` in the
+        // same write used to be dropped, because the input reader saw it before the main loop
+        // had dispatched the `go`, whose reset then cleared it. This step found that, and it
+        // is fixed -- see `SharedState::clear_stop`. Sending them unpaced is the stronger
+        // test of the two, so it is what runs.
         for _ in 0..=script.len() {
-            std::thread::sleep(STOP_PAUSE);
             writeln!(stdin, "stop").map_err(|e| format!("writing to the engine: {e}"))?;
-            stdin.flush().map_err(|e| format!("writing to the engine: {e}"))?;
         }
 
         writeln!(stdin, "isready").map_err(|e| format!("writing to the engine: {e}"))?;
