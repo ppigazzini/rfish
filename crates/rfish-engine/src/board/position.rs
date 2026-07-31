@@ -167,27 +167,34 @@ impl fmt::Display for FenError {
 }
 
 /// A chess position, plus the state chain reaching it.
+#[repr(C)]
 #[derive(Clone, Debug)]
 pub struct Position {
+    // `board` FIRST, as upstream declares it, and `#[repr(C)]` so it STAYS first. It is
+    // exactly 64 bytes -- one cache line -- and only at offset 0 does `piece_on` touch a
+    // single line per read. Rust's default representation orders by alignment, which puts
+    // the 8-byte bitboard arrays ahead of a `[Piece; 64]` and pushes the board off the
+    // line boundary; `piece_on` is among the most frequent reads in the engine (movepick
+    // scoring, SEE, gives_check, legality and every make), so a random square read was
+    // landing on one of two lines. ../mcfish 41d17080 found and fixed the same thing.
     board: [Piece; SQUARE_NB],
     /// Index 0 ([`PieceType::ALL_PIECES`]) is the total occupancy, not an empty set.
     by_type: [Bitboard; PIECE_TYPE_NB],
     by_color: [Bitboard; COLOR_NB],
     piece_count: [i32; PIECE_NB],
-    side_to_move: Color,
-    game_ply: i32,
+    castling_rights_mask: [CastlingRights; SQUARE_NB],
     /// The rook origin per castling right, so Chess960 castling is a data lookup rather
     /// than a special case in the generator.
     castling_rook_square: [Square; 16],
     /// The squares the king and rook must find EMPTY for each right, minus the two movers
     /// themselves. Precomputed so the test is one AND against the occupancy.
     castling_path: [Bitboard; 16],
-    /// For each square, the rights that moving from or to it destroys.
-    castling_rights_mask: [CastlingRights; SQUARE_NB],
-    chess960: bool,
-    /// The state chain. NEVER empty: index 0 is the position as set up, and the last entry
-    /// is the current state.
+    /// The state chain. Upstream holds a `StateInfo*` here; rfish owns the chain and walks
+    /// it by index, which is what removes the pointer without removing the history.
     states: Vec<StateInfo>,
+    game_ply: i32,
+    side_to_move: Color,
+    chess960: bool,
 }
 
 impl Default for Position {
