@@ -399,6 +399,7 @@ impl SearchWorker {
     /// to key on. That constant is not a neutral zero: it is what the sum looks like when
     /// the other four terms have nothing to say, and it biases the correction the same way
     /// a typical continuation entry would.
+    #[inline]
     fn correction_value(&self, si: usize) -> i32 {
         let us = self.pos.side_to_move();
         let st = self.pos.st();

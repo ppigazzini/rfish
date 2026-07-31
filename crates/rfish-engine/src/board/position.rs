@@ -751,6 +751,7 @@ impl Position {
     /// The `occ` argument is what lets the static exchange evaluation replay a capture
     /// sequence by removing pieces from a local occupancy rather than from the board.
     #[must_use]
+    #[inline]
     pub fn attackers_to_occ(&self, sq: Square, occ: Bitboard) -> Bitboard {
         (pawn_attacks_from(Color::Black, sq) & self.pieces_of(Color::White, PieceType::Pawn))
             | (pawn_attacks_from(Color::White, sq) & self.pieces_of(Color::Black, PieceType::Pawn))
@@ -767,6 +768,7 @@ impl Position {
     /// Returns `(blockers, pinners)`. A blocker of either colour is returned: an own
     /// blocker is pinned, an enemy blocker could deliver a discovered check by moving.
     #[must_use]
+    #[inline]
     pub fn slider_blockers(&self, c: Color, sq: Square) -> (Bitboard, Bitboard) {
         let mut blockers = Bitboard::EMPTY;
         let mut pinners = Bitboard::EMPTY;
@@ -842,6 +844,7 @@ impl Position {
     /// move only; a non-zero `other` means an irreversible change happened in between and
     /// no single move can bridge the gap.
     #[must_use]
+    #[inline]
     pub fn upcoming_repetition(&self, ply: i32) -> bool {
         let top = self.states.len() - 1;
         let st = &self.states[top];
