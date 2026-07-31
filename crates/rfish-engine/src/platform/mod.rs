@@ -16,5 +16,6 @@
 //!
 //! See `docs/06-platform.md`.
 
+pub mod numa;
 pub mod syzygy;
 pub mod threads;
