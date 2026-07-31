@@ -19,9 +19,9 @@ pub mod classical;
 pub mod nnue;
 
 use crate::board::position::Position;
-use crate::board::types::{
-    Color, PieceType, VALUE_DRAW, VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY, Value,
-};
+use crate::board::types::{Color, PieceType, VALUE_DRAW, Value};
+#[cfg(not(feature = "eval-material"))]
+use crate::board::types::{VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY};
 
 /// The static evaluation of `pos`, from the side to move's point of view.
 ///
@@ -30,6 +30,7 @@ use crate::board::types::{
 /// network is unsure about lets the search's own expectation weigh more.
 ///
 /// With no network resident this falls back to [`classical`], which ignores both.
+#[cfg(not(feature = "eval-material"))]
 #[must_use]
 pub fn evaluate(
     pos: &Position,
@@ -48,6 +49,47 @@ pub fn evaluate(
     v.clamp(VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1)
 }
 
+/// The spine-isolation stand-in for [`evaluate`], with the same signature.
+#[cfg(feature = "eval-material")]
+#[must_use]
+pub fn evaluate(
+    pos: &Position,
+    network: Option<&nnue::Network>,
+    scratch: &mut nnue::Scratch,
+    optimism: Value,
+) -> Value {
+    // The network, the scratch buffers and the optimism term are all deliberately unused:
+    // taking them out of the per-node cost is the entire point of this build.
+    let _ = (network, scratch, optimism);
+    material_only(pos)
+}
+
+/// Score the position by material alone, ignoring optimism, the clock and every network.
+///
+/// MEASUREMENT HARNESS, compiled only under the `eval-material` feature and off in every
+/// shipped build. It isolates the search spine from the evaluation, so a differential
+/// against an oracle patched with the SAME formula measures the search and nothing else.
+///
+/// The weights are written here rather than read from the engine's own tables precisely so
+/// the two sides cannot drift: the trees must come out identical or the differential is
+/// void, and the harness asserts that before reporting. No rule50 damping and no clamp
+/// either, for the same reason -- the oracle's patched evaluation has neither.
+#[cfg(feature = "eval-material")]
+#[must_use]
+fn material_only(pos: &Position) -> Value {
+    const WEIGHT: [i32; 6] = [0, 100, 320, 330, 500, 900];
+    let us = pos.side_to_move();
+    let them = !us;
+    let mut v = 0;
+    for pt in
+        [PieceType::Pawn, PieceType::Knight, PieceType::Bishop, PieceType::Rook, PieceType::Queen]
+    {
+        v += WEIGHT[pt.index()] * (pos.count(us, pt) - pos.count(them, pt));
+    }
+    v
+}
+
+#[cfg(not(feature = "eval-material"))]
 /// Upstream's blend of the two network heads with the search's optimism.
 ///
 /// Every constant is upstream's and every one was fitted against this network; changing one

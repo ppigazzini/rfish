@@ -11,6 +11,14 @@ authors.workspace = true
 # No dependencies. Not "few" -- none. See the note in the workspace manifest.
 [dependencies]
 
+[features]
+# MEASUREMENT HARNESS, never a build mode. Replaces the per-node evaluation with a
+# material sum, so a differential against an oracle patched with the SAME formula
+# measures the search spine -- movegen, movepick, the histories, the TT, the pruning
+# arithmetic -- instead of reading it through the network. The binary it produces plays
+# badly by construction and moves the bench anchor, so no gate accepts it.
+eval-material = []
+
 [lints]
 workspace = true
 
