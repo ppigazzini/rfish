@@ -236,6 +236,21 @@ observable -- `movestogo -5` is accepted there, `nodes 99999999999999999999` is 
 overflow. The error line is byte-identical to a pristine upstream build's, diffed rather than
 eyeballed.
 
+**How the step delivers its stops, and why it is not a knob.** One `stop` per line of the
+burst, each after a pause. A burst can start SEVERAL unbounded searches — `go infinite`,
+`go mate 1`, or a bare `go` with no limit — and the commands queued behind the first are not
+dispatched until it returns, so each needs a stop that arrives while IT is the one running.
+Writing them all at once puts every one in the buffer before the first search starts, where
+they collapse into the single flag that search consumes, and the second unbounded `go` then
+runs forever. A pristine upstream build does exactly the same on exactly the same input —
+verified, both hang — so this is the shape of the protocol rather than a defect in either
+engine.
+
+Worth stating because the unpaced form LOOKS fine: it stays green for fifty-odd scripts and
+wedges somewhere past three hundred. A fuzz step is only ever run to its budget in the
+nightly job, so a harness bug that needs 300 scripts to show up is one a developer running it
+for thirty seconds will never see. Run it at the scheduled budget before believing it.
+
 **Found and FIXED: a buffered `stop` could not end an unbounded search.**
 
   printf 'position startpos\ngo mate 1\nstop\nisready\nquit\n' | ./stockfish

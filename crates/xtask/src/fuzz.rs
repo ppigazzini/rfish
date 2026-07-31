@@ -34,6 +34,9 @@ use crate::runner::{GATE_PROFILE, Outcome, build_engine, cargo};
 /// runner's own timeout kills it with no evidence.
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long each `stop` is given to land in the search it is meant for.
+const STOP_PAUSE: Duration = Duration::from_millis(120);
+
 /// Tokens a mutation is built from.
 ///
 /// Half of these are legal UCI and half are not, on purpose. A fuzzer that only emits
@@ -118,18 +121,23 @@ fn drive_bounded(engine: &Path, cwd: &Path, script: &[String]) -> Result<Option<
         }
         stdin.flush().map_err(|e| format!("writing to the engine: {e}"))?;
 
-        // One `stop` per line of the burst, and no pauses. A burst can legitimately start an
-        // UNBOUNDED search -- `go infinite`, `go mate 1`, or a bare `go` with no limit -- and
-        // it can contain SEVERAL, each needing its own stop, because the commands queued
-        // behind the first are not dispatched until it returns.
+        // One `stop` per line of the burst, each after a pause, because a burst can start
+        // SEVERAL unbounded searches -- `go infinite`, `go mate 1`, or a bare `go` with no
+        // limit at all -- and the commands queued behind the first are not dispatched until
+        // it returns.
         //
-        // Buffering them all is safe now and was not always: a `stop` behind a `go` in the
-        // same write used to be dropped, because the input reader saw it before the main loop
-        // had dispatched the `go`, whose reset then cleared it. This step found that, and it
-        // is fixed -- see `SharedState::clear_stop`. Sending them unpaced is the stronger
-        // test of the two, so it is what runs.
+        // The pause is what makes each stop land in the search it is meant for. Writing them
+        // all at once puts every one of them in the buffer BEFORE the first search starts, so
+        // they collapse into the single flag that search consumes, and the second unbounded
+        // `go` then runs forever. A pristine upstream build does exactly the same thing on
+        // exactly the same input -- verified, both hang -- so this is the shape of the
+        // protocol, not a defect in either engine, and the harness has to drive it the way a
+        // GUI does. That is also why it cannot be tuned away: unpaced runs stay green for
+        // fifty-odd scripts and then wedge, which is how this was missed the first time.
         for _ in 0..=script.len() {
+            std::thread::sleep(STOP_PAUSE);
             writeln!(stdin, "stop").map_err(|e| format!("writing to the engine: {e}"))?;
+            stdin.flush().map_err(|e| format!("writing to the engine: {e}"))?;
         }
 
         writeln!(stdin, "isready").map_err(|e| format!("writing to the engine: {e}"))?;
