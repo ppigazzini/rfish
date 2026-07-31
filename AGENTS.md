@@ -59,11 +59,19 @@ state. Check the state against the tree before acting on it:
   gigabytes resident without one).
 - **Lazy-SMP** — **wired, with the best-move vote.** `Threads` builds a worker set, a `go`
   runs N workers over one root through `std::thread::scope`, and the move played is the one
-  the pool agrees on. There is no NUMA model and no network replication, and that is
-  **blocked rather than pending**: replication is only worth its 112 MiB per copy if threads
-  can be pinned to the node holding their copy, and `std` exposes no affinity API — pinning
-  and node-local allocation are both FFI. See [docs/06-platform.md](docs/06-platform.md).
-  Do not "fix" this by adding a crate or an `unsafe` block.
+  the pool agrees on.
+- **NUMA** — **the topology, the policy and the reporting are ported; PINNING is not, and
+  cannot be.** `crates/rfish-engine/src/platform/numa.rs` reads the real topology from
+  `/sys` and the process affinity from `/proc/self/status`, implements all three of
+  upstream's auto policies, parses and prints upstream's `NumaPolicy` syntax, and
+  distributes a thread set across nodes with upstream's arithmetic — all from file reads,
+  so no `unsafe` and no dependency. What is missing is `sched_setaffinity`: it has no
+  filesystem equivalent, so rfish cannot pin a worker to the node it was assigned. The
+  shell therefore reports "NUMA node thread **distribution**" where upstream reports
+  "binding", and says plainly that the threads are not pinned. Network replication follows
+  pinning and so is also absent — one shared copy, reported as upstream's
+  `Network replica 1: Local memory.`. Do not "fix" this by adding a crate or an `unsafe`
+  block; the honest report is the deliverable.
 - **The option model** — **every declared option is acted on.** The `uci` handshake matches
   a pristine upstream build's name for name and in order, and the handshake golden pins it
   byte for byte. `Skill Level`, `UCI_LimitStrength` and `UCI_Elo` run upstream's `Skill`;
@@ -147,6 +155,9 @@ ports. Run it unpiped, or redirect to a log and test `$?`.
 | The default build sets no `-C target-cpu`. `cargo xtask build --arch <tier>` does, and it changes what the NNUE loops vectorise to — so a perf number without its tier is not a number. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
 | "Improving" on upstream. A cleaner formulation that moves a rounding boundary moves the node count. | [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) |
 | Comments are **imperative mood**; never pin a number a gate computes. | [docs/11-writing.md](docs/11-writing.md) |
+| **Never exercise `Threads` near its declared maximum.** A worker is ~15.6 MB resident here (measured: 251 MB at `Threads 1`, 362 MB at `Threads 8`), so `Threads 1024` — the option's own max — is ~16 GB, and a harness running two engines is ~32 GB. That takes down a WSL2 VM and a CI runner, and it has: both sibling ports lost one. Cover the declared bounds with the `uci` listing diff, and keep every harness at 1, 2, 8 or 16. | this file |
+| **An option value that becomes an allocation must be bounded where it is parsed.** `Hash`, `Threads` and `NumaPolicy` are the three. `NumaPolicy` accepts a processor list, and upstream bounds each range but not their sum — 735 bytes of input reached 2.8 GB here before the allocator gave up. `numa.rs` bounds the total; keep it bounded. | `platform/numa.rs` |
+| A golden must pin the ENGINE, not the runner. `info string Available processors` is the host's core count, so `filter_volatile` drops it. Anything else host-dependent belongs there too. | [crates/xtask/src/gates.rs](crates/xtask/src/gates.rs) |
 
 ## Performance work
 
