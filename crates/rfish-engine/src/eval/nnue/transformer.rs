@@ -126,6 +126,9 @@ impl EvalScratch {
 /// on that tier rather than spilling.
 const TILE: usize = 64;
 
+/// [`FT_MAX_VAL`] at the accumulator's own width.
+const FT_MAX: i16 = FT_MAX_VAL as i16;
+
 impl FeatureTransformer {
     /// An unloaded transformer with every weight zero.
     #[must_use]
@@ -426,13 +429,18 @@ impl FeatureTransformer {
             / 2;
 
         let half = L1 / 2;
+        // Both operands are clamped into [0, 255], so their product cannot exceed 65,025 and
+        // the whole pairwise step fits in `u16` -- twice the lanes per register that the
+        // `i32` form allowed, for identical values. The `/ 512` is a shift for the same
+        // reason: the product is never negative, so there is no rounding direction to get
+        // wrong.
         for (p, side) in perspectives.iter().enumerate() {
-            let acc = &cached.accumulation[side.index()];
-            let offset = half * p;
-            for j in 0..half {
-                let sum0 = i32::from(acc[j]).clamp(0, FT_MAX_VAL);
-                let sum1 = i32::from(acc[j + half]).clamp(0, FT_MAX_VAL);
-                output[offset + j] = ((sum0 * sum1) / 512) as u8;
+            let (lo, hi) = cached.accumulation[side.index()].split_at(half);
+            let out = &mut output[half * p..half * (p + 1)];
+            for ((o, &a), &b) in out.iter_mut().zip(lo.iter()).zip(hi.iter()) {
+                let sum0 = a.clamp(0, FT_MAX) as u16;
+                let sum1 = b.clamp(0, FT_MAX) as u16;
+                *o = ((sum0 * sum1) >> 9) as u8;
             }
         }
         psqt
