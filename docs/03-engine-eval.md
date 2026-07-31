@@ -143,7 +143,8 @@ nodes and startup subtracted by a `quit`-only run:
 | merged threat-index tables | 3,589,208,299 | 1.833 |
 | unrolled threat attacker dispatch | 3,548,072,611 | 1.812 |
 | chunk-walked sparse weight rows | 3,528,438,652 | 1.802 |
-| `std::simd` non-zero scan in the sparse layer | 3,202,332,317 | **1.635** |
+| `std::simd` non-zero scan in the sparse layer | 3,202,332,317 | 1.635 |
+| accumulator cache, one slot per king square | 3,095,210,600 | **1.581** |
 | **upstream** | **1,958,088,252** | **1.000** |
 
 ### Falsified, with numbers
@@ -161,6 +162,7 @@ attempt starts past them rather than at them.
 | per-ply stack again, with the parent read fused into the fold | 3,528M → 3,806M |
 | fold tile of 32 / of 256 | 4,093M / 4,037M against 3,599M at 128 |
 | the fold rewritten with `std::simd`, one vector and two | a wash at `native`, worse at `nehalem` |
+| refreshing the king-square cache on every evaluation | 3,202M → 3,199M, i.e. nothing |
 
 The fold entry is worth reading with the disassembly beside it: it was ALREADY emitting
 `vpaddw` on four `zmm` registers, so explicit SIMD had nothing left to give it. Check what
@@ -172,6 +174,28 @@ at a local optimum for what LLVM will emit from safe scalar Rust, and reshaping 
 arithmetic to *look* more like upstream's vector kernels makes it worse, because the
 shapes upstream chose are the ones its instructions reward and not the ones the
 autovectoriser does.
+
+### Wall clock, and the honest ceiling
+
+`bench 16 1 12`, `target-cpu=native`, core-pinned, best of five, same box:
+
+| | nps | vs upstream |
+|---|---|---|
+| rfish | 587,905 | 1.88x |
+| ../zfish | 1,019,707 | 1.08x |
+| upstream, avx512icl | 1,102,610 | 1.00 |
+
+**36.5 features are applied per evaluation, over 61,341 evaluations** — measured with an
+instrumented build, not inferred, and upstream evaluates the same bench exactly 61,341 times
+too. The counts MATCH. Whatever is left is therefore per-feature overhead and the cost of
+recomputing the active set at all; it is not that this design applies more features than
+upstream's per-move delta does.
+
+That bounds what the remaining work can buy. Recomputing the sets and sorting them is about
+535M of the 1,137M gap, and it is the only part a code change removes — the per-move delta
+would land this near **1.3x**, not at 1.0. Below that needs the first affine layer to match
+`vpdpbusd`, which `std::simd` has no operation for, so a further constraint would have to go
+before parity is even the right word.
 
 What remains splits roughly three ways. The first affine layer, where upstream's four-way
 byte dot does in one instruction what takes four here — four separate attempts to recover
