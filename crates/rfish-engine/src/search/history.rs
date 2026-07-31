@@ -226,7 +226,7 @@ impl CaptureHistory {
     }
 
     pub fn fill(&mut self, v: i16) {
-        for row in self.table.iter_mut() {
+        for row in &mut *self.table {
             // `fill` on the innermost slice, so this stays a wide store rather than the
             // element-at-a-time loop a nested `for_each` compiles to.
             for inner in row.iter_mut() {
@@ -316,7 +316,7 @@ impl ContinuationHistory {
 
     /// Reset every plane to upstream's negative sentinel.
     pub fn fill(&mut self, v: i16) {
-        for row in self.table.iter_mut() {
+        for row in &mut *self.table {
             // `fill` on the innermost slice, so this stays a wide store rather than the
             // element-at-a-time loop a nested `for_each` compiles to.
             for inner in row.iter_mut() {
@@ -360,7 +360,7 @@ impl ContinuationCorrectionHistory {
     }
 
     pub fn fill(&mut self, v: i16) {
-        for row in self.table.iter_mut() {
+        for row in &mut *self.table {
             // `fill` on the innermost slice, so this stays a wide store rather than the
             // element-at-a-time loop a nested `for_each` compiles to.
             for inner in row.iter_mut() {
@@ -402,7 +402,7 @@ impl PawnHistory {
     }
 
     pub fn fill(&mut self, v: i16) {
-        for row in self.table.iter_mut() {
+        for row in &mut *self.table {
             // `fill` on the innermost slice, so this stays a wide store rather than the
             // element-at-a-time loop a nested `for_each` compiles to.
             for inner in row.iter_mut() {

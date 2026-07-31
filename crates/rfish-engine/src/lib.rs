@@ -24,6 +24,14 @@
 //!
 //! Reading order is `docs/00-architecture.md`.
 
+// The one nightly feature this crate uses, and the reason the toolchain is pinned to a
+// dated nightly. `std::simd` is SAFE -- it needs no `unsafe` block -- so enabling it costs
+// the port nothing it cares about: `forbid(unsafe_code)` below is unchanged and still
+// workspace-wide. The alternative, `std::arch`, is rejected precisely because every
+// intrinsic in it is an `unsafe fn`. See `rust-toolchain.toml` and
+// `docs/08-idiomatic-rust.md` section 12.
+#![feature(portable_simd)]
+
 pub mod board;
 pub mod eval;
 pub mod platform;

@@ -4,13 +4,25 @@
 # number measured on a different toolchain is not comparable to one in the
 # ledger.
 #
-# STABLE, on purpose. rfish uses no nightly feature: not `portable_simd`, not
-# `allocator_api`, not `stdarch` intrinsics. The NNUE kernels are ordinary loops
-# over fixed-size arrays that LLVM vectorises under `-C target-cpu`; see
-# docs/03-engine-eval.md. Reaching for nightly would trade the port's central
-# property -- it builds on the compiler everyone has -- for a constant factor
-# that has not been measured yet.
+# NIGHTLY, for exactly one feature: `portable_simd`. The constant factor is no
+# longer unmeasured -- the evaluation sat at 1.8x a pristine upstream build while
+# ../zfish, which writes the same kernels with Zig's `@Vector`, sat near 0.9x, and
+# the disassembly says rfish's autovectorised loops are already as good as that
+# route gets. See docs/08-idiomatic-rust.md section 12 for the measurement and the
+# three-way table that made this the only remaining route.
+#
+# What this does NOT trade away: `std::simd` is SAFE. It needs no `unsafe` block,
+# so `unsafe_code = "forbid"` stays exactly as it was, workspace-wide, and
+# `cargo xtask unsafe-lint` still asserts it. `std::arch` intrinsics were the
+# alternative and are rejected for that reason -- every one of them is an
+# `unsafe fn`. The port's central property is the absence of `unsafe`, not the
+# absence of a nightly flag.
+#
+# Pinned to a DATED nightly, not to `nightly`: the bench signature is a property
+# of the engine, but the instruction mix and every perf number in the ledger are
+# properties of the compiler, and a floating channel would silently invalidate
+# them.
 [toolchain]
-channel = "stable"
+channel = "nightly-2026-07-30"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

@@ -15,7 +15,19 @@
 //! Golden: `Stockfish/src/nnue/layers/affine_transform.h`, `clipped_relu.h`,
 //! `sqr_clipped_relu.h`.
 
+use core::simd::Simd;
+use core::simd::cmp::SimdPartialEq;
+use core::simd::num::SimdInt;
+
 use super::common::{NetError, NetReader, NetWriter, ceil_to_multiple};
+
+/// Inputs whose non-zero test is answered by one vector compare.
+///
+/// Upstream's `find_nnz` does exactly this and then walks the resulting bitmask. The point
+/// is not the compare -- it is that finding the non-zero inputs stops being a branch per
+/// input. At this layer's density that branch is unpredictable roughly 40% of the time, 1024
+/// times per evaluation, and no amount of reshaping the scalar loop removes it.
+const SCAN: usize = 64;
 
 /// The padded input width a layer's weight rows are stored at.
 ///
@@ -139,23 +151,32 @@ impl AffineLayer {
         debug_assert!(input.len() >= self.input_dims);
         debug_assert_eq!(N, self.output_dims);
 
-        let mut acc = [0i32; N];
-        acc.copy_from_slice(&self.biases);
-        // Walked as chunks zipped against the input rather than indexed by it: the row for
-        // input `i` is the `i`th chunk, so the address needs no multiply and the slice needs
-        // no bounds check.
-        for (&x, block) in input[..self.input_dims].iter().zip(self.sparse.chunks_exact(N)) {
-            if x == 0 {
-                continue;
-            }
-            let x = i32::from(x);
-            // Every output's weight for THIS input, contiguously — one broadcast multiply
-            // over a short fixed run, which is the shape the vectoriser wants.
-            for (out, &w) in acc.iter_mut().zip(block.iter()) {
-                *out += i32::from(w) * x;
+        // The whole output row lives in registers for the duration, as one vector.
+        let mut acc = Simd::<i32, N>::from_slice(&self.biases);
+        let blocks = self.sparse.as_chunks::<N>().0;
+        let (scans, tail) = input[..self.input_dims].as_chunks::<SCAN>();
+
+        for (c, chunk) in scans.iter().enumerate() {
+            // One compare answers SCAN inputs, and the bitmask walk visits only the inputs
+            // that are actually non-zero -- no branch is taken for the ones that are not.
+            let mut nnz = Simd::<u8, SCAN>::from_array(*chunk).simd_ne(Simd::splat(0)).to_bitmask();
+            while nnz != 0 {
+                let lane = nnz.trailing_zeros() as usize;
+                nnz &= nnz - 1;
+                let i = c * SCAN + lane;
+                let w: Simd<i8, N> = Simd::from_array(blocks[i]);
+                acc += w.cast::<i32>() * Simd::splat(i32::from(chunk[lane]));
             }
         }
-        *output = acc;
+        for (k, &x) in tail.iter().enumerate() {
+            if x != 0 {
+                let i = scans.len() * SCAN + k;
+                let w: Simd<i8, N> = Simd::from_array(blocks[i]);
+                acc += w.cast::<i32>() * Simd::splat(i32::from(x));
+            }
+        }
+
+        *output = acc.to_array();
     }
 
     /// How many outputs this layer has.
