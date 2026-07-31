@@ -665,7 +665,16 @@ impl SearchWorker {
         // choosing between moves that already preserve the result.
         self.rank_root_moves();
 
-        self.iterative_deepening(tt, sink);
+        let uci_pv_sent = self.iterative_deepening(tt, sink);
+
+        // Send the final line if the last one no longer describes the move about to be
+        // played. Without this the `bestmove` and the last `info ... pv` disagree whenever
+        // the search was cut off mid-iteration -- which at a short time control is most
+        // moves, and which every GUI flags.
+        if self.id == 0 && !uci_pv_sent {
+            let score = self.root_moves[0].uci_score;
+            self.report(self.completed_depth.max(1), score, tt, sink);
+        }
 
         let best = &self.root_moves[0];
         SearchResult {
@@ -679,8 +688,15 @@ impl SearchWorker {
 
     /// The iterative-deepening loop: search at depth one, then two, and so on, each
     /// iteration seeding the next one's move ordering and aspiration window.
-    fn iterative_deepening(&mut self, tt: &TranspositionTable, sink: &mut dyn InfoSink) {
+    ///
+    /// Returns whether the LAST line emitted describes the state the search ended in. It
+    /// usually does; it does not when the search was stopped part-way through an iteration,
+    /// because the root list was re-sorted after the report went out. The caller re-emits
+    /// in that case -- otherwise the `bestmove` names one move and the last `info` line
+    /// names another, which is what a GUI reads as an engine bug.
+    fn iterative_deepening(&mut self, tt: &TranspositionTable, sink: &mut dyn InfoSink) -> bool {
         let main_thread = self.id == 0;
+        let mut uci_pv_sent = false;
 
         for e in &mut self.stack {
             *e = StackEntry::default();
@@ -748,6 +764,8 @@ impl SearchWorker {
                 // Halve rather than clear: a move that was unstable two iterations ago is
                 // weaker evidence than one that is unstable now, not no evidence.
                 tot_best_move_changes /= 2.0;
+                // Whatever was reported belonged to the previous iteration.
+                uci_pv_sent = false;
             }
 
             for rm in &mut self.root_moves {
@@ -857,6 +875,9 @@ impl SearchWorker {
                     && (pv_idx + 1 == self.multi_pv || self.nodes > NODES_LIMIT_OUTPUT)
                 {
                     self.report(self.root_depth, best_value, tt, sink);
+                    // Only the LAST `MultiPV` slot completes the picture. A report for slot
+                    // one of three describes a state the caller must still re-emit.
+                    uci_pv_sent = pv_idx + 1 == self.multi_pv;
                 }
 
                 if self.shared.stopped() {
@@ -905,6 +926,10 @@ impl SearchWorker {
                     self.root_moves[0].uci_score = last_best_score;
                     self.root_moves[0].pv.clone_from(&last_best_pv);
                     self.root_moves[0].unset_bound_flags();
+                    if main_thread {
+                        // The reported line is now the wrong one.
+                        uci_pv_sent = false;
+                    }
                 } else if aborted_loss_search {
                     self.root_moves[0].score_lowerbound = true;
                 }
@@ -1005,7 +1030,7 @@ impl SearchWorker {
         }
 
         if !main_thread {
-            return;
+            return false;
         }
 
         self.previous_time_reduction = time_reduction;
@@ -1022,8 +1047,12 @@ impl SearchWorker {
             };
             if let Some(i) = self.root_moves.iter().position(|rm| rm.mv == chosen) {
                 self.root_moves.swap(0, i);
+                // The handicapped move was never the one reported.
+                uci_pv_sent = false;
             }
         }
+
+        uci_pv_sent
     }
 
     /// Keep an aborted `MultiPV` line from overtaking the one above it.
