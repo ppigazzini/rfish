@@ -73,16 +73,37 @@ state. Check the state against the tree before acting on it:
   exception: `speedtest`, upstream's machine benchmark. `bench` is the command every gate
   and harness in this repo uses and it IS ported; `speedtest` is a separate "how fast is
   this box" tool with no consumer here. It is missing on purpose, not by oversight.
+- **The search** — **ported, and bit-exact.** The pruning set, the constants, the reduction
+  model, ProbCut, singular extensions, the correction histories and the move picker's
+  staging are upstream's, and `crates/rfish-engine/src/search/` is a 1:1 translation rather
+  than a reimplementation. What is NOT upstream's is the addressing: `Stack*` is an index,
+  a `PieceToHistory*` is a plane index, and a null `ss->pv` is an explicit flag, because
+  none of the three survives borrow checking while `&mut self` is live.
 - **The score model** — **ported.** Reported centipawns go through upstream's fitted
   win-rate model rather than being the search's internal units, so the number means the same
   thing across net changes, and `UCI_ShowWDL` reports real chances. Mates, tablebase
   verdicts and estimates stay three distinct kinds of score.
 
-`tools/signature.golden` is **rfish's own number**, not upstream's. It is now measured at
-upstream's own depth 13 — that became affordable when NNUE landed and the tree stopped
-being enormous — but the COUNT still differs, because the search's pruning constants are not
-upstream's yet. Read the depth from `crates/xtask/src/gates.rs` and the number from the
-golden's own header, never from prose.
+`tools/signature.golden` **equals a pristine upstream build's `Bench:`** at the SHA in
+`tools/upstream/UPSTREAM_BASE`, at upstream's own depth 13. Every one of the 51 bench
+entries matches upstream node for node, and so does every `bestmove` and every `ponder`
+move. A diff against upstream is therefore a porting REGRESSION, not a tuning difference —
+which is what makes the anchor worth having. Read the depth from
+`crates/xtask/src/gates.rs` and the number from the golden's own header, never from prose.
+
+Four classes of bug cost the most in getting there, and all four are invisible to perft:
+
+- **Integer semantics.** C++ converts a signed operand to unsigned when the other side is
+  `u64`, so the division that follows FLOORS instead of truncating. Upstream relies on it
+  in `update_all_stats` and in the root-move averages. Writing the "obviously equivalent"
+  signed version is off by one, and the error propagates into every history table.
+- **Generation ORDER.** Two generators that emit the same set in a different sequence
+  search different trees, because the move picker's partial sort leaves equal-scored moves
+  in generation order.
+- **Key identity.** `Position::key()` mixes the halfmove clock in past move 14. Omitting
+  that makes positions share table entries upstream keeps apart.
+- **State updates that "obviously" belong.** A null move does NOT advance the halfmove
+  clock, and an en-passant square is only set when the capture is actually LEGAL.
 
 ## Setup
 
