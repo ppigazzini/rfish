@@ -141,14 +141,16 @@ impl AffineLayer {
 
         let mut acc = [0i32; N];
         acc.copy_from_slice(&self.biases);
-        for (i, &x) in input[..self.input_dims].iter().enumerate() {
+        // Walked as chunks zipped against the input rather than indexed by it: the row for
+        // input `i` is the `i`th chunk, so the address needs no multiply and the slice needs
+        // no bounds check.
+        for (&x, block) in input[..self.input_dims].iter().zip(self.sparse.chunks_exact(N)) {
             if x == 0 {
                 continue;
             }
             let x = i32::from(x);
             // Every output's weight for THIS input, contiguously — one broadcast multiply
             // over a short fixed run, which is the shape the vectoriser wants.
-            let block = &self.sparse[i * N..i * N + N];
             for (out, &w) in acc.iter_mut().zip(block.iter()) {
                 *out += i32::from(w) * x;
             }
