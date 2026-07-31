@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+mod fuzz;
 mod gates;
 mod net;
 mod runner;
@@ -69,6 +70,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "nnue-check" => gates::nnue_check(),
         "tb" => gates::tb(),
         "net" => net::fetch(args),
+        "fuzz" => fuzz::fuzz(args),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
     }
@@ -96,6 +98,10 @@ cargo xtask <step> — the rfish build driver
     unsafe-lint           no `unsafe` and no allow(unsafe_code) anywhere
     nnue-check            the network's output equals upstream's, position by position
     tb                    Syzygy discovery, and that an empty path changes nothing
+
+  Scheduled — a wall-clock budget, so NOT part of parity
+    fuzz [SECONDS]        random UCI text at the shell and random positions at the
+                          search; prints its seed, replay with RFISH_FUZZ_SEED=N
 
   Regenerate a golden — DANGEROUS, read CONTRIBUTING.md first
     signature-update      re-derive tools/signature.golden

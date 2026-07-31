@@ -185,6 +185,32 @@ The lanes:
 | `test` | `cargo xtask test` on three platforms |
 | `gates` | `net`, `perft`, `golden`, `signature` on Linux |
 
+`rfish_fuzz.yml` is a second workflow, on a nightly schedule rather than on push. It runs
+`cargo xtask fuzz`, which spends half its budget throwing mutated UCI text at the shipped
+binary and half walking random legal positions through the real search in-process. Two
+harnesses because they fail differently: subprocess fuzzing spends a mutation's budget on the
+PARSER and never reaches the search behind it, which is the lesson ../mcfish records in
+`2b8eaad7` when it added its own in-process harness beside its UCI one.
+
+It is NOT a merge gate. A clean run means "nothing failed inside that budget", never "there
+is nothing to find", and that is not a statement a merge should block on. The step prints the
+seed it used, and the workflow takes a seed as a dispatch input, because the value of a fuzz
+run is a reproducible failure.
+
+**The search half is not libFuzzer, and cannot be.** `libfuzzer-sys` is a dependency where
+the engine crate has none, and its `fuzz_target!` expands to a `#[unsafe(no_mangle)]` export
+that `forbid(unsafe_code)` rejects. What replaces it is a seeded PRNG walk, which loses
+coverage guidance and keeps the part that finds bugs here: real positions off every golden
+and bench list. It runs under the `gate` profile, so `debug_assert!` and `overflow-checks`
+are both on — this port's equivalent of the sanitiser build the sibling fuzzes under.
+
+**Known open finding, from the first real run.** `go` with a malformed argument -- seed 999,
+`go value Hash binc isready SyzygyPath` -- is silently accepted by rfish, which then searches
+unbounded and stops answering. A pristine upstream build REJECTS it:
+`info string CRITICAL ERROR: Command \`...\` failed. Reason: Invalid argument for 'binc'`.
+rfish has no command-error mechanism at all, so this is a port gap rather than a regression,
+and the nightly job reports it until one exists.
+
 There is no `msrv` lane. It ran `cargo +<rust-version> build` and cannot pass while the
 engine enables `portable_simd`, which no stable channel accepts.
 
