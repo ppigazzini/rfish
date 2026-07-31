@@ -177,13 +177,36 @@ arithmetic to *look* more like upstream's vector kernels makes it worse, because
 shapes upstream chose are the ones its instructions reward and not the ones the
 autovectoriser does.
 
+### The ratio is a property of the TIER, and the ledger above is one tier
+
+Everything in the table above was measured at `nehalem`, chosen because the oracle build on
+hand was `x86-64-sse41-popcnt` and a differential needs both sides on comparable ground. That
+choice quietly stopped being neutral the moment the sparse layer moved to `std::simd`:
+explicit vectors widen with the register file and an SSE-4.1 build cannot show it. Rebuilding
+BOTH sides at avx2, same bench, same 166,964 nodes, startup subtracted:
+
+| tier | rfish | upstream | ratio |
+|---|---|---|---|
+| `nehalem` / sse41-popcnt | 2,979,106,126 | 1,958,088,252 | 1.521 |
+| **`haswell` / avx2** | **2,228,532,345** | **1,733,345,669** | **1.286** |
+
+Wall clock at avx2, core-pinned, best of four: 513,506 nps against 759,867, a ratio of 1.48.
+At avx512icl it is 588,396 against 1,049,205, a ratio of 1.78 — upstream gains 38% from that
+tier and rfish 15%, because upstream has hand-written VNNI kernels there and this has
+`std::simd` widening as far as it goes.
+
+**Quote a tier with every number here.** AGENTS.md has said so about `--arch` since before any
+of this work, and this section spent most of its life violating it: 1.52 and 1.29 are the same
+engine on the same day.
+
 ### Wall clock, and the honest ceiling
 
 `bench 16 1 12`, `target-cpu=native`, core-pinned, best of five, same box:
 
 | | nps | vs upstream |
 |---|---|---|
-| rfish | 588,396 | 1.78x |
+| rfish, avx512icl | 588,396 | 1.78x |
+| rfish, avx2 vs avx2 oracle | 513,506 | 1.48x |
 | ../zfish | 1,019,707 | 1.08x |
 | upstream, avx512icl | 1,102,610 | 1.00 |
 
