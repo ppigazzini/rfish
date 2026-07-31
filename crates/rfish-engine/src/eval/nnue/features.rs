@@ -27,7 +27,9 @@ use crate::board::bitboard::{
     Bitboard, KING_ATTACKS, KNIGHT_ATTACKS, RANK_1, RANK_8, file_bb, pawn_attacks_from,
 };
 use crate::board::position::Position;
-use crate::board::types::{Color, Direction, PIECE_NB, Piece, PieceType, SQUARE_NB, Square};
+use crate::board::types::{
+    COLOR_NB, Color, Direction, PIECE_NB, Piece, PieceType, SQUARE_NB, Square,
+};
 
 // ---------------------------------------------------------------------------
 // HalfKAv2_hm
@@ -416,20 +418,35 @@ pub fn threat_index(
 }
 
 /// Every active threat feature, for one perspective.
-pub fn threat_active(pos: &Position, perspective: Color, out: &mut Vec<u32>) {
-    let ksq = pos.king_square(perspective);
+pub fn threat_active(pos: &Position, out: &mut [Vec<u32>; COLOR_NB]) {
+    let ksq = [pos.king_square(Color::White), pos.king_square(Color::Black)];
     let occupied = pos.occupied();
     let pawn_targets = pos.pieces(PieceType::Knight) | pos.pieces(PieceType::Rook);
     let minor_slider_targets =
         pawn_targets | pos.pieces(PieceType::Pawn) | pos.pieces(PieceType::Bishop);
     let queen_targets = minor_slider_targets | pos.pieces(PieceType::Queen);
 
-    // The perspective's own colour first, so the index stream matches upstream's order.
-    // Order does not change the accumulated sum, but it does decide which features the
-    // 256-entry cap would drop if one were ever hit.
-    for relative in [Color::White, Color::Black] {
-        let c = if perspective == Color::White { relative } else { !relative };
+    // ONE scan, both perspectives. Which squares attack which is a fact about the position,
+    // not about who is looking: only the INDEX a threat is filed under depends on the
+    // perspective, through its own king square and orientation. Scanning twice recomputed
+    // every attack set twice to file the same threats under two numbers.
+    //
+    // That also drops the old "own colour first" iteration order, which existed to match
+    // upstream's index stream. Nothing depends on it here: the sets are sorted before they
+    // are diffed, and rfish has no 256-entry cap for an order to decide the contents of.
+    macro_rules! emit {
+        ($attacker:expr, $from:expr, $to:expr, $attacked:expr) => {{
+            for p in [Color::White, Color::Black] {
+                let i = p.index();
+                let index = threat_index(p, $attacker, $from, $to, $attacked, ksq[i]);
+                if index < THREAT_DIMENSIONS {
+                    out[i].push(index);
+                }
+            }
+        }};
+    }
 
+    for c in [Color::White, Color::Black] {
         let attacker = Piece::new(c, PieceType::Pawn);
         let our_pawns = pos.pieces_of(c, PieceType::Pawn);
         let (right, left) = if c == Color::White {
@@ -440,10 +457,7 @@ pub fn threat_active(pos: &Position, perspective: Color, out: &mut Vec<u32>) {
         for dir in [right, left] {
             for to in our_pawns.shift(dir) & pawn_targets {
                 let from = to.shift(reverse(dir));
-                let index = threat_index(perspective, attacker, from, to, pos.piece_on(to), ksq);
-                if index < THREAT_DIMENSIONS {
-                    out.push(index);
-                }
+                emit!(attacker, from, to, pos.piece_on(to));
             }
         }
 
@@ -457,11 +471,7 @@ pub fn threat_active(pos: &Position, perspective: Color, out: &mut Vec<u32>) {
                 let attacker = Piece::new(c, $pt);
                 for from in pos.pieces_of(c, $pt) {
                     for to in piece_attacks($pt, from, occupied) & $targets {
-                        let index =
-                            threat_index(perspective, attacker, from, to, pos.piece_on(to), ksq);
-                        if index < THREAT_DIMENSIONS {
-                            out.push(index);
-                        }
+                        emit!(attacker, from, to, pos.piece_on(to));
                     }
                 }
             }};
@@ -547,8 +557,8 @@ pub fn pawn_pair_index(
 }
 
 /// Every active pawn-pair feature, for one perspective.
-pub fn pawn_pair_active(pos: &Position, perspective: Color, out: &mut Vec<u32>) {
-    let ksq = pos.king_square(perspective);
+pub fn pawn_pair_active(pos: &Position, out: &mut [Vec<u32>; COLOR_NB]) {
+    let ksq = [pos.king_square(Color::White), pos.king_square(Color::Black)];
     let white = pos.pieces_of(Color::White, PieceType::Pawn);
     let black = pos.pieces_of(Color::Black, PieceType::Pawn);
 
@@ -559,10 +569,16 @@ pub fn pawn_pair_active(pos: &Position, perspective: Color, out: &mut Vec<u32>) 
         let from = bb.pop_lsb();
         let band = PAWN_PAIR_BB[from.index()];
         for to in band & bb {
-            out.push(pawn_pair_index(perspective, Color::White, from, to, Color::White, ksq));
+            for p in [Color::White, Color::Black] {
+                let i = p.index();
+                out[i].push(pawn_pair_index(p, Color::White, from, to, Color::White, ksq[i]));
+            }
         }
         for to in band & black {
-            out.push(pawn_pair_index(perspective, Color::White, from, to, Color::Black, ksq));
+            for p in [Color::White, Color::Black] {
+                let i = p.index();
+                out[i].push(pawn_pair_index(p, Color::White, from, to, Color::Black, ksq[i]));
+            }
         }
     }
 
@@ -571,7 +587,10 @@ pub fn pawn_pair_active(pos: &Position, perspective: Color, out: &mut Vec<u32>) 
         let from = bb.pop_lsb();
         let band = PAWN_PAIR_BB[from.index()];
         for to in band & bb {
-            out.push(pawn_pair_index(perspective, Color::Black, from, to, Color::Black, ksq));
+            for p in [Color::White, Color::Black] {
+                let i = p.index();
+                out[i].push(pawn_pair_index(p, Color::Black, from, to, Color::Black, ksq[i]));
+            }
         }
     }
 }
@@ -636,15 +655,15 @@ mod tests {
             "K7/8/8/BNQNQNB1/N5N1/R1Q1q2r/n5n1/bnqnqnbk w - - 0 1",
         ] {
             let pos = Position::from_fen(fen, false).expect("valid");
+            let mut v = [Vec::new(), Vec::new()];
+            threat_active(&pos, &mut v);
+            let mut w = [Vec::new(), Vec::new()];
+            pawn_pair_active(&pos, &mut w);
             for p in Color::ALL {
-                let mut v = Vec::new();
-                threat_active(&pos, p, &mut v);
-                for &i in &v {
+                for &i in &v[p.index()] {
                     assert!(i < THREAT_DIMENSIONS, "{fen}: threat index {i} out of range");
                 }
-                let mut w = Vec::new();
-                pawn_pair_active(&pos, p, &mut w);
-                for &i in &w {
+                for &i in &w[p.index()] {
                     assert!(
                         (PP_INDEX_BASE..PP_INDEX_BASE + PP_DIMENSIONS).contains(&i),
                         "{fen}: pawn-pair index {i} out of range"
@@ -693,8 +712,9 @@ mod tests {
         halfka_active(&pos, Color::White, &mut halfka);
         assert_eq!(halfka.len(), 32, "one feature per piece on the board");
 
-        let mut pp = Vec::new();
-        pawn_pair_active(&pos, Color::White, &mut pp);
+        let mut pp_both = [Vec::new(), Vec::new()];
+        pawn_pair_active(&pos, &mut pp_both);
+        let pp = &pp_both[Color::White.index()];
         // The band spans ranks 2..7, so a rank-2 pawn pairs with the rank-7 pawns on its
         // own and adjacent files as well as with its own neighbours: 7 white-white pairs,
         // 22 white-black, 7 black-black.
@@ -716,10 +736,9 @@ mod tests {
             false,
         )
         .expect("valid");
-        let mut w = Vec::new();
-        let mut b = Vec::new();
-        threat_active(&pos, Color::White, &mut w);
-        threat_active(&pos, Color::Black, &mut b);
+        let mut both = [Vec::new(), Vec::new()];
+        threat_active(&pos, &mut both);
+        let (w, b) = (&both[Color::White.index()], &both[Color::Black.index()]);
         assert_eq!(w.len(), b.len(), "both sides see the same threats, differently indexed");
         assert_ne!(w, b);
     }

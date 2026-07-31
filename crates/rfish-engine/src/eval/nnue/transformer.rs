@@ -409,11 +409,15 @@ impl FeatureTransformer {
     }
 
     /// The active feature sets for one perspective, sorted.
-    fn active_sets(pos: &Position, perspective: Color, threats: &mut Vec<u32>) {
-        threats.clear();
-        threat_active(pos, perspective, threats);
-        pawn_pair_active(pos, perspective, threats);
-        threats.sort_unstable();
+    fn active_sets(pos: &Position, threats: &mut [Vec<u32>; COLOR_NB]) {
+        for t in threats.iter_mut() {
+            t.clear();
+        }
+        threat_active(pos, threats);
+        pawn_pair_active(pos, threats);
+        for t in threats.iter_mut() {
+            t.sort_unstable();
+        }
     }
 
     /// Fill `output` with the transformed features and return the PSQT score.
@@ -438,9 +442,7 @@ impl FeatureTransformer {
         // The same position twice in a row -- a quiescence stand-pat after a main-search
         // evaluation, say -- needs no work at all.
         if scratch.key != key {
-            for p in Color::ALL {
-                Self::active_sets(pos, p, &mut scratch.next_threats[p.index()]);
-            }
+            Self::active_sets(pos, &mut scratch.next_threats);
 
             for p in Color::ALL {
                 let i = p.index();
