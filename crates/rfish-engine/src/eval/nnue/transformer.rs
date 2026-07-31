@@ -31,11 +31,11 @@
 //! `Stockfish/src/nnue/nnue_accumulator.cpp`.
 
 use crate::board::position::Position;
-use crate::board::types::{COLOR_NB, Color, Key, SQUARE_NB, Square};
+use crate::board::types::{COLOR_NB, Color, Key, Piece, SQUARE_NB, Square};
 
 use super::common::{FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
 use super::features::{
-    HALFKA_DIMENSIONS, THREAT_AND_PP_DIMENSIONS, halfka_active, pawn_pair_active, threat_active,
+    HALFKA_DIMENSIONS, THREAT_AND_PP_DIMENSIONS, halfka_delta, pawn_pair_active, threat_active,
 };
 
 /// The transformer's weights.
@@ -97,8 +97,11 @@ struct Side {
     king: Option<Square>,
     acc: Vec<i16>,
     psqt: [i32; PSQT_BUCKETS],
-    /// The active sets that produced the above, SORTED so the next diff is a merge walk.
-    halfka: Vec<u32>,
+    /// The placement that produced the above. The king-piece features are diffed straight
+    /// off this rather than recomputed and merged, so the set itself is never materialised.
+    board: [Piece; SQUARE_NB],
+    /// The active threat and pawn-pair set, SORTED so the next diff is a merge walk. These
+    /// have no equivalent board diff: one square changing moves many threats at once.
     threats: Vec<u32>,
 }
 
@@ -108,7 +111,7 @@ impl Side {
             king: None,
             acc: Vec::new(),
             psqt: [0; PSQT_BUCKETS],
-            halfka: Vec::new(),
+            board: [Piece::NONE; SQUARE_NB],
             threats: Vec::new(),
         }
     }
@@ -133,7 +136,6 @@ pub struct EvalScratch {
     /// never evaluates should not pay for it.
     cache: [Vec<Side>; COLOR_NB],
     /// Freshly computed sets, reused between calls to avoid reallocating.
-    next_halfka: [Vec<u32>; COLOR_NB],
     next_threats: [Vec<u32>; COLOR_NB],
     /// The features one diff adds and removes, collected before either is applied.
     adds: Vec<u32>,
@@ -149,7 +151,6 @@ impl Default for EvalScratch {
             key: EMPTY_KEY,
             live: [Side::empty(), Side::empty()],
             cache: [Vec::new(), Vec::new()],
-            next_halfka: [Vec::new(), Vec::new()],
             next_threats: [Vec::new(), Vec::new()],
             adds: Vec::new(),
             subs: Vec::new(),
@@ -313,19 +314,35 @@ impl FeatureTransformer {
         subs.extend_from_slice(&old[i..]);
         adds.extend_from_slice(&new[j..]);
 
+        self.fold_changed(halfka, adds, subs, acc, psqt);
+    }
+
+    /// Apply a set of added and removed features to the accumulator and the PSQT head.
+    ///
+    /// Takes the changes rather than deriving them, because the two feature kinds arrive at
+    /// them differently: the king-piece features come from a board diff and the threat
+    /// features from a merge walk over two sorted sets.
+    fn fold_changed(
+        &self,
+        halfka: bool,
+        adds: &[u32],
+        subs: &[u32],
+        acc: &mut [i16],
+        psqt: &mut [i32; PSQT_BUCKETS],
+    ) {
         if adds.is_empty() && subs.is_empty() {
             return;
         }
 
         let psqt_weights =
             if halfka { &self.psqt_weights } else { &self.threat_and_pp_psqt_weights };
-        for &index in subs.iter() {
+        for &index in subs {
             let base = index as usize * PSQT_BUCKETS;
             for (p, w) in psqt.iter_mut().zip(psqt_weights[base..base + PSQT_BUCKETS].iter()) {
                 *p -= w;
             }
         }
-        for &index in adds.iter() {
+        for &index in adds {
             let base = index as usize * PSQT_BUCKETS;
             for (p, w) in psqt.iter_mut().zip(psqt_weights[base..base + PSQT_BUCKETS].iter()) {
                 *p += w;
@@ -392,16 +409,7 @@ impl FeatureTransformer {
     }
 
     /// The active feature sets for one perspective, sorted.
-    fn active_sets(
-        pos: &Position,
-        perspective: Color,
-        halfka: &mut Vec<u32>,
-        threats: &mut Vec<u32>,
-    ) {
-        halfka.clear();
-        halfka_active(pos, perspective, halfka);
-        halfka.sort_unstable();
-
+    fn active_sets(pos: &Position, perspective: Color, threats: &mut Vec<u32>) {
         threats.clear();
         threat_active(pos, perspective, threats);
         pawn_pair_active(pos, perspective, threats);
@@ -431,12 +439,7 @@ impl FeatureTransformer {
         // evaluation, say -- needs no work at all.
         if scratch.key != key {
             for p in Color::ALL {
-                Self::active_sets(
-                    pos,
-                    p,
-                    &mut scratch.next_halfka[p.index()],
-                    &mut scratch.next_threats[p.index()],
-                );
+                Self::active_sets(pos, p, &mut scratch.next_threats[p.index()]);
             }
 
             for p in Color::ALL {
@@ -460,28 +463,39 @@ impl FeatureTransformer {
                     if src.king.is_some() {
                         live.acc.clone_from(&src.acc);
                         live.psqt = src.psqt;
-                        live.halfka.clone_from(&src.halfka);
+                        live.board = src.board;
                         live.threats.clone_from(&src.threats);
                     } else {
                         live.acc.clear();
                         live.acc.extend_from_slice(&self.biases);
                         live.psqt = [0; PSQT_BUCKETS];
-                        live.halfka.clear();
+                        live.board = [Piece::NONE; SQUARE_NB];
                         live.threats.clear();
                     }
                     live.king = Some(ksq);
                 }
 
                 let live = &mut scratch.live[i];
-                self.diff_apply(
-                    &live.halfka,
-                    &scratch.next_halfka[i],
-                    true,
-                    &mut live.acc,
-                    &mut live.psqt,
+                // The king-piece features come straight off a board diff: no set to build,
+                // no sort, no merge walk. The fold does not care what order they arrive in.
+                scratch.adds.clear();
+                scratch.subs.clear();
+                halfka_delta(
+                    &live.board,
+                    pos.board(),
+                    p,
+                    ksq,
                     &mut scratch.adds,
                     &mut scratch.subs,
                 );
+                self.fold_changed(
+                    true,
+                    &scratch.adds,
+                    &scratch.subs,
+                    &mut live.acc,
+                    &mut live.psqt,
+                );
+                live.board = *pos.board();
                 self.diff_apply(
                     &live.threats,
                     &scratch.next_threats[i],
@@ -491,7 +505,6 @@ impl FeatureTransformer {
                     &mut scratch.adds,
                     &mut scratch.subs,
                 );
-                live.halfka.clone_from(&scratch.next_halfka[i]);
                 live.threats.clone_from(&scratch.next_threats[i]);
 
                 // Refresh this king square's slot only when the refresh path was taken.

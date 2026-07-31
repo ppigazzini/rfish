@@ -194,6 +194,42 @@ pub fn halfka_index(perspective: Color, s: Square, pc: Piece, ksq: Square) -> u3
         + KING_BUCKETS[(ksq.raw() ^ flip) as usize]
 }
 
+/// The king-piece features that differ between two board states, as adds and subtracts.
+///
+/// A DIFF OF THE BOARD, not of the move. Nothing here reads what move was played, so there
+/// is no case analysis to get wrong and no dependency on the board zone recording anything:
+/// two placements differ on some set of squares, and each such square contributes at most
+/// one feature to remove and one to add. It is the same "correct by construction" argument
+/// the whole accumulator rests on, one level lower down, and it replaces recomputing the
+/// active set and sorting it.
+///
+/// Both states must share `ksq`. When the king itself has moved every feature is re-indexed
+/// and this cannot express it — the caller rebuilds from a base that has the right king
+/// square, which is what the refresh cache is for.
+///
+/// ../mcfish 4dcdec6b and ../zfish 63078a65 each arrived at the same board diff.
+pub fn halfka_delta(
+    was: &[Piece; SQUARE_NB],
+    now: &[Piece; SQUARE_NB],
+    perspective: Color,
+    ksq: Square,
+    adds: &mut Vec<u32>,
+    subs: &mut Vec<u32>,
+) {
+    for (i, (&before, &after)) in was.iter().zip(now.iter()).enumerate() {
+        if before == after {
+            continue;
+        }
+        let sq = Square::new(i);
+        if before != Piece::NONE {
+            subs.push(halfka_index(perspective, sq, before, ksq));
+        }
+        if after != Piece::NONE {
+            adds.push(halfka_index(perspective, sq, after, ksq));
+        }
+    }
+}
+
 /// Every active king-piece feature, for one perspective.
 pub fn halfka_active(pos: &Position, perspective: Color, out: &mut Vec<u32>) {
     let ksq = pos.king_square(perspective);
