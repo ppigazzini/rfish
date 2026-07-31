@@ -130,13 +130,37 @@ nodes and startup subtracted by a `quit`-only run:
 | static affine output width | 4,436,458,866 | 2.266 |
 | one fold per accumulator sweep | 3,715,310,646 | 1.897 |
 | sixteen-bit pairwise step | 3,673,041,357 | 1.876 |
+| 128-wide fold tile | 3,598,539,776 | 1.838 |
+| merged threat-index tables | 3,589,208,299 | 1.833 |
+| unrolled threat attacker dispatch | 3,548,072,611 | 1.812 |
 | **upstream** | **1,958,088,252** | **1.000** |
 
-What remains splits roughly three ways: the first affine layer, where upstream's four-way
-byte dot product does in one instruction what takes four here and no rewrite closes that
-without intrinsics; the accumulator fold, now within about a third of upstream's incremental
-update; and recomputing the active set at all, which is the per-move delta this section
-declined to write and the only one of the three a code change could still remove.
+### Falsified, with numbers
+
+Each of these is a reasonable idea that measured WORSE. They are listed so the next
+attempt starts past them rather than at them.
+
+| attempt | result |
+|---|---|
+| per-ply accumulator stack, as upstream keeps | 4,769M → 5,197M |
+| zero-skipping in groups of four, as upstream tests | 4,769M → 5,784M |
+| pairing non-zero inputs to sum two products in `i16` | 3,673M → 4,298M |
+| multiplying the sparse layer in the 16-bit domain | 3,673M → 3,757M |
+| folding both feature kinds in a single sweep | 3,599M → 3,800M |
+| fold tile of 32 / of 256 | 4,093M / 4,037M against 3,599M at 128 |
+
+The last four all say the same thing: the sparse layer's inner loop and the fold are
+at a local optimum for what LLVM will emit from safe scalar Rust, and reshaping the
+arithmetic to *look* more like upstream's vector kernels makes it worse, because the
+shapes upstream chose are the ones its instructions reward and not the ones the
+autovectoriser does.
+
+What remains splits roughly three ways. The first affine layer, where upstream's four-way
+byte dot does in one instruction what takes four here — four separate attempts to recover
+that in scalar form are in the table above and all of them lost. The accumulator fold, now
+within about a third of upstream's incremental update. And recomputing the active set at
+all, worth roughly 300M, which is the per-move delta this section declined to write and the
+only one of the three that a code change could still remove.
 
 The search spine is NOT part of this gap and has not been for some time: measured the same
 way with a material evaluation on both sides, rfish is at **1.022×** upstream's instructions
