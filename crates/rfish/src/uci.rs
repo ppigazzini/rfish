@@ -505,7 +505,21 @@ impl Engine {
             return;
         }
 
-        let limits = self.parse_limits(args);
+        let limits = match self.parse_limits(args) {
+            Ok(l) => l,
+            Err(reason) => {
+                // Upstream reports the failure and does NOT search. Echoing the whole
+                // command back is upstream's format and is the useful part: a GUI log shows
+                // what was sent, not just which key was wrong.
+                let _ = writeln!(
+                    out,
+                    "info string CRITICAL ERROR: Command `go{}{}` failed. Reason: {reason}",
+                    if args.is_empty() { "" } else { " " },
+                    args.join(" ")
+                );
+                return;
+            }
+        };
         let result = {
             let opts = self.search_options();
             let mut sink = UciSink { out: &mut *out, show_wdl: self.options.check("UCI_ShowWDL") };
@@ -515,22 +529,40 @@ impl Engine {
         emit_bestmove(out, &self.pos, &result);
     }
 
-    fn parse_limits(&self, args: &[&str]) -> Limits {
+    /// Parse a `go` argument list, or name the key whose value was unusable.
+    ///
+    /// Every key here TAKES a value, and upstream rejects the whole command when one is
+    /// missing or does not parse, rather than ignoring it. That difference is not cosmetic:
+    /// a swallowed `wtime` leaves no clock, a swallowed `depth` leaves no depth, and a `go`
+    /// with no limit at all searches until it is stopped — so an engine that ignores the bad
+    /// value answers nothing at all, where upstream answers with an error. A fuzz run found
+    /// exactly that: `go value Hash binc isready SyzygyPath` left rfish searching forever.
+    ///
+    /// Parsed as `i64` because that is the width and the signedness upstream parses at, and
+    /// both edges are observable: `movestogo -5` is ACCEPTED there, and
+    /// `nodes 99999999999999999999` is REJECTED for overflowing it.
+    fn parse_limits(&self, args: &[&str]) -> Result<Limits, String> {
         let mut l =
             Limits { start: Some(Instant::now()), ply: self.pos.game_ply(), ..Limits::default() };
         let mut i = 0;
         while i < args.len() {
-            let next = |i: usize| args.get(i + 1).and_then(|s| s.parse::<u64>().ok());
+            // A key with no value, or one that does not parse, fails the command and names
+            // itself. Unknown tokens are still ignored — upstream accepts `go value Hash`.
+            let need = |i: usize, key: &str| -> Result<i64, String> {
+                args.get(i + 1)
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .ok_or_else(|| format!("Invalid argument for '{key}'"))
+            };
             match args[i] {
-                "wtime" => l.time[Color::White.index()] = next(i),
-                "btime" => l.time[Color::Black.index()] = next(i),
-                "winc" => l.inc[Color::White.index()] = next(i).unwrap_or(0),
-                "binc" => l.inc[Color::Black.index()] = next(i).unwrap_or(0),
-                "movestogo" => l.moves_to_go = next(i).map(|v| v as u32),
-                "depth" => l.depth = next(i).map(|v| v as i32),
-                "nodes" => l.nodes = next(i),
-                "movetime" => l.move_time = next(i),
-                "mate" => l.mate = next(i).map(|v| v as i32),
+                "wtime" => l.time[Color::White.index()] = Some(need(i, "wtime")? as u64),
+                "btime" => l.time[Color::Black.index()] = Some(need(i, "btime")? as u64),
+                "winc" => l.inc[Color::White.index()] = need(i, "winc")? as u64,
+                "binc" => l.inc[Color::Black.index()] = need(i, "binc")? as u64,
+                "movestogo" => l.moves_to_go = Some(need(i, "movestogo")? as u32),
+                "depth" => l.depth = Some(need(i, "depth")? as i32),
+                "nodes" => l.nodes = Some(need(i, "nodes")? as u64),
+                "movetime" => l.move_time = Some(need(i, "movetime")? as u64),
+                "mate" => l.mate = Some(need(i, "mate")? as i32),
                 // `ponder` searches until told to stop, exactly as `infinite` does; the
                 // difference is what the shell does with the result, not what the search
                 // does.
@@ -548,7 +580,7 @@ impl Engine {
             }
             i += 1;
         }
-        l
+        Ok(l)
     }
 
     fn cmd_eval(&self, out: &mut impl Write) {
