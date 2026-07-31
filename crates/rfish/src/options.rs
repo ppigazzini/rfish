@@ -79,6 +79,8 @@ impl Default for Options {
         let mut o = Options { map: BTreeMap::new(), next_index: 0 };
         // DECLARATION ORDER IS THE HANDSHAKE ORDER. Keep it identical to upstream's, or
         // the handshake golden fails -- which is the point of having one.
+        o.add_text("Debug Log File", "");
+        o.add_text("NumaPolicy", "auto");
         o.add_spin("Threads", 1, 1, 1024);
         o.add_spin("Hash", 16, 1, 33_554_432);
         o.add_button("Clear Hash");
@@ -224,9 +226,13 @@ mod tests {
     fn the_handshake_declares_every_option_in_declaration_order() {
         let o = Options::default();
         let lines = o.handshake_lines();
-        assert!(lines[0].starts_with("option name Threads type spin default 1 min 1 max 1024"));
-        assert!(lines[1].starts_with("option name Hash type spin default 16"));
-        assert_eq!(lines[2], "option name Clear Hash type button");
+        // The first three, in upstream's order. The whole list is pinned byte for byte by
+        // the handshake golden; this only guards the head against a careless insert.
+        assert!(lines[0].starts_with("option name Debug Log File type string default"));
+        assert!(lines[1].starts_with("option name NumaPolicy type string default auto"));
+        assert!(lines[2].starts_with("option name Threads type spin default 1 min 1 max 1024"));
+        assert!(lines[3].starts_with("option name Hash type spin default 16"));
+        assert_eq!(lines[4], "option name Clear Hash type button");
         // Every declared option appears exactly once.
         assert_eq!(lines.len(), o.iter_declared().count());
     }

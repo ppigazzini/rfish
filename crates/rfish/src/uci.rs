@@ -16,6 +16,7 @@ use rfish_engine::board::movegen::{move_to_uci, parse_uci_move, perft_divide};
 use rfish_engine::board::position::{Position, START_FEN};
 use rfish_engine::board::types::Color;
 use rfish_engine::eval::nnue;
+use rfish_engine::platform::numa::{self, NumaConfig};
 use rfish_engine::platform::syzygy::TableRegistry;
 use rfish_engine::platform::threads::ThreadPool;
 use rfish_engine::search::tt::TranspositionTable;
@@ -89,6 +90,8 @@ pub(crate) struct Engine {
     pool: ThreadPool,
     tablebases: Option<Arc<TableRegistry>>,
     network: Option<Arc<nnue::Network>>,
+    /// The processor topology the `NumaPolicy` option selected.
+    numa: NumaConfig,
 }
 
 impl core::fmt::Debug for Engine {
@@ -110,7 +113,16 @@ impl Engine {
         let options = Options::default();
         let tt = TranspositionTable::new(options.spin("Hash") as usize);
         let pool = ThreadPool::new(options.spin("Threads") as usize);
-        Engine { pos: Position::startpos(), options, tt, pool, tablebases: None, network: None }
+        let numa = NumaConfig::from_system(numa::DEFAULT_AUTO_POLICY, true);
+        Engine {
+            pos: Position::startpos(),
+            options,
+            tt,
+            pool,
+            tablebases: None,
+            network: None,
+            numa,
+        }
     }
 
     /// Handle one command line. Returns `false` on `quit`.
@@ -245,7 +257,25 @@ impl Engine {
                 self.tt.clear();
                 self.pool.clear();
             }
-            "threads" => self.pool.resize(self.options.spin("Threads") as usize),
+            "threads" => {
+                self.pool.resize(self.options.spin("Threads") as usize);
+                self.report_thread_allocation(out);
+            }
+            "numapolicy" => {
+                let value = self.options.text("NumaPolicy").to_string();
+                if self.set_numa_config_from_option(&value) {
+                    self.report_numa_config(out);
+                    self.report_thread_allocation(out);
+                } else {
+                    // Upstream's wording, and upstream's behaviour: a policy the engine
+                    // cannot honour leaves the previous one in place rather than falling
+                    // back to something the operator did not ask for.
+                    let _ = writeln!(
+                        out,
+                        "info string NumaPolicy: invalid value '{value}', keeping previous config."
+                    );
+                }
+            }
             "syzygypath" | "syzygyprobedepth" | "syzygyprobelimit" | "syzygy50moverule" => {
                 if name.eq_ignore_ascii_case("SyzygyPath") {
                     let reg = TableRegistry::discover(self.options.text("SyzygyPath"));
@@ -264,8 +294,91 @@ impl Engine {
                 self.apply_tb_options();
             }
             "evalfile" => self.load_network(out),
+            "debug log file" => {
+                let path = self.options.text("Debug Log File").to_string();
+                if let Err(e) = crate::debug_log::set_path(&path) {
+                    // Reported, not swallowed: an operator who asked for a transcript and
+                    // silently got none would trust a record that was never written.
+                    let _ = writeln!(out, "info string Cannot open debug log {path}: {e}");
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Apply a `NumaPolicy` value. False when it names no config the engine can build.
+    ///
+    /// The four keywords are upstream's. `hardware` deliberately ignores the affinity the
+    /// process was started under, which is how an operator asks about the machine rather
+    /// than about this process's slice of it.
+    fn set_numa_config_from_option(&mut self, value: &str) -> bool {
+        self.numa = match value {
+            "auto" | "system" => NumaConfig::from_system(numa::DEFAULT_AUTO_POLICY, true),
+            "hardware" => NumaConfig::from_system(numa::DEFAULT_AUTO_POLICY, false),
+            "none" => NumaConfig::default(),
+            explicit => match NumaConfig::from_string(explicit) {
+                Some(cfg) => cfg,
+                None => return false,
+            },
+        };
+        true
+    }
+
+    /// Whether this policy asks for the thread set to be spread across nodes.
+    fn numa_distributes_threads(&self, threads: usize) -> bool {
+        match self.options.text("NumaPolicy") {
+            "none" => false,
+            "auto" => self.numa.suggests_binding_threads(threads),
+            // `system`, `hardware`, or an explicit spec: the operator asked for it.
+            _ => true,
+        }
+    }
+
+    /// `info string Available processors: …`, in upstream's wording.
+    fn report_numa_config(&self, out: &mut impl Write) {
+        let _ = writeln!(out, "info string Available processors: {}", self.numa.to_string_spec());
+    }
+
+    /// `info string Using N thread(s)`, plus the per-node split when one is in effect.
+    ///
+    /// Upstream says "thread binding" here because it has bound them. rfish says
+    /// "distribution", because it has NOT: `sched_setaffinity` is FFI, and this engine has
+    /// no `unsafe` and no dependency to reach it through. The numbers are the same numbers
+    /// -- how many workers were ASSIGNED to each node, against that node's processor count
+    /// -- and the assignment is real, because it is what would select a memory replica.
+    /// What rfish cannot promise is that the scheduler leaves them there, so it does not
+    /// use a word that would promise it.
+    fn report_thread_allocation(&self, out: &mut impl Write) {
+        let threads = self.pool.len();
+        let plural = if threads > 1 { "threads" } else { "thread" };
+
+        if !self.numa_distributes_threads(threads) {
+            let _ = writeln!(out, "info string Using {threads} {plural}");
+            return;
+        }
+
+        let assignment = self.numa.distribute_threads_among_numa_nodes(threads);
+        let mut counts = vec![0usize; self.numa.num_numa_nodes()];
+        for &n in &assignment {
+            if let Some(slot) = counts.get_mut(n) {
+                *slot += 1;
+            }
+        }
+        let split: Vec<String> = counts
+            .iter()
+            .enumerate()
+            .map(|(n, c)| format!("{c}/{}", self.numa.num_cpus_in_numa_node(n)))
+            .collect();
+        let _ = writeln!(
+            out,
+            "info string Using {threads} {plural} with NUMA node thread distribution: {}",
+            split.join(":")
+        );
+        let _ = writeln!(
+            out,
+            "info string NUMA threads are distributed, not pinned: this engine is 100% safe \
+             Rust and sched_setaffinity has no safe interface."
+        );
     }
 
     /// The option values the search reads, gathered in one place.
@@ -296,6 +409,16 @@ impl Engine {
         );
     }
 
+    /// Report the processor topology and the thread allocation, once at startup.
+    ///
+    /// Upstream emits these lazily, when the first search forces the thread pool into
+    /// existence. rfish builds its pool eagerly, so it reports eagerly; the content is the
+    /// same and an operator reading a log sees the same facts.
+    pub(crate) fn report_configuration(&self, out: &mut impl Write) {
+        self.report_numa_config(out);
+        self.report_thread_allocation(out);
+    }
+
     /// Load the network named by `EvalFile`, reporting either way.
     ///
     /// A missing net is NOT an error: rfish runs on the classical scaffolding and says so,
@@ -305,6 +428,12 @@ impl Engine {
         self.network = match nnue::find_and_load(&name) {
             Some(Ok(net)) => {
                 let _ = writeln!(out, "info string NNUE evaluation using {}", net.name());
+                // One replica, in this process's own memory. Upstream can report "Shared
+                // memory." here because it maps the weights through POSIX shm so several
+                // engine processes share one copy; that is `shm_open` plus `mmap`, which
+                // are FFI, so rfish always holds its own. The wording is upstream's for the
+                // case rfish is always in.
+                let _ = writeln!(out, "info string Network replica 1: Local memory.");
                 Some(Arc::new(net))
             }
             // A file that exists but does not load is reported as the failure it is. Falling
@@ -587,10 +716,15 @@ fn emit_bestmove(out: &mut impl Write, pos: &Position, result: &SearchResult) {
 /// `quit` is how every gate and every measurement harness drives this binary, and aborting
 /// there would turn a node count into a number that depends on scheduling. A `go infinite`
 /// has no such answer to wait for, so that one is stopped.
-pub(crate) fn run(input: impl BufRead + Send + 'static, mut output: impl Write) {
+pub(crate) fn run(input: impl BufRead + Send + 'static, output: impl Write) {
+    // Every byte the engine writes passes through the transcript wrapper. It costs a
+    // newline scan per write when logging is off, and nothing else.
+    let mut output = crate::debug_log::TeeWriter::new(output);
     let mut engine = Engine::new();
-    // Report the network situation once at startup, the way upstream does, so a user who
-    // forgot the net finds out immediately rather than after a weak game.
+    // Report the topology and the network situation once at startup, the way upstream does,
+    // so a user who forgot the net -- or who is on a machine whose nodes the engine could
+    // not read -- finds out immediately rather than after a weak game.
+    engine.report_configuration(&mut output);
     engine.load_network(&mut output);
 
     let shared = Arc::clone(engine.pool.shared());
@@ -616,6 +750,7 @@ pub(crate) fn run(input: impl BufRead + Send + 'static, mut output: impl Write) 
     // Re-dispatching `stop` and `ponderhit` here is harmless: both are idempotent, and the
     // next `go` resets the signals regardless.
     for line in rx {
+        crate::debug_log::record_input(&line);
         if !engine.handle(&line, &mut output) {
             break;
         }

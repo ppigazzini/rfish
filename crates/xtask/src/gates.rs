@@ -266,6 +266,13 @@ fn filter_volatile(out: &str) -> String {
             || line.starts_with("Time:")
             || line.starts_with("info string NNUE")
             || line.starts_with("Compiled by")
+            // The processor topology is a fact about the HOST, not about the engine.
+            // Recording "0-15" would make the golden fail on every machine with a
+            // different core count -- a golden that pins the runner rather than the code.
+            // The engine's handling of it is covered by the numa unit tests instead.
+            || line.starts_with("info string Available processors")
+            || line.starts_with("info string Using ")
+            || line.starts_with("info string NUMA threads are distributed")
         {
             continue;
         }

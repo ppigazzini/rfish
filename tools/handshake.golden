@@ -1,7 +1,10 @@
 rfish 0.1.0 by the Stockfish developers (see AUTHORS)
+info string Network replica 1: Local memory.
 id name rfish 0.1.0
 id author the Stockfish developers (see AUTHORS)
 
+option name Debug Log File type string default <empty>
+option name NumaPolicy type string default auto
 option name Threads type spin default 1 min 1 max 1024
 option name Hash type spin default 16 min 1 max 33554432
 option name Clear Hash type button

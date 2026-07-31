@@ -11,6 +11,7 @@
 use std::io::{self, BufWriter, Write};
 
 mod bench;
+mod debug_log;
 mod options;
 mod uci;
 
@@ -26,9 +27,12 @@ fn main() {
         // makes `stockfish bench` measure the classical fallback while reporting a node
         // count that looks entirely plausible -- exactly the kind of wrong number an anchor
         // must never be derived from.
+        let mut out = debug_log::TeeWriter::new(out);
         let mut engine = uci::Engine::new();
+        engine.report_configuration(&mut out);
         engine.load_network(&mut out);
         let line = args.join(" ");
+        debug_log::record_input(&line);
         engine.handle(&line, &mut out);
         let _ = out.flush();
         return;
