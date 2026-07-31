@@ -11,15 +11,12 @@ use crate::runner::{
 };
 use crate::{capture, have, resources_dir, run, workspace_root};
 
-/// The bench depth the signature gate uses.
+/// The bench depth the signature gate uses: **upstream's own 13**.
 ///
-/// **Upstream's own 13.** It was lower while the evaluation was the classical scaffolding,
-/// which prunes far worse; with the NNUE forward pass resident the whole list runs at depth
-/// 13 in well under a minute, so the anchor is now measured where upstream measures it.
-///
-/// The NUMBER still differs from upstream's, because the search's pruning constants are not
-/// upstream's yet. `tools/signature.golden` is therefore rfish's own count at upstream's
-/// depth — see `__DEV/PORTING.md`, "Two different numbers".
+/// The number the gate compares against is now upstream's number too, not a private
+/// anchor. `tools/signature.golden` and a pristine upstream build's `Bench:` line at
+/// `tools/upstream/UPSTREAM_BASE` are the same integer, and a diff between them is a
+/// porting regression rather than a tuning difference.
 const SIGNATURE_DEPTH: &str = "13";
 const SIGNATURE_HASH: &str = "16";
 const SIGNATURE_THREADS: &str = "1";
@@ -121,9 +118,9 @@ pub(crate) fn signature(update: bool) -> Result<Outcome, String> {
              changes\n\
              # the number; see crates/rfish/src/bench.rs.\n\
              #\n\
-             # This is rfish's number TODAY, not the finish line. Upstream's `Bench:` at\n\
-             # tools/upstream/UPSTREAM_BASE is the target, and rfish will not reach it until\n\
-             # the NNUE forward pass lands. See __DEV/PORTING.md.\n\
+             # This EQUALS a pristine upstream build's `Bench:` at\n\
+             # tools/upstream/UPSTREAM_BASE. It is not an rfish-only anchor: a diff against\n\
+             # upstream at that SHA is a porting regression, not a tuning difference.\n\
              #\n\
              # Regenerate ONLY for an intended behaviour change, and say what moved it in\n\
              # the commit body. Updating this on a red gate launders a bug into the anchor.\n\

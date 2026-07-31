@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
-use crate::board::types::{Color, MAX_PLY, Move, VALUE_DRAW, VALUE_INFINITE, Value};
+use crate::board::types::{Color, MAX_PLY, Move, VALUE_DRAW, VALUE_INFINITE, VALUE_NONE, Value};
 
 /// What the caller asked the search to do.
 ///
@@ -105,20 +105,48 @@ impl Default for SearchOptions {
     }
 }
 
+/// The `mean_squared_score` value that means "never scored".
+///
+/// Minus infinity squared, which no real score can produce, so the first search replaces
+/// it outright instead of averaging against it.
+pub const MEAN_SQUARED_SENTINEL: Value = -(VALUE_INFINITE * VALUE_INFINITE);
+
 /// One move from the root, with everything the emitter needs to report it.
 #[derive(Clone, Debug)]
 pub struct RootMove {
     pub mv: Move,
     /// The score from the completed iteration.
     pub score: Value,
+    /// The score reported to the GUI, which a fail high or low replaces with the window
+    /// bound rather than the raw search value.
+    pub uci_score: Value,
     /// The score from the previous completed iteration, used to detect instability.
     pub previous_score: Value,
-    /// The best score this move reached at any depth, for `MultiPV` ordering.
+    /// True when `previous_score` came from a completed, in-window search.
+    pub previous_score_exact: bool,
+    /// True when the reported score is a lower bound (a fail high).
+    pub score_lowerbound: bool,
+    /// True when the reported score is an upper bound (a fail low).
+    pub score_upperbound: bool,
+    /// An exponential moving average of this move's scores across iterations.
+    ///
+    /// The aspiration window opens around this rather than around the last score: one
+    /// iteration's value is noisy, and a window centred on noise fails more often than it
+    /// saves.
     pub average_score: Value,
+    /// The same average over the SQUARED score, which the window width reads. Squaring
+    /// keeps a move that has swung widely from being given a narrow window.
+    ///
+    /// Held in 32 bits, not 64. The product of two scores fits, and upstream narrows the
+    /// running average back to 32 bits on every update — so widening it here would make
+    /// the aspiration window that reads it diverge.
+    pub mean_squared_score: Value,
     /// How deep the search went below this move.
     pub sel_depth: i32,
     /// The principal variation starting with this move.
     pub pv: Vec<Move>,
+    /// The principal variation from the previous iteration, which the follow-PV test reads.
+    pub previous_pv: Vec<Move>,
     /// Tablebase rank, for root filtering. Zero when no tablebase was consulted.
     pub tb_rank: i32,
     /// What the tablebases say this move is worth.
@@ -141,14 +169,43 @@ impl RootMove {
         RootMove {
             mv,
             score: -VALUE_INFINITE,
+            uci_score: -VALUE_INFINITE,
             previous_score: -VALUE_INFINITE,
+            previous_score_exact: false,
+            score_lowerbound: false,
+            score_upperbound: false,
             average_score: -VALUE_INFINITE,
+            mean_squared_score: MEAN_SQUARED_SENTINEL,
             sel_depth: 0,
             pv: vec![mv],
+            previous_pv: Vec::new(),
             tb_rank: 0,
             tb_score: VALUE_DRAW,
             effort: 0,
         }
+    }
+
+    /// Clear both bound flags, so the score reads as exact.
+    pub fn unset_bound_flags(&mut self) {
+        self.score_lowerbound = false;
+        self.score_upperbound = false;
+    }
+
+    /// True when the score is reported as a bound rather than an exact value.
+    #[must_use]
+    pub fn score_is_bound(&self) -> bool {
+        self.score_lowerbound || self.score_upperbound
+    }
+
+    /// True when this move has an exact — not bounded — proven loss.
+    ///
+    /// An aborted search can produce a loss score that a completed one would refute, so
+    /// the two are kept distinct: only an exact loss may be trusted.
+    #[must_use]
+    pub fn score_is_exact_loss(&self) -> bool {
+        !self.score_is_bound()
+            && self.score != -VALUE_INFINITE
+            && crate::board::types::is_loss(self.score)
     }
 }
 
@@ -246,6 +303,15 @@ impl SharedState {
     }
 
     /// Stop as soon as the ponder becomes a real search, but not before.
+    /// Withdraw a pending "stop at `ponderhit`" request.
+    ///
+    /// A fail low means the position is worse than the search believed, which is exactly
+    /// when the extra thinking a ponder buys is worth having. The request is cancelled so
+    /// the search keeps going rather than banking a score it has just started to doubt.
+    pub fn clear_stop_on_ponderhit(&self) {
+        self.stop_on_ponderhit.store(false, Ordering::Relaxed);
+    }
+
     pub fn request_stop_on_ponderhit(&self) {
         self.stop_on_ponderhit.store(true, Ordering::Relaxed);
     }
@@ -371,6 +437,11 @@ pub const STACK_SIZE: usize = MAX_PLY + 10;
 
 /// One ply of the search stack.
 ///
+/// The several booleans are not a state machine that wants a bitfield: each is an
+/// independent fact about the node that some pruning rule reads on its own, and upstream
+/// keeps them as separate flags for the same reason.
+#[allow(clippy::struct_excessive_bools)]
+///
 /// Upstream indexes this array from `-7`, so a node can look back seven plies without a
 /// bounds test. Here the array starts at zero and the search offsets by [`STACK_BASE`],
 /// which is the same trick with the offset written down instead of hidden in a pointer.
@@ -380,24 +451,49 @@ pub struct StackEntry {
     pub current_move: Move,
     /// The best move found so far below this ply.
     pub pv: Vec<Move>,
+    /// Whether `pv` was written by the child that was supposed to write it.
+    ///
+    /// Upstream nulls a stack entry's PV pointer before each move and only points it at
+    /// real storage for the searches that produce a principal variation. A child that
+    /// never ran a PV search leaves the pointer null, and splicing it in contributes
+    /// nothing. Without this flag the parent would splice in whatever a DIFFERENT sibling
+    /// left behind, producing a reported line whose moves are not legal from the root.
+    pub pv_valid: bool,
     /// The static evaluation of this node.
     pub static_eval: Value,
     /// Which move was excluded by a singular-extension search, or [`Move::NONE`].
     pub excluded_move: Move,
-    /// The two killer moves for this ply.
-    pub killers: [Move; 2],
     /// How many moves have been searched at this ply.
     pub move_count: i32,
-    /// True when this node is on the principal variation.
+    /// True when the side to move is in check at this node.
     pub in_check: bool,
-    /// True when the parent's move was a capture.
+    /// True when this node is on the principal variation now, or was when it was stored.
     pub tt_pv: bool,
-    /// The number of consecutive cut nodes above this one.
+    /// True when the transposition probe at this node hit.
+    pub tt_hit: bool,
+    /// True when this node is still on the previous iteration's principal variation.
+    ///
+    /// The move-ordering rules that would otherwise prune a move at the frontier of the
+    /// known-best line are relaxed here: the line is the one the search most needs to keep
+    /// resolving, and pruning it away costs the iteration its own answer.
+    pub follow_pv: bool,
+    /// How many children of this node have failed high.
     pub cutoff_count: i32,
-    /// The reduction this node inherited from its parent.
+    /// The reduction applied to the child currently being searched, read back by that
+    /// child as `priorReduction` to undo an over-reduction in hindsight.
     pub reduction: i32,
-    /// The piece that moved into this node, for the continuation tables.
-    pub moved_piece: crate::board::types::Piece,
+    /// The combined history score of the move being searched, reused by the reduction
+    /// arithmetic and by the parent's fail-low bonus.
+    pub stat_score: i32,
+    /// The plane of the continuation history this node's move selects.
+    ///
+    /// A plain index, not an option. Plane zero is a REAL plane — the one a move by
+    /// [`Piece::NONE`] to a1 would select, which no move can — so it serves as the
+    /// sentinel for "no previous move" while still being readable. Upstream points at it
+    /// the same way, and the move picker reads it unconditionally.
+    pub continuation: usize,
+    /// The plane of the continuation CORRECTION history this node's move selects.
+    pub continuation_correction: usize,
 }
 
 impl Default for StackEntry {
@@ -405,26 +501,31 @@ impl Default for StackEntry {
         StackEntry {
             current_move: Move::NONE,
             pv: Vec::new(),
-            static_eval: VALUE_INFINITE,
+            pv_valid: false,
+            static_eval: VALUE_NONE,
             excluded_move: Move::NONE,
-            killers: [Move::NONE; 2],
             move_count: 0,
             in_check: false,
             tt_pv: false,
+            tt_hit: false,
+            follow_pv: false,
             cutoff_count: 0,
             reduction: 0,
-            moved_piece: crate::board::types::Piece::NONE,
+            stat_score: 0,
+            continuation: 0,
+            continuation_correction: 0,
         }
     }
 }
 
-/// How far into the stack array ply 0 sits, so a node can index four plies back.
+/// How far into the stack array ply 0 sits, so a node can index seven plies back.
 ///
-/// The continuation tables look back one, two, four and six plies, so ply 0 must sit at
-/// least six entries in. Asserted at compile time rather than in a test, because a test
-/// can be deleted and this bound is what keeps the lookback in range.
+/// The continuation tables reach six plies back, and updating them from `ss - 1` reaches
+/// one further, so ply 0 must sit at least seven entries in. Asserted at compile time
+/// rather than in a test, because a test can be deleted and this bound is what keeps the
+/// lookback in range.
 pub const STACK_BASE: usize = 8;
-const _: () = assert!(STACK_BASE >= 6, "the continuation lookback reaches six plies back");
+const _: () = assert!(STACK_BASE >= 7, "updating continuations from ss-1 reaches seven back");
 const _: () = assert!(STACK_SIZE > MAX_PLY + STACK_BASE, "the stack must reach MAX_PLY");
 
 /// Which side's clock a colour reads.

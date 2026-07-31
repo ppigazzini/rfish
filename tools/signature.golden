@@ -3,10 +3,10 @@
 # the history block carry across positions. Every one of those four facts changes
 # the number; see crates/rfish/src/bench.rs.
 #
-# This is rfish's number TODAY, not the finish line. Upstream's `Bench:` at
-# tools/upstream/UPSTREAM_BASE is the target, and rfish will not reach it until
-# the NNUE forward pass lands. See __DEV/PORTING.md.
+# This EQUALS a pristine upstream build's `Bench:` at
+# tools/upstream/UPSTREAM_BASE. It is not an rfish-only anchor: a diff against
+# upstream at that SHA is a porting regression, not a tuning difference.
 #
 # Regenerate ONLY for an intended behaviour change, and say what moved it in
 # the commit body. Updating this on a red gate launders a bug into the anchor.
-3454084
+3184328

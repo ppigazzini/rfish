@@ -9,6 +9,7 @@
 
 pub mod attacks;
 pub mod bitboard;
+pub mod cuckoo;
 pub mod movegen;
 pub mod position;
 pub mod types;

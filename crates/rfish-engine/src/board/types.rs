@@ -669,6 +669,17 @@ impl Move {
         Move::NONE.0 != self.0 && Move::NULL.0 != self.0
     }
 
+    /// True for anything other than [`Move::NONE`] — upstream's `bool(move)`.
+    ///
+    /// Distinct from [`Move::is_ok`], which also rejects [`Move::NULL`]. A null move is a
+    /// real move for the purposes of "is there a move here", and the search relies on that
+    /// distinction when it looks back at what the previous ply played.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_some(self) -> bool {
+        self.0 != Move::NONE.0
+    }
+
     /// True for [`Move::NONE`].
     #[inline(always)]
     #[must_use]
@@ -767,6 +778,58 @@ pub const fn mate_in(ply: i32) -> Value {
 #[must_use]
 pub const fn mated_in(ply: i32) -> Value {
     ply - VALUE_MATE
+}
+
+/// True unless the value is the "no score" sentinel.
+#[inline(always)]
+#[must_use]
+pub const fn is_valid(v: Value) -> bool {
+    v != VALUE_NONE
+}
+
+/// True when the value is a proven win — a mate or a tablebase win.
+#[inline(always)]
+#[must_use]
+pub const fn is_win(v: Value) -> bool {
+    v >= VALUE_TB_WIN_IN_MAX_PLY
+}
+
+/// True when the value is a proven loss.
+#[inline(always)]
+#[must_use]
+pub const fn is_loss(v: Value) -> bool {
+    v <= VALUE_TB_LOSS_IN_MAX_PLY
+}
+
+/// True when the value settles the game either way.
+///
+/// The distinction from an ordinary score matters throughout the search: a decisive score
+/// must not be blended, widened or scaled, because it is a fact rather than an estimate.
+#[inline(always)]
+#[must_use]
+pub const fn is_decisive(v: Value) -> bool {
+    is_win(v) || is_loss(v)
+}
+
+/// True when the value is a mate score, as distinct from a tablebase win.
+#[inline(always)]
+#[must_use]
+pub const fn is_mate(v: Value) -> bool {
+    v >= VALUE_MATE_IN_MAX_PLY
+}
+
+/// True when the value is a being-mated score.
+#[inline(always)]
+#[must_use]
+pub const fn is_mated(v: Value) -> bool {
+    v <= VALUE_MATED_IN_MAX_PLY
+}
+
+/// True when the value is a mate score for either side.
+#[inline(always)]
+#[must_use]
+pub const fn is_mate_or_mated(v: Value) -> bool {
+    is_mate(v) || is_mated(v)
 }
 
 /// A Zobrist hash key.

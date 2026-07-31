@@ -32,7 +32,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::board::types::{
-    Bound, Key, MAX_PLY, Move, VALUE_MATE_IN_MAX_PLY, VALUE_MATED_IN_MAX_PLY, VALUE_NONE, Value,
+    Bound, Key, Move, VALUE_MATE, VALUE_NONE, VALUE_TB, VALUE_TB_LOSS_IN_MAX_PLY,
+    VALUE_TB_WIN_IN_MAX_PLY, Value, is_loss, is_mate, is_mated, is_valid, is_win,
 };
 
 /// Entries per cluster.
@@ -41,16 +42,19 @@ pub const CLUSTER_SIZE: usize = 3;
 /// what decides which positions share a slot.
 pub const CLUSTER_BYTES: usize = 32;
 
-/// Upstream's `DEPTH_ENTRY_OFFSET`: the depth stored is biased so the "empty" encoding
-/// (all zero) reads back as a depth below any real one.
-const DEPTH_ENTRY_OFFSET: i32 = -3;
+/// Upstream's `DEPTH_NONE`: the depth stored is biased by this, so the all-zero encoding
+/// reads back as a depth below any real one and `depth8 != 0` is the occupancy test.
+const DEPTH_NONE: i32 = -3;
 
-/// How many generations the counter advances per `ucinewgame`-free search.
-const GENERATION_DELTA: u8 = 8;
-/// The mask isolating the generation from the bound bits.
-const GENERATION_MASK: u8 = 0xF8;
-/// One full turn of the 5-bit generation counter.
-const GENERATION_CYCLE: i32 = 0xFF + (1 << 3);
+/// Bits of `gen_bound8` holding the generation. The bound occupies the next two and the
+/// PV flag the top one, so a generation comparison must mask.
+const GENERATION_BITS: u8 = 5;
+/// The mask isolating the generation from the bound and PV bits.
+const GENERATION_MASK: u8 = (1 << GENERATION_BITS) - 1;
+/// Where the bound sits in `gen_bound8`.
+const BOUND_SHIFT: u8 = GENERATION_BITS;
+/// Where the PV flag sits in `gen_bound8`.
+const PV_SHIFT: u8 = BOUND_SHIFT + 2;
 
 /// One cluster: three entries, packed into four atomic words.
 #[derive(Debug, Default)]
@@ -148,10 +152,13 @@ impl TranspositionTable {
 
     /// Advance the generation counter — one `go`, one generation.
     pub fn new_search(&self) {
-        self.generation.fetch_add(u64::from(GENERATION_DELTA), Ordering::Relaxed);
+        // Masked so it never overflows into the bound and PV bits it shares a byte with.
+        let next =
+            (self.generation.load(Ordering::Relaxed) as u8).wrapping_add(1) & GENERATION_MASK;
+        self.generation.store(u64::from(next), Ordering::Relaxed);
     }
 
-    /// The current generation byte.
+    /// The current generation byte, already masked.
     #[must_use]
     fn generation8(&self) -> u8 {
         self.generation.load(Ordering::Relaxed) as u8
@@ -182,12 +189,16 @@ impl TranspositionTable {
             let main = c.main[slot].load(Ordering::Relaxed);
             if (main as u16) == key16 {
                 let (depth8, gen_bound) = unpack_meta(meta, slot);
-                // Refresh the generation so a hit survives the next replacement sweep,
-                // keeping the bound bits: upstream's `entry->save` refresh path.
-                let refreshed = (self.generation8() & GENERATION_MASK) | (gen_bound & 0x7);
-                c.meta.store(pack_meta(meta, slot, depth8, refreshed), Ordering::Relaxed);
+                // A key match is not yet a hit: the entry must also be OCCUPIED. An entry
+                // whose depth was penalised down to zero keeps its key but has been
+                // retired, and reading it as a hit would resurrect a score the search
+                // deliberately discarded.
+                //
+                // The generation is NOT refreshed here. Upstream's probe only reads, and
+                // refreshing on read would keep a stale entry alive across generations and
+                // change which entries the replacement sweep evicts.
                 return TTProbe {
-                    hit: true,
+                    hit: depth8 != 0,
                     data: decode(main, depth8, gen_bound),
                     cluster,
                     slot,
@@ -197,16 +208,17 @@ impl TranspositionTable {
         }
 
         // Miss: pick the replacement victim now, by upstream's rule -- prefer the entry
-        // whose depth, discounted by how many generations old it is, is lowest.
+        // whose depth, discounted eight-fold by how many generations old it is, is lowest.
+        let cur_gen = self.generation8();
         let mut victim = 0usize;
-        let mut worst = i32::MAX;
-        for slot in 0..CLUSTER_SIZE {
+        let (d0, g0) = unpack_meta(meta, 0);
+        let mut worst = i32::from(d0) - 8 * i32::from(relative_age(g0, cur_gen));
+        for slot in 1..CLUSTER_SIZE {
             let (depth8, gen_bound) = unpack_meta(meta, slot);
-            let age = (GENERATION_CYCLE + i32::from(self.generation8())
-                - i32::from(gen_bound & GENERATION_MASK))
-                & GENERATION_MASK as i32;
-            let score = i32::from(depth8) - age * 2;
-            if score < worst {
+            let score = i32::from(depth8) - 8 * i32::from(relative_age(gen_bound, cur_gen));
+            // Strictly greater, so a tie keeps the earlier slot -- upstream compares the
+            // incumbent against the candidate in that direction.
+            if worst > score {
                 worst = score;
                 victim = slot;
             }
@@ -217,9 +229,11 @@ impl TranspositionTable {
 
     /// Write an entry back into the slot `probe` selected.
     ///
-    /// The three conditions under which an existing entry survives are upstream's: an
-    /// exact bound always overwrites, a deeper search overwrites a shallower one, and a
-    /// stale generation is replaceable regardless of depth.
+    /// The four conditions under which the existing entry is overwritten are upstream's: an
+    /// exact bound always wins, a different position always wins, a deep enough search
+    /// wins, and any entry from an older generation wins. When none holds, the entry
+    /// survives — but a decisive score at a useful depth is aged down a ply, which is what
+    /// keeps a stale forced mate from blocking the slot forever.
     pub fn store(
         &self,
         probe: TTProbe,
@@ -234,53 +248,104 @@ impl TranspositionTable {
         let main = c.main[probe.slot].load(Ordering::Relaxed);
         let meta = c.meta.load(Ordering::Relaxed);
         let (old_depth8, old_gen) = unpack_meta(meta, probe.slot);
-        let occupied = (main as u16) == probe.key16 && old_depth8 != 0;
+        let same_key = (main as u16) == probe.key16;
+        let cur_gen = self.generation8();
 
-        // Keep the previous move when the new search found none: a move from a shallower
-        // search still orders better than nothing.
-        let mv = if !mv.is_none() || !occupied { mv } else { Move::from_raw((main >> 16) as u16) };
+        // Keep the previous move when this search found none for the SAME position: a move
+        // from a shallower search still orders better than nothing. For a different
+        // position the stored move is meaningless and is cleared. This happens BEFORE the
+        // replacement test and independently of it -- an entry that survives the test
+        // still takes the new move.
+        let packed_move =
+            if !mv.is_none() || !same_key { u64::from(mv.raw()) } else { (main >> 16) & 0xFFFF };
+        let main = (main & !(0xFFFFu64 << 16)) | (packed_move << 16);
+        c.main[probe.slot].store(main, Ordering::Relaxed);
 
         if bound == Bound::Exact
-            || !occupied
-            || i32::from(old_depth8) - DEPTH_ENTRY_OFFSET + 2 * i32::from(is_pv)
-                < depth - DEPTH_ENTRY_OFFSET + 4
-            || (old_gen & GENERATION_MASK) != (self.generation8() & GENERATION_MASK)
+            || !same_key
+            || depth - DEPTH_NONE + 2 * i32::from(is_pv) > i32::from(old_depth8) - 4
+            || relative_age(old_gen, cur_gen) != 0
         {
-            let depth8 = (depth - DEPTH_ENTRY_OFFSET).clamp(0, 255) as u8;
+            let depth8 = (depth - DEPTH_NONE).clamp(0, 255) as u8;
             let gen_bound =
-                (self.generation8() & GENERATION_MASK) | (u8::from(is_pv) << 2) | bound as u8;
+                cur_gen | ((bound as u8) << BOUND_SHIFT) | (u8::from(is_pv) << PV_SHIFT);
             let packed = u64::from(probe.key16)
-                | (u64::from(mv.raw()) << 16)
+                | (packed_move << 16)
                 | (u64::from(value as i16 as u16) << 32)
                 | (u64::from(eval as i16 as u16) << 48);
             c.main[probe.slot].store(packed, Ordering::Relaxed);
             c.meta.store(pack_meta(meta, probe.slot, depth8, gen_bound), Ordering::Relaxed);
+            return;
+        }
+
+        // Secondary aging. A stored mate or tablebase score that is not exact loses a ply
+        // of depth each time it blocks a write, so it eventually stops winning the
+        // replacement test. Without it, elementary mates can be missed: the entry that
+        // proves the mate at the wrong distance never yields its slot.
+        if i32::from(old_depth8) + DEPTH_NONE >= 5
+            && Bound::from_raw((old_gen >> BOUND_SHIFT) & 3) != Bound::Exact
+        {
+            let v16 = i32::from((main >> 32) as u16 as i16);
+            if v16.abs() < crate::board::types::VALUE_INFINITE
+                && crate::board::types::is_decisive(v16)
+            {
+                // Saturating at zero: a racy read could otherwise underflow into the
+                // "occupied" encoding of a far deeper entry.
+                let aged = (i32::from(old_depth8) - 1).max(0) as u8;
+                c.meta.store(pack_meta(meta, probe.slot, aged, old_gen), Ordering::Relaxed);
+            }
         }
     }
 
-    /// Per-mille of the table written in the current generation, as UCI's `hashfull`.
+    /// Reduce the stored depth of the slot `probe` selected.
+    ///
+    /// Used when a lookup failed only because the stored bound sits on the wrong side of
+    /// the current window: the entry is not wrong, but it is not answering questions
+    /// either, and letting it keep a deep slot crowds out entries that would.
+    pub fn penalize(&self, probe: TTProbe, penalty: i32) {
+        let c = &self.clusters[probe.cluster];
+        let meta = c.meta.load(Ordering::Relaxed);
+        let (depth8, gen_bound) = unpack_meta(meta, probe.slot);
+        let reduced = (i32::from(depth8) - penalty).max(0) as u8;
+        c.meta.store(pack_meta(meta, probe.slot, reduced, gen_bound), Ordering::Relaxed);
+    }
+
+    /// Per-mille of the table holding entries no older than `max_age` generations, as
+    /// UCI's `hashfull`.
     ///
     /// Sampled over the first thousand clusters, exactly as upstream does: a full sweep of
-    /// a gigabyte table would cost more than the information is worth.
+    /// a gigabyte table would cost more than the information is worth. The divisor is the
+    /// cluster size, not the entry count, because a thousand clusters hold three thousand
+    /// entries and the protocol wants per mille.
     #[must_use]
-    pub fn hashfull(&self) -> u32 {
+    pub fn hashfull(&self, max_age: u8) -> u32 {
         let n = 1000.min(self.clusters.len());
         if n == 0 {
             return 0;
         }
-        let current = self.generation8() & GENERATION_MASK;
+        let cur_gen = self.generation8();
         let mut used = 0u32;
         for c in &self.clusters[..n] {
             let meta = c.meta.load(Ordering::Relaxed);
             for slot in 0..CLUSTER_SIZE {
                 let (depth8, gen_bound) = unpack_meta(meta, slot);
-                if depth8 != 0 && (gen_bound & GENERATION_MASK) == current {
+                if depth8 != 0 && relative_age(gen_bound, cur_gen) <= max_age {
                     used += 1;
                 }
             }
         }
-        used / (n as u32 * CLUSTER_SIZE as u32 / 1000).max(1)
+        used / CLUSTER_SIZE as u32
     }
+}
+
+/// How many generations old an entry is, counted like a clock: `0 - 1 == 31`.
+///
+/// The subtraction is done on the WHOLE stored byte, bound and PV bits included, and only
+/// then masked. Masking first would give a different answer whenever those upper bits are
+/// set, and they usually are.
+#[inline(always)]
+fn relative_age(gen_bound: u8, current: u8) -> u8 {
+    current.wrapping_sub(gen_bound) & GENERATION_MASK
 }
 
 /// The two metadata bytes for `slot`.
@@ -303,9 +368,9 @@ fn decode(main: u64, depth8: u8, gen_bound: u8) -> TTData {
         mv: Move::from_raw((main >> 16) as u16),
         value: i32::from((main >> 32) as u16 as i16),
         eval: i32::from((main >> 48) as u16 as i16),
-        depth: i32::from(depth8) + DEPTH_ENTRY_OFFSET,
-        bound: Bound::from_raw(gen_bound),
-        is_pv: gen_bound & 0x4 != 0,
+        depth: DEPTH_NONE + i32::from(depth8),
+        bound: Bound::from_raw((gen_bound >> BOUND_SHIFT) & 3),
+        is_pv: gen_bound & (1 << PV_SHIFT) != 0,
     }
 }
 
@@ -314,49 +379,55 @@ fn empty_data() -> TTData {
         mv: Move::NONE,
         value: VALUE_NONE,
         eval: VALUE_NONE,
-        depth: DEPTH_ENTRY_OFFSET,
+        depth: DEPTH_NONE,
         bound: Bound::None,
         is_pv: false,
     }
 }
 
-/// Convert a score for storage: a mate score is stored as distance from the CURRENT node,
-/// not from the root, so the same entry is correct wherever it is found again.
+/// Convert a score for storage: a mate or tablebase score is stored as distance from the
+/// CURRENT node, not from the root, so the same entry is correct wherever it is found
+/// again.
 #[inline]
 #[must_use]
 pub fn value_to_tt(v: Value, ply: i32) -> Value {
-    debug_assert!(v != VALUE_NONE);
-    if v >= VALUE_MATE_IN_MAX_PLY {
+    if is_win(v) {
         v + ply
-    } else if v <= VALUE_MATED_IN_MAX_PLY {
+    } else if is_loss(v) {
         v - ply
     } else {
         v
     }
 }
 
-/// The inverse of [`value_to_tt`], with upstream's fifty-move guard: a mate score found
-/// under a nearly expired halfmove clock is demoted, because the rule may draw the game
-/// before the mate arrives.
+/// The inverse of [`value_to_tt`], with upstream's fifty-move guard.
+///
+/// A proven score found under a nearly expired halfmove clock is demoted to the highest
+/// non-tablebase score rather than trusted: the rule may draw the game before the win
+/// arrives, and the stored entry has no way to know how much clock its finder had. The
+/// guard applies to mate scores and tablebase scores separately, because their distances
+/// are measured from different origins.
 #[inline]
 #[must_use]
 pub fn value_from_tt(v: Value, ply: i32, rule50: i32) -> Value {
-    if v == VALUE_NONE {
+    if !is_valid(v) {
         return VALUE_NONE;
     }
-    if v >= VALUE_MATE_IN_MAX_PLY {
-        if v >= crate::board::types::VALUE_MATE - MAX_PLY as i32
-            && crate::board::types::VALUE_MATE - v > 100 - rule50
-        {
-            return VALUE_MATE_IN_MAX_PLY - 1;
+    if is_win(v) {
+        if is_mate(v) && VALUE_MATE - v > 100 - rule50 {
+            return VALUE_TB_WIN_IN_MAX_PLY - 1;
+        }
+        if VALUE_TB - v > 100 - rule50 {
+            return VALUE_TB_WIN_IN_MAX_PLY - 1;
         }
         return v - ply;
     }
-    if v <= VALUE_MATED_IN_MAX_PLY {
-        if v <= -crate::board::types::VALUE_MATE + MAX_PLY as i32
-            && crate::board::types::VALUE_MATE + v > 100 - rule50
-        {
-            return VALUE_MATED_IN_MAX_PLY + 1;
+    if is_loss(v) {
+        if is_mated(v) && VALUE_MATE + v > 100 - rule50 {
+            return VALUE_TB_LOSS_IN_MAX_PLY + 1;
+        }
+        if VALUE_TB + v > 100 - rule50 {
+            return VALUE_TB_LOSS_IN_MAX_PLY + 1;
         }
         return v + ply;
     }
@@ -447,7 +518,7 @@ mod tests {
         assert!(tt.probe(7).hit);
         tt.clear();
         assert!(!tt.probe(7).hit);
-        assert_eq!(tt.hashfull(), 0);
+        assert_eq!(tt.hashfull(0), 0);
     }
 
     /// The table is shared by `&`, so this must compile and must not race. It is the
@@ -475,6 +546,6 @@ mod tests {
                 });
             }
         });
-        assert!(tt.hashfull() > 0);
+        assert!(tt.hashfull(0) > 0);
     }
 }

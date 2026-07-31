@@ -335,7 +335,10 @@ impl FeatureTransformer {
         output: &mut [u8],
     ) -> i32 {
         debug_assert_eq!(output.len(), L1);
-        let key = pos.key();
+        // The RAW key, not the table key: the accumulator depends on the pieces alone, and
+        // mixing the halfmove clock in would miss the cache every time the clock ticked
+        // past fourteen without a single feature having changed.
+        let key = pos.raw_key();
 
         // The same position twice in a row -- a quiescence stand-pat after a main-search
         // evaluation, say -- needs no work at all.

@@ -22,9 +22,7 @@
 use core::fmt;
 use core::fmt::Write as _;
 
-use super::attacks::{
-    aligned, between_bb, bishop_attacks, piece_attacks, queen_attacks, rook_attacks,
-};
+use super::attacks::{aligned, between_bb, bishop_attacks, line_bb, piece_attacks, rook_attacks};
 use super::bitboard::{
     Bitboard, KING_ATTACKS, KNIGHT_ATTACKS, pawn_attacks_from, relative_rank_bb,
 };
@@ -323,10 +321,26 @@ impl Position {
         self.side_to_move
     }
 
-    /// The position key.
+    /// The position key, as the transposition table sees it.
+    ///
+    /// Past a halfmove clock of fourteen the clock is mixed INTO the key, so two positions
+    /// that are identical on the board but at different distances from a fifty-move draw
+    /// stop sharing a table entry. Without that, a search near the draw boundary reads back
+    /// a score proved when there was still plenty of clock, and believes a win it can no
+    /// longer force.
     #[inline(always)]
     #[must_use]
     pub fn key(&self) -> Key {
+        Position::adjust_key50(self.st().key, self.st().rule50)
+    }
+
+    /// The raw position key, before the halfmove clock is mixed in.
+    ///
+    /// This is what the repetition walk compares: a repetition is about the BOARD
+    /// repeating, and the clock differs by construction between the two occurrences.
+    #[inline(always)]
+    #[must_use]
+    pub fn raw_key(&self) -> Key {
         self.st().key
     }
 
@@ -416,11 +430,21 @@ impl Position {
             || m.move_type() == MoveType::EnPassant
     }
 
-    /// True when `m` is a capture or a promotion — the move classes qsearch generates.
+    /// True when `m` is a capture or a QUEEN promotion — the move classes the capture
+    /// stage of the move picker emits.
+    ///
+    /// An underpromotion is NOT in this class. It is generated as a quiet move and ordered
+    /// among them, because a promotion to a knight, bishop or rook is almost always worse
+    /// than the queen promotion of the same pawn and would otherwise be searched ahead of
+    /// every real capture.
+    ///
+    /// The promotion test reads the promotion bits without first checking the move type,
+    /// exactly as upstream does: for any non-promotion those bits are zero, which decodes
+    /// to a knight, so the comparison against a queen is false and no branch is needed.
     #[inline(always)]
     #[must_use]
     pub fn is_capture_stage(&self, m: Move) -> bool {
-        self.is_capture(m) || m.move_type() == MoveType::Promotion
+        self.is_capture(m) || m.promotion_type() == PieceType::Queen
     }
 
     /// The piece the last move captured.
@@ -782,6 +806,92 @@ impl Position {
         self.st().check_squares[pt.index()]
     }
 
+    /// Every square attacked by a piece of type `pt` belonging to `c`.
+    ///
+    /// Pawns are the special case: their attacks come from the whole pawn set at once
+    /// rather than one square at a time, so the shift form is used instead of the loop.
+    #[must_use]
+    pub fn attacks_by(&self, c: Color, pt: PieceType) -> Bitboard {
+        if pt == PieceType::Pawn {
+            return self.pieces_of(c, PieceType::Pawn).pawn_attacks(c);
+        }
+        let mut threats = Bitboard::EMPTY;
+        for sq in self.pieces_of(c, pt) {
+            threats |= piece_attacks(pt, sq, self.occupied());
+        }
+        threats
+    }
+
+    /// The piece `m` moves. For a castling move that is the KING, not the rook, because
+    /// upstream encodes castling as king-takes-own-rook and `moved_piece` reads the origin.
+    #[inline(always)]
+    #[must_use]
+    pub fn moved_piece(&self, m: Move) -> Piece {
+        self.piece_on(m.from())
+    }
+
+    /// True when one legal move from here would repeat a position already in the game.
+    ///
+    /// Upstream's `upcoming_repetition`. It answers exactly what `is_draw` would answer
+    /// over all legal moves, without generating any: walk back through the reversible
+    /// prefix two plies at a time, and at each step ask the cuckoo tables whether the key
+    /// difference between then and now is the delta of a single reversible move. If it is,
+    /// and the move's path is clear, that move repeats.
+    ///
+    /// `other` accumulates the keys that must cancel for the two positions to differ by one
+    /// move only; a non-zero `other` means an irreversible change happened in between and
+    /// no single move can bridge the gap.
+    #[must_use]
+    pub fn upcoming_repetition(&self, ply: i32) -> bool {
+        let top = self.states.len() - 1;
+        let st = &self.states[top];
+        let end = st.rule50.min(st.plies_from_null);
+        if end < 3 || top < 3 {
+            return false;
+        }
+
+        let original_key = st.key;
+        // `stp` walks back; it starts one ply behind, exactly as upstream's `st->previous`.
+        let mut stp = top - 1;
+        let mut other = original_key ^ self.states[stp].key ^ zobrist::side();
+
+        let mut i = 3;
+        while i <= end {
+            // Two plies back per step: a repetition is always an even number of plies away.
+            if stp < 2 {
+                break;
+            }
+            stp -= 1;
+            other ^= self.states[stp].key ^ self.states[stp - 1].key ^ zobrist::side();
+            stp -= 1;
+
+            if other != 0 {
+                i += 2;
+                continue;
+            }
+
+            let move_key = original_key ^ self.states[stp].key;
+            if let Some(mv) = super::cuckoo::lookup(move_key) {
+                let (s1, s2) = (mv.from(), mv.to());
+                // The move must be unobstructed. `between_bb` excludes both ends here by
+                // XORing the destination back out, so an occupied destination is fine — the
+                // move would be a capture, which is still a move to that square.
+                if ((between_bb(s1, s2) ^ Bitboard::from_square(s2)) & self.occupied()).is_empty() {
+                    if ply > i {
+                        return true;
+                    }
+                    // At or above the root the position must already have repeated once:
+                    // otherwise this is a first visit, not a draw.
+                    if self.states[stp].repetition != 0 {
+                        return true;
+                    }
+                }
+            }
+            i += 2;
+        }
+        false
+    }
+
     // -- legality ----------------------------------------------------------
 
     /// True when the pseudo-legal move `m` leaves its own king safe.
@@ -1072,14 +1182,34 @@ impl Position {
                 st.rule50 = 0;
 
                 // A double push only sets an en-passant square when a capture is actually
-                // available -- upstream's rule, and the key depends on it.
-                if to.index().abs_diff(from.index()) == 16
-                    && (pawn_attacks_from(us, to.shift(Direction::pawn_push(them)))
-                        & self.pieces_of(them, PieceType::Pawn))
-                    .any()
-                {
-                    st.ep_square = to.shift(Direction::pawn_push(them));
-                    key ^= zobrist::en_passant(st.ep_square.file());
+                // LEGAL there -- not merely when some enemy pawn attacks the square.
+                //
+                // The key depends on this, so an over-eager square is not a cosmetic
+                // difference: two positions that should share a transposition entry would
+                // hash apart, and the fifty-move and threefold tests would disagree with
+                // upstream's. Three ways the capture can be illegal are screened out:
+                //
+                // - the double push itself uncovers a check on the moving side's opponent,
+                //   in which case the opponent must answer the check instead;
+                // - the only capturing pawn is pinned to its own king, so it cannot leave
+                //   its file;
+                // - the capture would remove BOTH pawns from a line and expose the king
+                //   behind them, which is the classic rank-4 rook case.
+                //
+                // The blockers are read from the state BEFORE this move, because that is
+                // the position the capture would be answering.
+                if to.index().abs_diff(from.index()) == 16 {
+                    let ep = to.shift(Direction::pawn_push(them));
+                    let pawns = pawn_attacks_from(us, ep) & self.pieces_of(them, PieceType::Pawn);
+                    if pawns.any() {
+                        let ksq = self.king_square(them);
+                        let not_blockers = !self.st().blockers[them.index()];
+                        let no_discovery = not_blockers.contains(from) || from.file() == ksq.file();
+                        if no_discovery && (pawns & (not_blockers | line_bb(ep, ksq))).any() {
+                            st.ep_square = ep;
+                            key ^= zobrist::en_passant(ep.file());
+                        }
+                    }
                 } else if mt == MoveType::Promotion {
                     let promo = Piece::new(us, m.promotion_type());
                     self.remove_piece(to);
@@ -1207,9 +1337,13 @@ impl Position {
             st.ep_square = Square::NONE;
         }
         st.key = key;
-        st.rule50 += 1;
-        // A null move is irreversible for repetition purposes: nothing before it can
-        // repeat with the same side to move.
+        // The halfmove clock is deliberately NOT advanced. A null move is not a move: no
+        // piece moved, so nothing about the fifty-move rule changed, and charging the
+        // clock for it would damp every evaluation below a null-move search by an amount
+        // that grows with how deep the search went.
+        //
+        // A null move IS irreversible for repetition purposes, though — nothing before it
+        // can repeat with the same side to move — so the repetition walk is cut here.
         st.plies_from_null = 0;
         st.captured_piece = Piece::NONE;
         st.checkers = Bitboard::EMPTY;
@@ -1419,6 +1553,20 @@ impl Position {
                 if candidates.is_empty() {
                     continue;
                 }
+                if pt == PieceType::King {
+                    // The king may only take when the other side has run out: if it has an
+                    // attacker left, taking would be illegal, so the side that was about to
+                    // capture with its king loses the exchange instead.
+                    //
+                    // No value test here. Upstream has none, and adding one would matter:
+                    // the king's tabulated value is zero, so `0 - swap` is negative for
+                    // every winning exchange and would break out of the loop with the
+                    // wrong answer.
+                    if (attackers & !self.colored(stm)).any() {
+                        result = !result;
+                    }
+                    return result;
+                }
                 swap = piece_value(Piece::new(Color::White, pt)) - swap;
                 if swap < i32::from(result) {
                     // Taking loses the exchange, so this side stops here.
@@ -1435,18 +1583,15 @@ impl Position {
                             & (self.pieces(PieceType::Rook) | self.pieces(PieceType::Queen));
                     }
                     PieceType::Queen => {
-                        attackers |= queen_attacks(to, occupied)
-                            & (self.pieces(PieceType::Bishop)
-                                | self.pieces(PieceType::Rook)
-                                | self.pieces(PieceType::Queen));
-                    }
-                    PieceType::King => {
-                        // The king may only take when the other side has run out: if it
-                        // has an attacker left, taking would be illegal.
-                        if (attackers & self.colored(!stm)).any() {
-                            result = !result;
-                        }
-                        return result;
+                        // Each ray must be matched against the pieces that can travel it.
+                        // A single `queen_attacks` intersected with every slider would
+                        // admit a BISHOP standing on a rook ray as an attacker of a square
+                        // it cannot reach — which reads as an extra defender and flips the
+                        // verdict of the whole exchange.
+                        attackers |= (bishop_attacks(to, occupied)
+                            & (self.pieces(PieceType::Bishop) | self.pieces(PieceType::Queen)))
+                            | (rook_attacks(to, occupied)
+                                & (self.pieces(PieceType::Rook) | self.pieces(PieceType::Queen)));
                     }
                     _ => {}
                 }
@@ -1567,6 +1712,7 @@ impl fmt::Display for Position {
 
 #[cfg(test)]
 mod tests {
+
     #[test]
     fn flipping_twice_is_the_identity() {
         for fen in [

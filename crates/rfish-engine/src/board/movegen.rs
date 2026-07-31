@@ -249,75 +249,63 @@ fn generate_pawn_moves(
     let empty = !pos.occupied();
     let enemies = pos.colored(them);
 
+    // Under check only the checker can be captured, so the enemy set collapses to it.
+    let enemies = if gt == GenType::Evasions { pos.checkers() } else { enemies };
+    let evasions = gt == GenType::Evasions;
+
     // Single and double pushes. A pawn on the seventh is handled by the promotion block,
     // never here, so a Normal move can never reach the last rank.
     if gt != GenType::Captures {
         let mut b1 = not_on_seventh.shift(up) & empty;
         let mut b2 = (b1 & third).shift(up) & empty;
 
-        // Under check a push only counts when it blocks; the target already says so.
-        b1 &= target;
-        b2 &= target;
+        // Under check a push only counts when it blocks; the target says which squares do.
+        if evasions {
+            b1 &= target;
+            b2 &= target;
+        }
 
+        let back = opposite(up);
         for to in b1 {
-            list.push(Move::new(
-                to.shift(match us {
-                    Color::White => Direction::South,
-                    Color::Black => Direction::North,
-                }),
-                to,
-            ));
+            list.push(Move::new(to.shift(back), to));
         }
         for to in b2 {
-            let from = to
-                .shift(match us {
-                    Color::White => Direction::South,
-                    Color::Black => Direction::North,
-                })
-                .shift(match us {
-                    Color::White => Direction::South,
-                    Color::Black => Direction::North,
-                });
-            list.push(Move::new(from, to));
+            list.push(Move::new(to.shift(back).shift(back), to));
         }
     }
 
-    // Promotions. A promotion is generated whether it captures or not, because the piece
-    // it creates is worth more than the move class it belongs to: upstream puts queen
-    // promotions in `Captures` and the rest in `Quiets`.
+    // Promotions and underpromotions.
+    //
+    // The split between the two move classes is not "queens are captures, the rest are
+    // quiet". A CAPTURING promotion contributes all four pieces to `Captures`; a PUSHING
+    // promotion contributes only the queen there and its three underpromotions to
+    // `Quiets`. That asymmetry is upstream's, and it is what makes `capture_stage` agree
+    // with the class a move was generated in.
     if on_seventh.any() {
-        let push_target = if pos.checkers().any() { target } else { empty };
-        let capture_target = if pos.checkers().any() { target | pos.checkers() } else { enemies };
+        let b1 = on_seventh.shift(up_right) & enemies;
+        let b2 = on_seventh.shift(up_left) & enemies;
+        let mut b3 = on_seventh.shift(up) & empty;
+        if evasions {
+            b3 &= target;
+        }
 
-        let pushes = on_seventh.shift(up) & empty & push_target;
-        let caps_right = on_seventh.shift(up_right) & capture_target & enemies;
-        let caps_left = on_seventh.shift(up_left) & capture_target & enemies;
-
-        for (set, back) in [
-            (pushes, opposite(up)),
-            (caps_right, opposite(up_right)),
-            (caps_left, opposite(up_left)),
-        ] {
+        // Captures to the right, then to the left, then pushes. The order is load-bearing:
+        // the move picker's partial sort leaves equal-scored moves in generation order.
+        for (set, dir, enemy) in [(b1, up_right, true), (b2, up_left, true), (b3, up, false)] {
+            let back = opposite(dir);
             for to in set {
                 let from = to.shift(back);
-                match gt {
-                    GenType::Captures => {
-                        list.push(Move::typed(MoveType::Promotion, from, to, PieceType::Queen));
-                    }
-                    GenType::Quiets => {
-                        for promo in [PieceType::Rook, PieceType::Bishop, PieceType::Knight] {
-                            list.push(Move::typed(MoveType::Promotion, from, to, promo));
-                        }
-                    }
-                    _ => {
-                        for promo in [
-                            PieceType::Queen,
-                            PieceType::Rook,
-                            PieceType::Bishop,
-                            PieceType::Knight,
-                        ] {
-                            list.push(Move::typed(MoveType::Promotion, from, to, promo));
-                        }
+                if gt != GenType::Quiets {
+                    list.push(Move::typed(MoveType::Promotion, from, to, PieceType::Queen));
+                }
+                let underpromote = match gt {
+                    GenType::Captures => enemy,
+                    GenType::Quiets => !enemy,
+                    GenType::Evasions | GenType::NonEvasions => true,
+                };
+                if underpromote {
+                    for promo in [PieceType::Rook, PieceType::Bishop, PieceType::Knight] {
+                        list.push(Move::typed(MoveType::Promotion, from, to, promo));
                     }
                 }
             }
@@ -326,30 +314,24 @@ fn generate_pawn_moves(
 
     // Ordinary captures, and en passant.
     if gt != GenType::Quiets {
-        let cap_target = if pos.checkers().any() {
-            // A capture answers a check only by taking the checker.
-            pos.checkers()
-        } else {
-            enemies
-        };
-        for (set, back) in [
-            (not_on_seventh.shift(up_right), opposite(up_right)),
-            (not_on_seventh.shift(up_left), opposite(up_left)),
-        ] {
-            for to in set & cap_target {
+        for (set, dir) in
+            [(not_on_seventh.shift(up_right), up_right), (not_on_seventh.shift(up_left), up_left)]
+        {
+            let back = opposite(dir);
+            for to in set & enemies {
                 list.push(Move::new(to.shift(back), to));
             }
         }
 
         let ep = pos.ep_square();
         if ep.is_ok() {
-            // The captured pawn stands behind the target square. Under check, taking it
-            // en passant is legal exactly when that pawn IS the checker.
-            let capsq = ep.shift(opposite(up));
-            if pos.checkers().is_empty() || pos.checkers() == Bitboard::from_square(capsq) {
-                for from in pawn_attacks_from(them, ep) & not_on_seventh {
-                    list.push(Move::typed(MoveType::EnPassant, from, ep, PieceType::Knight));
-                }
+            // An en passant capture cannot resolve a discovered check: it removes the
+            // pawn that blocked the line, so the check remains.
+            if evasions && (target & Bitboard::from_square(ep.shift(up))).any() {
+                return;
+            }
+            for from in pawn_attacks_from(them, ep) & not_on_seventh {
+                list.push(Move::typed(MoveType::EnPassant, from, ep, PieceType::Knight));
             }
         }
     }
