@@ -1,0 +1,68 @@
+name: fuzz
+
+# Scheduled, NOT a merge gate. A fuzz run spends a wall-clock budget and its result is
+# "nothing failed inside that budget", which is not the kind of statement a merge should
+# block on. It is also the only lane here that can find a bug nobody wrote a case for, so it
+# runs every night rather than when someone remembers -- the same reasoning ../mcfish gives
+# for `mcfish_fuzz.yml` and for moving its node differential onto a schedule in `6bc4db61`.
+#
+# Actions are pinned BY COMMIT SHA with the tag in a trailing comment, as in rfish_ci.yml.
+
+on:
+  schedule:
+    # 04:41 UTC, off the hour and off the sibling ports' slots, so four repositories do not
+    # queue against the same runner pool.
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Total budget, split between the UCI and search harnesses"
+        required: false
+        default: "600"
+      seed:
+        description: "Replay a previous run's seed (blank picks one from the clock)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the pinned toolchain
+        id: rt
+        shell: bash
+        run: echo "channel=$(grep -m1 -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ steps.rt.outputs.channel }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # The net is a runtime input and the search harness evaluates with it, so a run without
+      # one would be fuzzing the classical fallback and reporting it as the engine.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: resources/*.nnue
+          key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
+      - run: cargo xtask net
+      # No seed pinned on the schedule: each night walks positions the last one did not,
+      # which is the entire reason to run this repeatedly. The step PRINTS the seed it chose,
+      # and a failure is replayed by dispatching this workflow with it.
+      - name: Fuzz
+        env:
+          RFISH_FUZZ_SEED: ${{ github.event.inputs.seed }}
+        run: cargo xtask fuzz ${{ github.event.inputs.seconds || '600' }}
