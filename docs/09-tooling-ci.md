@@ -184,24 +184,32 @@ The lanes:
 | `lint` | `fmt`, `clippy`, `unsafe-lint`, `docs-lint` |
 | `test` | `cargo xtask test` on three platforms |
 | `gates` | `net`, `perft`, `golden`, `signature` on Linux |
-| `msrv` | the crate builds on the declared minimum Rust version |
+
+There is no `msrv` lane. It ran `cargo +<rust-version> build` and cannot pass while the
+engine enables `portable_simd`, which no stable channel accepts.
 
 `pre-commit` wires the fast half of the same set to run before a commit exists.
 
 ### Two things about CI that are easy to get wrong, and were
 
-**`rust-toolchain.toml` beats whatever the workflow installs.** The msrv lane pins a
-toolchain with `dtolnay/rust-toolchain@<version>`, and a bare `cargo` in that lane then uses
-the toolchain FILE instead — silently testing stable while the lane reports green. The lane
-runs `cargo +<version>` explicitly for that reason. A lane that cannot fail is worth less
-than one that does not exist, because it is believed.
+**`rust-toolchain.toml` beats whatever the workflow installs**, and that is now the whole
+design rather than a trap to route around. Every lane reads the channel OUT of that file and
+hands it to `dtolnay/rust-toolchain`, so the toolchain it installs is the toolchain that
+runs. Hard-coding a channel in the workflow instead would install one and silently run
+another — with that other one's components, and in the cross lane without the target's std,
+which is exactly how a `check --target` lane passes while proving nothing.
+
+That trap used to be worked around in the msrv lane with an explicit `cargo +<version>`.
+The lane is gone (above), and with it the only place the two could disagree.
 
 **The cross lane uses `cargo check`, not `cargo build`.** The runner has no cross linker for
 either target, so a build fails at the link step having already proven everything the lane
 exists to prove — that no `cfg` has crept into engine code.
 
-**The declared MSRV is verified, not guessed.** `Cargo.toml` says 1.88 because 1.87 rejects
-the `let` chains in the move picker, the network path search and the tablebase registry, and
-1.88 builds clean. Raising it also changes what CLIPPY suggests: the lint set is MSRV-aware,
-so an API stabilised after the declared version is suppressed until the version moves. Bump
-the MSRV and expect new findings.
+**The declared MSRV is now documentation, not a gated property.** `Cargo.toml` says 1.88
+because 1.87 rejects the `let` chains in the move picker, the network path search and the
+tablebase registry. It does NOT mean a 1.88 toolchain can build this — none can, because of
+`portable_simd`. The number is kept for two reasons: clippy's lint set is MSRV-aware, so an
+API stabilised after it stays suppressed until it moves, and it still records which stable
+features the source leans on. Nothing verifies it any more; treat it accordingly. The real
+requirement is the dated nightly in `rust-toolchain.toml`.
