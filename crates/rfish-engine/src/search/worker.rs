@@ -1144,8 +1144,14 @@ impl SearchWorker {
         let si = STACK_BASE + ply as usize;
         let mut best_value;
         let mut max_value = VALUE_INFINITE;
-        let mut captures_searched: Vec<Move> = Vec::new();
-        let mut quiets_searched: Vec<Move> = Vec::new();
+        // Fixed arrays, not `Vec`. Upstream's `ValueList<Move, 32>` is inline storage and
+        // never allocates; a `Vec` here is one malloc per node that reaches its move loop,
+        // and the node loop is the hottest code in the engine. The capacity is upstream's,
+        // and the loop below already refuses to record past it.
+        let mut captures_searched = [Move::NONE; SEARCHED_LIST_CAPACITY];
+        let mut n_captures = 0usize;
+        let mut quiets_searched = [Move::NONE; SEARCHED_LIST_CAPACITY];
+        let mut n_quiets = 0usize;
 
         // Step 1. Initialize node
         self.stack[si].in_check = self.pos.in_check();
@@ -1933,9 +1939,13 @@ impl SearchWorker {
 
             if mv != best_move && (move_count as usize) <= SEARCHED_LIST_CAPACITY {
                 if capture {
-                    captures_searched.push(mv);
-                } else {
-                    quiets_searched.push(mv);
+                    if n_captures < SEARCHED_LIST_CAPACITY {
+                        captures_searched[n_captures] = mv;
+                        n_captures += 1;
+                    }
+                } else if n_quiets < SEARCHED_LIST_CAPACITY {
+                    quiets_searched[n_quiets] = mv;
+                    n_quiets += 1;
                 }
             }
         }
@@ -1961,8 +1971,8 @@ impl SearchWorker {
                 si,
                 best_move,
                 prev_sq,
-                &quiets_searched,
-                &captures_searched,
+                &quiets_searched[..n_quiets],
+                &captures_searched[..n_captures],
                 depth,
                 tt_move,
                 PV,
