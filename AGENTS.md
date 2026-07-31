@@ -69,6 +69,10 @@ state. Check the state against the tree before acting on it:
   byte for byte. `Skill Level`, `UCI_LimitStrength` and `UCI_Elo` run upstream's `Skill`;
   `nodestime` converts the whole clock model into node counts; `Ponder` buys the current
   move a quarter more time and `ponderhit` honours a budget that ran out while pondering.
+- **The command surface** — every command upstream accepts is accepted here, with one
+  exception: `speedtest`, upstream's machine benchmark. `bench` is the command every gate
+  and harness in this repo uses and it IS ported; `speedtest` is a separate "how fast is
+  this box" tool with no consumer here. It is missing on purpose, not by oversight.
 - **The score model** — **ported.** Reported centipawns go through upstream's fitted
   win-rate model rather than being the search's internal units, so the number means the same
   thing across net changes, and `UCI_ShowWDL` reports real chances. Mates, tablebase

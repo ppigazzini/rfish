@@ -15,7 +15,7 @@
 //! Golden: `Stockfish/src/nnue/layers/affine_transform.h`, `clipped_relu.h`,
 //! `sqr_clipped_relu.h`.
 
-use super::common::{NetError, NetReader, ceil_to_multiple};
+use super::common::{NetError, NetReader, NetWriter, ceil_to_multiple};
 
 /// The padded input width a layer's weight rows are stored at.
 ///
@@ -63,6 +63,13 @@ impl AffineLayer {
     pub fn read(&mut self, r: &mut NetReader<impl std::io::Read>) -> Result<(), NetError> {
         r.i32s(&mut self.biases)?;
         r.i8s(&mut self.weights)?;
+        Ok(())
+    }
+
+    /// Write this layer back in the form [`AffineLayer::read`] expects.
+    pub fn write(&self, w: &mut NetWriter<impl std::io::Write>) -> Result<(), NetError> {
+        w.i32s(&self.biases)?;
+        w.i8s(&self.weights)?;
         Ok(())
     }
 

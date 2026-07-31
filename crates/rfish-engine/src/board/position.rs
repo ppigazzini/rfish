@@ -1248,6 +1248,74 @@ impl Position {
         self.is_repetition(ply)
     }
 
+    /// Mirror the position vertically and swap the colours.
+    ///
+    /// A debugging command: the evaluation of a position and of its mirror should agree up
+    /// to sign, so any asymmetry in the evaluation shows up immediately. Upstream does it
+    /// by rewriting the FEN and re-parsing rather than by permuting the bitboards, and so
+    /// does this — the FEN writer and the FEN parser are already tested against each other,
+    /// which a hand-written permutation would not be.
+    ///
+    /// The state chain is REPLACED, not extended. The mirrored position never occurred in
+    /// this game, so carrying the repetition history across would let it claim a draw
+    /// against positions it has never stood in.
+    ///
+    /// # Errors
+    ///
+    /// Returns the parse error if the mirrored record is not a legal position, which for a
+    /// legal input it cannot be.
+    pub fn flip(&mut self) -> Result<(), FenError> {
+        let fen = self.fen();
+        let mut parts = fen.split(' ');
+        let (board, stm, castling, ep) = (
+            parts.next().unwrap_or(""),
+            parts.next().unwrap_or("w"),
+            parts.next().unwrap_or("-"),
+            parts.next().unwrap_or("-"),
+        );
+        let rest: Vec<&str> = parts.collect();
+
+        // Reversing the ranks mirrors the board; swapping every letter's case swaps the
+        // piece colours, and does the same for the castling letters in one pass.
+        let flipped_board: Vec<&str> = board.split('/').rev().collect();
+        let swap_case = |s: &str| -> String {
+            s.chars()
+                .map(|c| {
+                    if c.is_ascii_lowercase() {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c.to_ascii_lowercase()
+                    }
+                })
+                .collect()
+        };
+
+        // The en-passant square mirrors with the board: only ranks 3 and 6 can hold one.
+        let flipped_ep = if ep == "-" {
+            ep.to_string()
+        } else {
+            let mut c = ep.chars();
+            let file = c.next().unwrap_or('a');
+            let rank = if c.next() == Some('3') { '6' } else { '3' };
+            format!("{file}{rank}")
+        };
+
+        let mut out = format!(
+            "{} {} {} {}",
+            swap_case(&flipped_board.join("/")),
+            if stm == "w" { "b" } else { "w" },
+            swap_case(castling),
+            flipped_ep
+        );
+        for part in rest {
+            out.push(' ');
+            out.push_str(part);
+        }
+
+        *self = Position::from_fen(&out, self.chess960)?;
+        Ok(())
+    }
+
     /// True when a Syzygy DTZ table's distance is also the distance to mate.
     ///
     /// DTZ counts plies to the next clock-zeroing move, which is generally not mate. With
@@ -1499,6 +1567,38 @@ impl fmt::Display for Position {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn flipping_twice_is_the_identity() {
+        for fen in [
+            START_FEN,
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            // En passant flips rank 3 to 6 and back, and castling letters swap case.
+            "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        ] {
+            let original = super::Position::from_fen(fen, false).expect("valid");
+            let mut p = original.clone();
+            p.flip().expect("a legal position mirrors to a legal position");
+            assert_ne!(p.fen(), original.fen(), "{fen} flipped to itself");
+            p.flip().expect("and back");
+            assert_eq!(p.fen(), original.fen(), "{fen} did not survive two flips");
+        }
+    }
+
+    #[test]
+    fn a_flip_swaps_the_side_to_move_and_keeps_the_material() {
+        let mut p = super::Position::from_fen(
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            false,
+        )
+        .expect("valid");
+        let before = p.side_to_move();
+        let pieces = p.piece_total();
+        p.flip().expect("valid");
+        assert_ne!(p.side_to_move(), before);
+        assert_eq!(p.piece_total(), pieces, "a mirror must not create or destroy pieces");
+    }
+
     use super::*;
     use crate::board::movegen::generate_legal;
 

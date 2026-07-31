@@ -33,7 +33,7 @@
 use crate::board::position::Position;
 use crate::board::types::{COLOR_NB, Color, Key};
 
-use super::common::{FT_MAX_VAL, L1, NetError, NetReader, PSQT_BUCKETS};
+use super::common::{FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
 use super::features::{
     HALFKA_DIMENSIONS, THREAT_AND_PP_DIMENSIONS, halfka_active, pawn_pair_active, threat_active,
 };
@@ -167,6 +167,31 @@ impl FeatureTransformer {
         // `permute_weights` is skipped on purpose: it exists only so a vector `packus` can
         // read adjacent lanes in order, and the permutation is the identity when no vector
         // path is compiled. rfish has none, so applying it and its inverse would cancel.
+        Ok(())
+    }
+
+    /// Write the transformer back in the form [`FeatureTransformer::read`] expects.
+    ///
+    /// Same order, same encodings, same split points. `permute_weights` is skipped on the
+    /// way out for the same reason it is skipped on the way in: with no vector path
+    /// compiled it is the identity.
+    pub fn write(&self, w: &mut NetWriter<impl std::io::Write>) -> Result<(), NetError> {
+        use super::features::{PP_DIMENSIONS, THREAT_DIMENSIONS};
+        let threat_dims = THREAT_DIMENSIONS as usize;
+        let pp_dims = PP_DIMENSIONS as usize;
+
+        w.leb128_i16(&self.biases)?;
+
+        let (threat_w, pp_w) = self.threat_and_pp_weights.split_at(threat_dims * L1);
+        w.i8s(threat_w)?;
+        let (threat_psqt, pp_psqt) =
+            self.threat_and_pp_psqt_weights.split_at(threat_dims * PSQT_BUCKETS);
+        w.leb128(threat_psqt)?;
+        w.i8s(&pp_w[..pp_dims * L1])?;
+        w.leb128(&pp_psqt[..pp_dims * PSQT_BUCKETS])?;
+
+        w.leb128_i16(&self.weights)?;
+        w.leb128(&self.psqt_weights)?;
         Ok(())
     }
 

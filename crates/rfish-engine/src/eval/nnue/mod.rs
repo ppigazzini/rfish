@@ -32,7 +32,7 @@ pub mod layers;
 pub mod transformer;
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use crate::board::position::Position;
@@ -40,7 +40,8 @@ use crate::board::types::Value;
 
 pub use common::NetError;
 use common::{
-    HIDDEN_ONE_VAL, L1, L2, L3, LAYER_STACKS, NetReader, OUTPUT_SCALE, VERSION, WEIGHT_SCALE_BITS,
+    HIDDEN_ONE_VAL, L1, L2, L3, LAYER_STACKS, NetReader, NetWriter, OUTPUT_SCALE, VERSION,
+    WEIGHT_SCALE_BITS,
 };
 use layers::{AffineLayer, clipped_relu, sqr_clipped_relu};
 use transformer::{EvalScratch, FeatureTransformer};
@@ -79,6 +80,13 @@ impl LayerStack {
         self.fc_0.read(r)?;
         self.fc_1.read(r)?;
         self.fc_2.read(r)?;
+        Ok(())
+    }
+
+    fn write(&self, w: &mut NetWriter<impl std::io::Write>) -> Result<(), NetError> {
+        self.fc_0.write(w)?;
+        self.fc_1.write(w)?;
+        self.fc_2.write(w)?;
         Ok(())
     }
 
@@ -196,6 +204,36 @@ impl Network {
             .file_name()
             .map_or_else(|| path.display().to_string(), |s| s.to_string_lossy().into_owned());
         Ok(Network { transformer, stacks, name, description })
+    }
+
+    /// Write this network back out in the format [`Network::load`] reads.
+    ///
+    /// The point is not to produce a new net — it is that a net can be read and written
+    /// without changing, which makes the format code check itself. Every hash is recomputed
+    /// from THIS build's constants rather than copied from the file that was loaded, so a
+    /// saved net asserts the architecture the saving binary actually implements.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error if the file cannot be created or written.
+    pub fn save(&self, path: &Path) -> Result<(), NetError> {
+        let mut w = NetWriter::new(BufWriter::with_capacity(1 << 20, File::create(path)?));
+
+        w.u32(VERSION)?;
+        w.u32(hash::NETWORK)?;
+        let desc = self.description.as_bytes();
+        w.u32(u32::try_from(desc.len()).map_err(|_| NetError::Truncated)?)?;
+        w.write_all(desc)?;
+
+        w.u32(hash::FEATURE_TRANSFORMER)?;
+        self.transformer.write(&mut w)?;
+
+        for stack in &self.stacks {
+            w.u32(hash::ARCHITECTURE)?;
+            stack.write(&mut w)?;
+        }
+
+        w.flush()
     }
 
     /// The file name, for the UCI `EvalFile` report.

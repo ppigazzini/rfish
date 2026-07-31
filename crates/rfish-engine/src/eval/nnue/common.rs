@@ -7,7 +7,7 @@
 //!
 //! Golden: `Stockfish/src/nnue/nnue_common.h`, `nnue_architecture.h`.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
 /// The format version word every Stockfish net begins with.
 pub const VERSION: u32 = 0x6A44_8AFA;
@@ -227,8 +227,165 @@ pub fn boxed<T: Copy, const N: usize>(fill: T) -> Box<[T; N]> {
     }
 }
 
+/// A writer that produces exactly what [`NetReader`] consumes.
+///
+/// Written as the mirror of the reader rather than from the file-format spec, because the
+/// property that matters is that a net survives a round trip through THIS code. Any
+/// disagreement between the two halves is then a test failure rather than a corrupt file
+/// somebody discovers later.
+pub struct NetWriter<W: Write> {
+    inner: W,
+}
+
+/// Hand-written for the same reason [`NetReader`]'s is: requiring `W: Debug` would exclude
+/// every writer a caller actually has.
+impl<W: Write> std::fmt::Debug for NetWriter<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetWriter").finish_non_exhaustive()
+    }
+}
+
+impl<W: Write> NetWriter<W> {
+    pub fn new(inner: W) -> NetWriter<W> {
+        NetWriter { inner }
+    }
+
+    /// Write every byte of `buf`.
+    pub fn write_all(&mut self, buf: &[u8]) -> Result<(), NetError> {
+        self.inner.write_all(buf).map_err(NetError::Io)
+    }
+
+    /// One little-endian `u32`.
+    pub fn u32(&mut self, v: u32) -> Result<(), NetError> {
+        self.write_all(&v.to_le_bytes())
+    }
+
+    /// Little-endian `i16`s, uncompressed.
+    pub fn i16s(&mut self, v: &[i16]) -> Result<(), NetError> {
+        let mut buf = Vec::with_capacity(v.len() * 2);
+        for x in v {
+            buf.extend_from_slice(&x.to_le_bytes());
+        }
+        self.write_all(&buf)
+    }
+
+    /// `i8`s, uncompressed — the encoding the threat and pawn-pair blocks use.
+    pub fn i8s(&mut self, v: &[i8]) -> Result<(), NetError> {
+        let buf: Vec<u8> = v.iter().map(|x| *x as u8).collect();
+        self.write_all(&buf)
+    }
+
+    /// Little-endian `i32`s, uncompressed.
+    pub fn i32s(&mut self, v: &[i32]) -> Result<(), NetError> {
+        let mut buf = Vec::with_capacity(v.len() * 4);
+        for x in v {
+            buf.extend_from_slice(&x.to_le_bytes());
+        }
+        self.write_all(&buf)
+    }
+
+    /// One LEB128-compressed block.
+    ///
+    /// The encoder has to agree with the decoder's stopping rule exactly: emit groups of
+    /// seven bits, low group first, and stop once the remaining bits are all sign bits AND
+    /// the sign bit of the payload agrees with them. Stopping one group early would make
+    /// the decoder sign-extend a positive value into a negative one.
+    pub fn leb128(&mut self, v: &[i32]) -> Result<(), NetError> {
+        self.write_all(LEB128_MAGIC)?;
+
+        let mut bytes: Vec<u8> = Vec::with_capacity(v.len());
+        for &value in v {
+            let mut x = value;
+            loop {
+                let byte = (x & 0x7F) as u8;
+                // Arithmetic shift: the sign bits keep arriving, which is what lets the
+                // test below detect that nothing but sign is left.
+                x >>= 7;
+                let sign_bit_set = byte & 0x40 != 0;
+                let done = (x == 0 && !sign_bit_set) || (x == -1 && sign_bit_set);
+                bytes.push(if done { byte } else { byte | 0x80 });
+                if done {
+                    break;
+                }
+            }
+        }
+
+        self.u32(u32::try_from(bytes.len()).map_err(|_| NetError::Truncated)?)?;
+        self.write_all(&bytes)
+    }
+
+    /// One LEB128 block from `i16`s.
+    pub fn leb128_i16(&mut self, v: &[i16]) -> Result<(), NetError> {
+        let wide: Vec<i32> = v.iter().map(|x| i32::from(*x)).collect();
+        self.leb128(&wide)
+    }
+
+    /// Flush whatever the wrapped writer is buffering.
+    pub fn flush(&mut self) -> Result<(), NetError> {
+        self.inner.flush().map_err(NetError::Io)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn leb128_survives_a_round_trip_over_the_whole_signed_range() {
+        // The encoder's stopping rule and the decoder's sign extension have to agree
+        // EXACTLY, and they disagree only at the boundaries -- so test the boundaries.
+        let mut values: Vec<i32> = vec![
+            0,
+            1,
+            -1,
+            63,
+            64,
+            -64,
+            -65,
+            8191,
+            8192,
+            -8192,
+            -8193,
+            i32::MAX,
+            i32::MIN,
+            i32::MAX - 1,
+            i32::MIN + 1,
+        ];
+        for shift in 0..31 {
+            values.push(1i32 << shift);
+            values.push(-(1i32 << shift));
+        }
+
+        let mut buf = Vec::new();
+        super::NetWriter::new(&mut buf).leb128(&values).expect("writes");
+
+        let mut back = vec![0i32; values.len()];
+        super::NetReader::new(buf.as_slice()).leb128(&mut back).expect("reads");
+        assert_eq!(back, values);
+    }
+
+    #[test]
+    fn the_uncompressed_encodings_round_trip_too() {
+        let i16s: Vec<i16> = vec![0, 1, -1, i16::MAX, i16::MIN, 300, -300];
+        let mut buf = Vec::new();
+        super::NetWriter::new(&mut buf).i16s(&i16s).expect("writes");
+        let mut back = vec![0i16; i16s.len()];
+        super::NetReader::new(buf.as_slice()).i16s(&mut back).expect("reads");
+        assert_eq!(back, i16s);
+
+        let i8s: Vec<i8> = vec![0, 1, -1, i8::MAX, i8::MIN, 64, -64];
+        let mut buf = Vec::new();
+        super::NetWriter::new(&mut buf).i8s(&i8s).expect("writes");
+        let mut back = vec![0i8; i8s.len()];
+        super::NetReader::new(buf.as_slice()).i8s(&mut back).expect("reads");
+        assert_eq!(back, i8s);
+
+        let i32s: Vec<i32> = vec![0, 1, -1, i32::MAX, i32::MIN];
+        let mut buf = Vec::new();
+        super::NetWriter::new(&mut buf).i32s(&i32s).expect("writes");
+        let mut back = vec![0i32; i32s.len()];
+        super::NetReader::new(buf.as_slice()).i32s(&mut back).expect("reads");
+        assert_eq!(back, i32s);
+    }
+
     use super::*;
 
     fn leb_block(values: &[i32]) -> Vec<u8> {

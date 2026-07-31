@@ -25,6 +25,19 @@ use rfish_engine::state::{Limits, SearchOptions};
 use crate::bench::{BenchEntry, BenchSpec, parse_entry};
 use crate::options::Options;
 
+/// What `help` and `license` print.
+///
+/// The unknown-command reply has always pointed at this text; it just did not exist. The
+/// wording is upstream's, aimed at the person who ran a UCI engine expecting a chess
+/// program with a board, and pointed at this repository's own files rather than upstream's
+/// because those are the ones shipped alongside this binary.
+const HELP: &str = "\nrfish is a safe-Rust port of Stockfish, a powerful chess engine for \
+playing and analyzing.\nIt is released as free software licensed under the GNU GPLv3 \
+License.\nrfish is normally used with a graphical user interface (GUI) and implements\nthe \
+Universal Chess Interface (UCI) protocol to communicate with a GUI, an API, etc.\nFor any \
+further information, read the README.md and Copying.txt files distributed along with this \
+program.";
+
 /// The `id name` line's engine name.
 pub(crate) fn engine_name() -> String {
     format!("rfish {}", rfish_engine::VERSION)
@@ -136,6 +149,37 @@ impl Engine {
                 }
             }
             "eval" => self.cmd_eval(out),
+            // Mirror the position. The evaluation of a position and of its mirror should
+            // agree up to sign, so this is how an asymmetric evaluation is caught.
+            "flip" => {
+                if let Err(e) = self.pos.flip() {
+                    let _ = writeln!(out, "info string Cannot flip the position: {e}");
+                }
+            }
+            // Write the loaded net back out. The round trip is the point: a net that
+            // survives it proves the reader and the writer agree.
+            "export_net" => {
+                let name = rest.first().map_or_else(
+                    || self.options.text("EvalFile").to_string(),
+                    |s| (*s).to_string(),
+                );
+                match self.network.as_deref() {
+                    None => {
+                        let _ = writeln!(out, "info string No network is loaded");
+                    }
+                    Some(net) => match net.save(std::path::Path::new(&name)) {
+                        Ok(()) => {
+                            let _ = writeln!(out, "info string Network saved to {name}");
+                        }
+                        Err(e) => {
+                            let _ = writeln!(out, "info string Failed to save {name}: {e}");
+                        }
+                    },
+                }
+            }
+            "help" | "--help" | "license" | "--license" => {
+                let _ = writeln!(out, "{HELP}");
+            }
             "bench" => self.cmd_bench(&rest, out),
             "compiler" => {
                 let _ = writeln!(
@@ -149,6 +193,10 @@ impl Engine {
                 self.pool.shared().request_stop();
                 return false;
             }
+            // A leading '#' is a comment. Command lists are kept in files and commented,
+            // and an engine that answered "Unknown command" to every comment would bury the
+            // real output.
+            _ if cmd.starts_with('#') => {}
             _ => {
                 let _ = writeln!(out, "Unknown command: '{line}'. Type help for more information.");
             }

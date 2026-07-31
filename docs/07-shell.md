@@ -45,6 +45,14 @@ working — so the alternative is a growing argument list, and a declared struct
 makes the set of options the search depends on something a reader can look up instead of
 grep for.
 
+**`export_net` writes the loaded network back out**, and the round trip is the point rather
+than the file: reader and writer are mirrors, so a net that survives the trip proves they
+agree. The shipped net comes back byte-identical, all 95 MB of it, which is the strongest
+statement available that the format code is right — every LEB128 group, every split point,
+every hash. The hashes are recomputed from the saving build's own constants rather than
+copied from the file that was loaded, so a saved net asserts the architecture the binary
+actually implements.
+
 ## `bench.rs` — the benchmark
 
 The total node count `bench` prints is the engine's **signature**. Four facts decide it,
