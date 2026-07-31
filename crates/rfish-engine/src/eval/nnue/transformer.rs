@@ -104,6 +104,9 @@ pub struct EvalScratch {
     /// Freshly computed sets, reused between calls to avoid reallocating.
     next_halfka: [Vec<u32>; COLOR_NB],
     next_threats: [Vec<u32>; COLOR_NB],
+    /// The features one diff adds and removes, collected before either is applied.
+    adds: Vec<u32>,
+    subs: Vec<u32>,
 }
 
 impl EvalScratch {
@@ -115,6 +118,13 @@ impl EvalScratch {
         self.cached = None;
     }
 }
+
+/// Accumulator entries held in registers at once by the fold.
+///
+/// Sixty-four `i16` is eight 128-bit registers — enough to keep the sweep's running values
+/// off the stack on the narrowest tier rfish builds for, and small enough that it still does
+/// on that tier rather than spilling.
+const TILE: usize = 64;
 
 impl FeatureTransformer {
     /// An unloaded transformer with every weight zero.
@@ -195,64 +205,21 @@ impl FeatureTransformer {
         Ok(())
     }
 
-    /// Add or subtract one king-piece feature's weight row.
-    #[inline]
-    fn apply_halfka(&self, index: u32, add: bool, acc: &mut [i16], psqt: &mut [i32; PSQT_BUCKETS]) {
-        let base = index as usize * L1;
-        let row = &self.weights[base..base + L1];
-        if add {
-            for (a, w) in acc.iter_mut().zip(row.iter()) {
-                // Wrapping is upstream's behaviour: the accumulator is `i16` and the trainer
-                // keeps the sum in range, so a wrap here means a corrupt net rather than a
-                // value to saturate.
-                *a = a.wrapping_add(*w);
-            }
-        } else {
-            for (a, w) in acc.iter_mut().zip(row.iter()) {
-                *a = a.wrapping_sub(*w);
-            }
-        }
-        let pbase = index as usize * PSQT_BUCKETS;
-        let prow = &self.psqt_weights[pbase..pbase + PSQT_BUCKETS];
-        for (p, w) in psqt.iter_mut().zip(prow.iter()) {
-            if add {
-                *p += w;
-            } else {
-                *p -= w;
-            }
-        }
-    }
-
-    /// The same for a threat or pawn-pair feature, whose weights are one byte wide.
-    #[inline]
-    fn apply_threat(&self, index: u32, add: bool, acc: &mut [i16], psqt: &mut [i32; PSQT_BUCKETS]) {
-        let base = index as usize * L1;
-        let row = &self.threat_and_pp_weights[base..base + L1];
-        if add {
-            for (a, w) in acc.iter_mut().zip(row.iter()) {
-                *a = a.wrapping_add(i16::from(*w));
-            }
-        } else {
-            for (a, w) in acc.iter_mut().zip(row.iter()) {
-                *a = a.wrapping_sub(i16::from(*w));
-            }
-        }
-        let pbase = index as usize * PSQT_BUCKETS;
-        let prow = &self.threat_and_pp_psqt_weights[pbase..pbase + PSQT_BUCKETS];
-        for (p, w) in psqt.iter_mut().zip(prow.iter()) {
-            if add {
-                *p += w;
-            } else {
-                *p -= w;
-            }
-        }
-    }
-
     /// Walk two sorted sets, applying only what differs.
     ///
     /// Both sets are strictly increasing and hold no duplicates — a feature index encodes
     /// exactly one (piece, square) or (attacker, from, to, attacked) tuple — so a merge walk
     /// is a complete and exact diff.
+    ///
+    /// The walk only COLLECTS what changed; [`FeatureTransformer::fold_rows_i16`] and its
+    /// byte-wide twin then apply the whole collection in one sweep of the accumulator. Doing
+    /// it a feature at a time meant reading and writing all 1024 entries once per changed
+    /// feature, which is the same weight traffic and several times the accumulator traffic.
+    /// Upstream folds its add and subtract lists in one pass for the same reason.
+    ///
+    /// Order does not matter to the result: the accumulator is wrapping `i16` and the PSQT
+    /// head is `i32`, and both are associative and commutative under the additions applied
+    /// here, so collecting first changes nothing about the value.
     fn diff_apply(
         &self,
         old: &[u32],
@@ -260,7 +227,11 @@ impl FeatureTransformer {
         halfka: bool,
         acc: &mut [i16],
         psqt: &mut [i32; PSQT_BUCKETS],
+        adds: &mut Vec<u32>,
+        subs: &mut Vec<u32>,
     ) {
+        adds.clear();
+        subs.clear();
         let (mut i, mut j) = (0usize, 0usize);
         while i < old.len() && j < new.len() {
             match old[i].cmp(&new[j]) {
@@ -270,37 +241,94 @@ impl FeatureTransformer {
                     j += 1;
                 }
                 core::cmp::Ordering::Less => {
-                    self.apply(old[i], false, halfka, acc, psqt);
+                    subs.push(old[i]);
                     i += 1;
                 }
                 core::cmp::Ordering::Greater => {
-                    self.apply(new[j], true, halfka, acc, psqt);
+                    adds.push(new[j]);
                     j += 1;
                 }
             }
         }
         // Whatever is left in one list has no counterpart in the other.
-        for &a in &old[i..] {
-            self.apply(a, false, halfka, acc, psqt);
+        subs.extend_from_slice(&old[i..]);
+        adds.extend_from_slice(&new[j..]);
+
+        if adds.is_empty() && subs.is_empty() {
+            return;
         }
-        for &b in &new[j..] {
-            self.apply(b, true, halfka, acc, psqt);
+
+        let psqt_weights =
+            if halfka { &self.psqt_weights } else { &self.threat_and_pp_psqt_weights };
+        for &index in subs.iter() {
+            let base = index as usize * PSQT_BUCKETS;
+            for (p, w) in psqt.iter_mut().zip(psqt_weights[base..base + PSQT_BUCKETS].iter()) {
+                *p -= w;
+            }
+        }
+        for &index in adds.iter() {
+            let base = index as usize * PSQT_BUCKETS;
+            for (p, w) in psqt.iter_mut().zip(psqt_weights[base..base + PSQT_BUCKETS].iter()) {
+                *p += w;
+            }
+        }
+
+        if halfka {
+            Self::fold_rows_i16(&self.weights, adds, subs, acc);
+        } else {
+            Self::fold_rows_i8(&self.threat_and_pp_weights, adds, subs, acc);
         }
     }
 
-    #[inline]
-    fn apply(
-        &self,
-        index: u32,
-        add: bool,
-        halfka: bool,
-        acc: &mut [i16],
-        psqt: &mut [i32; PSQT_BUCKETS],
-    ) {
-        if halfka {
-            self.apply_halfka(index, add, acc, psqt);
-        } else {
-            self.apply_threat(index, add, acc, psqt);
+    /// Add every row in `adds` and subtract every row in `subs`, in one sweep of `acc`.
+    ///
+    /// Swept a TILE at a time so the running values stay in registers: the accumulator is
+    /// read once and written once however many rows are folded into it, where applying one
+    /// row at a time read and wrote all of it every time.
+    fn fold_rows_i16(weights: &[i16], adds: &[u32], subs: &[u32], acc: &mut [i16]) {
+        for (t, chunk) in acc.chunks_exact_mut(TILE).enumerate() {
+            let off = t * TILE;
+            let mut tile = [0i16; TILE];
+            tile.copy_from_slice(chunk);
+            for &index in subs {
+                let base = index as usize * L1 + off;
+                for (a, w) in tile.iter_mut().zip(weights[base..base + TILE].iter()) {
+                    // Wrapping is upstream's behaviour: the accumulator is `i16` and the
+                    // trainer keeps the sum in range, so a wrap here means a corrupt net
+                    // rather than a value to saturate.
+                    *a = a.wrapping_sub(*w);
+                }
+            }
+            for &index in adds {
+                let base = index as usize * L1 + off;
+                for (a, w) in tile.iter_mut().zip(weights[base..base + TILE].iter()) {
+                    *a = a.wrapping_add(*w);
+                }
+            }
+            chunk.copy_from_slice(&tile);
+        }
+    }
+
+    /// [`FeatureTransformer::fold_rows_i16`] for the threat and pawn-pair rows, whose
+    /// weights are one byte wide.
+    fn fold_rows_i8(weights: &[i8], adds: &[u32], subs: &[u32], acc: &mut [i16]) {
+        for (t, chunk) in acc.chunks_exact_mut(TILE).enumerate() {
+            let off = t * TILE;
+            let mut tile = [0i16; TILE];
+            tile.copy_from_slice(chunk);
+            for &index in subs {
+                let base = index as usize * L1 + off;
+                for (a, w) in tile.iter_mut().zip(weights[base..base + TILE].iter()) {
+                    *a = a.wrapping_sub(i16::from(*w));
+                }
+            }
+            for &index in adds {
+                let base = index as usize * L1 + off;
+                for (a, w) in tile.iter_mut().zip(weights[base..base + TILE].iter()) {
+                    *a = a.wrapping_add(i16::from(*w));
+                }
+            }
+            chunk.copy_from_slice(&tile);
         }
     }
 
@@ -366,8 +394,24 @@ impl FeatureTransformer {
             for p in Color::ALL {
                 let i = p.index();
                 let (acc, psqt) = (&mut c.accumulation[i], &mut c.psqt[i]);
-                self.diff_apply(&c.halfka[i], &scratch.next_halfka[i], true, acc, psqt);
-                self.diff_apply(&c.threats[i], &scratch.next_threats[i], false, acc, psqt);
+                self.diff_apply(
+                    &c.halfka[i],
+                    &scratch.next_halfka[i],
+                    true,
+                    acc,
+                    psqt,
+                    &mut scratch.adds,
+                    &mut scratch.subs,
+                );
+                self.diff_apply(
+                    &c.threats[i],
+                    &scratch.next_threats[i],
+                    false,
+                    acc,
+                    psqt,
+                    &mut scratch.adds,
+                    &mut scratch.subs,
+                );
                 c.halfka[i].clone_from(&scratch.next_halfka[i]);
                 c.threats[i].clone_from(&scratch.next_threats[i]);
             }
