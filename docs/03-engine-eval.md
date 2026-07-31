@@ -202,13 +202,32 @@ differ on some set of squares, and each contributes at most one feature to remov
 add — a diff of the BOARD, not of the move, so there is no case analysis and no `do_move`
 plumbing. That removed the set, its sort and its merge walk outright, worth 109M.
 
-**The threat half is not**, and it is the one upstream needs `update_piece_threats` for. A
-single square changing moves many threats at once: every threat from the moved piece, every
-threat to it, and every slider whose ray it blocked or opened. There is no board diff that
-expresses that, which is why it is still a full recomputation and a sort. It is worth roughly
-another 160M — the remaining scan, the two sorts, and the merge walk — and it is the piece
-that trades this design's correct-by-construction property for case analysis a gate would
-have to police.
+**The threat half was built and is NOT kept.** It was written as a localised RESCAN rather
+than as case analysis, which keeps the correct-by-construction property: a `View` the scan
+can run against either placement, an affected-attacker set (every piece on a changed square,
+plus every piece attacking one under either occupancy — a superset, and the argument that it
+is one is four lines), a rescan of just those attackers on both placements, and a merge to
+cancel what did not really change. It is bit-exact: `nnue-check` 109 of 109, bench unchanged
+at 166,964 nodes.
+
+It is also SLOWER, and the reason is arithmetic rather than fixable:
+
+| | search Ir | ratio |
+|---|---|---|
+| full rescan (kept) | 2,979,106,126 | **1.521** |
+| affected-attacker delta | 3,079,792,922 | 1.573 |
+| the same, with the board diffed in eight-square chunks | 3,030,318,828 | 1.548 |
+
+A quiet move changes two squares, and the pieces attacking those two squares are typically
+six to twelve — on TWO placements, so twelve to twenty-four attacker scans against the full
+scan's thirty on one. The affected set is not small enough relative to the whole set for the
+halving to appear, and on top of it sit `attackers_to` per changed square per placement, two
+view copies, and the cancelling sorts. The king-piece delta wins for the opposite reason: its
+affected set really is two or three squares out of sixty-four.
+
+Closing this properly needs upstream's actual per-move delta, which knows exactly which
+threats change without rescanning anything — that is the case analysis this design has always
+declined, and it is bounded by the ~230M the whole threat machinery costs.
 
 Below that: the first affine layer would have to match `vpdpbusd`, which `std::simd` has no
 operation for, so a further constraint would have to go before parity is even the right word.
