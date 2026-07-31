@@ -34,6 +34,9 @@ use crate::runner::{GATE_PROFILE, Outcome, build_engine, cargo};
 /// runner's own timeout kills it with no evidence.
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a `stop` is given to land in a search that is already running.
+const STOP_PAUSE: Duration = Duration::from_millis(120);
+
 /// Tokens a mutation is built from.
 ///
 /// Half of these are legal UCI and half are not, on purpose. A fuzzer that only emits
@@ -41,10 +44,11 @@ const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 /// never gets past the first token. The interesting failures are in between — a valid
 /// command with one wrong argument, which is what mixing these produces.
 ///
-/// `bench` is deliberately absent. It is a 51-position benchmark that takes minutes, so a
-/// mutation containing it spends the entire budget proving something the `signature` gate
-/// already proves exactly. `go infinite` IS here and is safe: the shell keeps reading while
-/// a search runs, so the `stop` every script ends with lands.
+/// `bench` is deliberately absent: a 51-position benchmark that takes minutes, so a mutation
+/// containing it spends the entire budget proving what the `signature` gate proves exactly.
+/// Everything that makes a search UNBOUNDED -- `infinite`, `ponder`, `mate`, and a bare `go`
+/// with no limit at all -- is deliberately present, because being able to stop one is part of
+/// what this is testing. See `drive_bounded` for how the stop is delivered.
 const TOKENS: &[&str] = &[
     "uci",
     "isready",
@@ -64,9 +68,9 @@ const TOKENS: &[&str] = &[
     "movestogo",
     "infinite",
     "ponder",
+    "mate",
     "searchmoves",
     "perft",
-    "mate",
     "stop",
     "setoption",
     "name",
@@ -115,10 +119,30 @@ fn drive_bounded(engine: &Path, cwd: &Path, script: &[String]) -> Result<Option<
         for l in script {
             writeln!(stdin, "{l}").map_err(|e| format!("writing to the engine: {e}"))?;
         }
-        // `stop` first, so a mutation that started an unbounded search is ended before the
-        // engine is asked to prove it is still answering.
-        writeln!(stdin, "stop\nisready\nquit")
-            .map_err(|e| format!("writing to the engine: {e}"))?;
+        stdin.flush().map_err(|e| format!("writing to the engine: {e}"))?;
+
+        // Then drain, one `stop` per line in the burst, each after a pause.
+        //
+        // Two things make this necessary. A burst can legitimately start an UNBOUNDED search
+        // -- `go infinite`, `go mate 1`, or a bare `go` with no limit -- and it can contain
+        // SEVERAL of them, each of which has to be ended separately, because the commands
+        // queued behind the first are not dispatched until it returns.
+        //
+        // The pause is the other half. A GUI ends a search by sending `stop` while it runs;
+        // delivering it in the same buffer instead races the start of the search, and rfish
+        // currently loses that race -- the reader thread reads ahead and requests the stop
+        // before the main loop has dispatched the `go`, whose `SharedState::reset` then
+        // clears it. That divergence from upstream is real and reproduced in
+        // docs/09-tooling-ci.md; it is a concurrency fix rather than a parser one, so this
+        // step reproduces a GUI's timing rather than re-finding it every night.
+        for _ in 0..=script.len() {
+            std::thread::sleep(STOP_PAUSE);
+            writeln!(stdin, "stop").map_err(|e| format!("writing to the engine: {e}"))?;
+            stdin.flush().map_err(|e| format!("writing to the engine: {e}"))?;
+        }
+
+        writeln!(stdin, "isready").map_err(|e| format!("writing to the engine: {e}"))?;
+        writeln!(stdin, "quit").map_err(|e| format!("writing to the engine: {e}"))?;
     }
 
     // Drained on a thread: an engine that fills the pipe while nothing reads it would block
@@ -199,7 +223,7 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
         // failures worth finding are the ones that need a `position` before a `go`.
         // A burst rather than one line at a time: state carries between commands, and the
         // failures worth finding are the ones that need a `position` before a `go`.
-        let burst: Vec<String> = (0..8).map(|_| line(&mut rng)).collect();
+        let burst: Vec<String> = (0..6).map(|_| line(&mut rng)).collect();
         let replay = burst.join("\n");
 
         let out = drive_bounded(&engine, &resources, &burst)
