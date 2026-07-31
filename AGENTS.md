@@ -169,9 +169,18 @@ blind spots) before proposing any optimisation. Four rules that outrank intuitio
   a guess, never a measurement, and the tier changes the answer.
 - **Subtract startup, by measurement.** A whole-process counter includes the net load and
   the magic-table build, and both are large next to a short bench.
-- **Size an Elo run BEFORE starting it.** Speed converts at roughly 70 Elo per doubling, so
-  a 6% change is about 6 Elo and needs ~10,000 games per cell to see. A 1000-game cell
-  carries ±18 and returns a coin flip with a sign.
+- **Size an Elo run BEFORE starting it, at the RIGHT conversion.** 70 Elo per doubling is a
+  long-time-control figure. Measured here against a PGO'd upstream, three cells
+  (0.1+0.001 at two tiers, 1+0.01) all imply **138-152 Elo per doubling**. Use the figure
+  that matches the clock, or the run is mis-sized before it starts.
+- **A `Vec` on a per-node path is a defect, and no gate can see it.** Upstream allocates
+  nothing per node. Measured here: three per-node allocations cost 100M instructions of
+  malloc/free against upstream's 1.9M, at an identical node count. Hoist the collection to
+  the worker and `clear()` it -- and note that the obvious fix, an inline array mirroring
+  upstream's field, is measurably WORSE, because safe Rust must initialise it. See
+  [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) section 9.
+- **NPS cannot settle a few per cent on this box.** One unchanged binary read 240k-275k,
+  and a cold run read 103k. Use callgrind for anything under ~10%.
 - **A bounds check is not automatically the cost.** Rust elides most of them, and the ones
   it does not are usually not on the hot path. Find the check in the disassembly before
   reshaping code around it — and if reshaping is needed, it is still not a licence for

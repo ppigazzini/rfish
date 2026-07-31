@@ -196,7 +196,49 @@ evidence either way until someone does.
 
 ---
 
-## 9. Measurement laws
+## 9. Allocation: the pattern that cost the most, and the one that fixed it
+
+`Vec` in a per-node path is the single largest defect this port has had. Upstream allocates
+NOTHING per node — `ExtMove moves[MAX_MOVES]` and `ValueList<Move, 32>` are inline storage
+in the object — and rfish was issuing three mallocs per node without anyone noticing,
+because no gate can see it: the node count is identical either way.
+
+Measured with callgrind on material-eval builds at an identical tree (881 762 nodes):
+
+| | malloc/free `Ir` | total `Ir` |
+|---|---:|---:|
+| before | 100.2 M | 3.900 G |
+| after | **3.53 M** | **3.8125 G** |
+| Stockfish | 1.92 M | 3.952 G |
+
+**The obvious translation is the wrong one, and it was measured before it was rejected.**
+Giving the picker an inline `[ScoredMove; MAX_MOVES]` — the literal shape of upstream's
+field — removes 97 M of allocator traffic and adds **473 M** of initialisation, because
+safe Rust must initialise the array and C++ leaves it undefined. Net worse than doing
+nothing. There is no safe way to have a large uninitialised buffer; the answer is not to
+need one.
+
+What works is the *workhorse collection* from the Rust Performance Book: hoist the buffer
+out of the hot path, keep it alive, and `clear()` it — capacity survives, so after the
+first visit there is neither an allocation nor an initialisation. rfish keys those buffers
+by `(ply, kind)`, and the `kind` is load-bearing rather than defensive: the search re-enters
+a ply twice over — a singular search re-runs the same ply with a move excluded while the
+outer node is still walking its own list, and razoring drops into quiescence at the same ply
+from inside that singular search. One buffer per ply corrupts the outer list mid-iteration.
+Neither re-entry can nest further, because a singular search requires no excluded move, so
+three slots per ply are sufficient *and provably so*.
+
+The general rule this leaves behind: **a hot-path collection belongs to the worker, not to
+the object that uses it**, and it is lent per call the same way the position and the
+histories already are. That also keeps the picker free of borrows (§4).
+
+Where a small fixed bound really is the answer — the searched-move lists, capped at 32 by
+upstream — a plain array is right, because 64 bytes of initialisation is cheaper than a
+malloc. The crossover is size, and it is worth measuring rather than guessing.
+
+---
+
+## 10. Measurement laws
 
 Every one of these was paid for in a sibling port. They are not Rust-specific.
 
@@ -215,14 +257,17 @@ Every one of these was paid for in a sibling port. They are not Rust-specific.
   slice, use a fixed-size array, bind a subslice once) instead.
 - **Gate on the clock, and validate any counter before believing it.** A change can be
   instruction-neutral, cache-better and branch-level and still cost cycles.
-- **Size an Elo run before starting it.** Speed converts at roughly 70 Elo per doubling, so
-  a 6% change is about 6 Elo and needs ~10 000 games per cell to resolve. A 1000-game cell
-  carries ±18 and returns a coin flip with a sign; two such cells must never be compared to
-  each other.
+- **Size an Elo run before starting it.** The 70-Elo-per-doubling figure is a LONG time
+  control number and does not hold at the fast ones. Three measured cells against a PGO'd
+  upstream — 0.1+0.001 at two tiers and 1+0.01 — all imply **138–152 Elo per doubling**.
+  Use the figure that matches the clock being run, or the run is mis-sized before it starts.
+- **NPS on this class of box cannot settle a few percent.** Readings ranged 240k–275k for
+  one unchanged binary, and a cold first run read 103k. Use callgrind, which is
+  deterministic to 0.01%, for anything under ~10%; use NPS only for a headline ratio.
 
 ---
 
-## 10. Falsified, or not attempted for a stated reason
+## 11. Falsified, or not attempted for a stated reason
 
 Keep this list current. Re-deriving a dead idea costs a session.
 
@@ -234,4 +279,31 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | Optimising the classical evaluation | **Pointless.** It runs only when no net is on disk, and it has a deletion date. |
 | `memmap2` for the Syzygy tables | **Rejected.** The crate's soundness contract cannot be met (a table file can be truncated under the map), and positioned reads behind a block cache give what the mapping actually provides. |
 | Const-evaluating the magic tables | **Not attempted.** 88 772 entries with a subset enumeration each is far more const-eval than the Zobrist tables' ~800 draws; `LazyLock` costs one predicted branch per lookup. Measure before changing. |
+| An inline `[ScoredMove; MAX_MOVES]` in the move picker, mirroring upstream's field | **Falsified, with a measurement.** Removes 97 M of allocator traffic, adds 473 M of per-node initialisation — worse than the `Vec` it replaced. Safe Rust cannot leave a buffer uninitialised; reuse one instead (§9). |
 | Making `Bitboard::iter` borrow instead of copy | **Rejected by design.** Iterating by value is what lets a loop mutate the board it came from, which is upstream's `while (b) pop_lsb(b)` over a local with the local made explicit. |
+
+---
+
+## 12. External references
+
+Consulted July 2026. Listed with what each is actually good for here, because a link with
+no verdict gets re-read from scratch every session.
+
+| Source | Use it for |
+|---|---|
+| [The Rust Performance Book — Heap Allocations](https://nnethercote.github.io/perf-book/heap-allocations.html) | The workhorse-collection pattern §9 is built on, and the general rule that a `Vec` in a loop body should be hoisted and `clear()`ed. The canonical reference; check here before inventing an allocation strategy. |
+| [The Rust Performance Book — Bounds Checks](https://nnethercote.github.io/perf-book/bounds-checks.html) | Why the answer is almost never `get_unchecked`. |
+| [How to avoid bounds checks in Rust without `unsafe`](https://shnatsel.medium.com/how-to-avoid-bounds-checks-in-rust-without-unsafe-f65e618b4c1e) | The four safe techniques, in the order to try them: bind a subslice and index by *its* `len()`; iterate instead of indexing; `assert!` the length in front of the hot loop so the optimiser can use it; `#[inline(always)]` so the length fact crosses the function boundary. This is the playbook for the "restructure so the bound is provable" rule in §10. |
+
+**The measured claim worth remembering:** removing bounds checks is worth **1–3% typically
+and 15% at the very best**, and only in number-crunching code. That is the published
+figure, and it matches this port's own evidence — rfish retires 1.7–1.9x more branches than
+upstream while *missing fewer* of them, which is what a wall of perfectly-predicted checks
+looks like, and the spine gap is nonetheless dominated by structural defects like the
+allocator rather than by the checks. Chase the structure first; the checks are the last few
+per cent, not the first twenty.
+
+**What is deliberately NOT on this list:** `smallvec`, `arrayvec`, `bumpalo` and every other
+allocation crate. They are the standard answer to §9 and rfish cannot use any of them — the
+engine crate has zero dependencies, and that is a reviewed property. The workhorse pattern
+is the dependency-free equivalent and measured as good.
