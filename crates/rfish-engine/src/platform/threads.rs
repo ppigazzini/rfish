@@ -146,6 +146,7 @@ impl ThreadPool {
         sink: &mut dyn InfoSink,
     ) -> SearchResult {
         self.shared.reset();
+        self.shared.set_searching_unbounded(limits.is_unbounded());
         tt.new_search();
 
         // The clock model is the pool's, not a worker's: `nodestime` spends a budget that
@@ -196,6 +197,7 @@ impl ThreadPool {
             result = elect(std::iter::once(result).chain(votes));
         }
 
+        self.shared.set_searching_unbounded(false);
         result.nodes = self.shared.node_count().max(result.nodes);
 
         // Charge the game-long node budget for what this move spent, less the increment it

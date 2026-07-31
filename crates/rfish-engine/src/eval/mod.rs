@@ -2,9 +2,11 @@
 //!
 //! # Where this zone stands
 //!
-//! Upstream evaluates with an NNUE network and nothing else. rfish's NNUE forward pass is
-//! not written yet: [`nnue`] holds the network file's structure and its loader, and
-//! [`classical`] is the **scaffolding** that stands in until the forward pass lands.
+//! Upstream evaluates with an NNUE network and nothing else, and so does rfish whenever a
+//! net is on disk: [`nnue`] holds the file format, the loader and the forward pass, and
+//! `cargo xtask nnue-check` proves the output equals a pristine upstream build's position
+//! by position. [`classical`] is the **scaffolding** that stands in for a run with NO net,
+//! so that a fresh clone can still play before `cargo xtask net` has run.
 //!
 //! The classical term is not a feature and must not be treated as one. Do not tune it, do
 //! not extend it, and do not let it acquire callers that NNUE will not satisfy — it exists

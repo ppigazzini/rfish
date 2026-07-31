@@ -82,8 +82,15 @@ rendered by walking a copy so each move is named in the position it is played in
 
 - **No `help`, no `flip`, no `export_net`, no `tune`.** All declared out of scope until the
   zones they report on exist.
-- **No `stop` during a running search from the same input loop.** The stop flag is shared
-  and atomic, so an external caller can set it, but the loop reads one line at a time and
-  the search runs on that thread. A GUI that sends `stop` mid-search is served by the flag
-  once the search's own limit check reaches it. Making the input loop concurrent with the
-  search is open work.
+- **Reading and searching do not share a thread.** They cannot: the search runs where `go`
+  was dispatched, so a loop that reads a line, dispatches it, and only then reads the next
+  one cannot see a `stop` until the search it would stop has already ended. `go infinite`
+  followed by `stop` hung forever, and that is the shape every analysis GUI uses. Stdin is
+  drained by its own thread; `stop` and `ponderhit` act there, against the shared atomics
+  they were built for, and everything else queues and dispatches in order.
+
+  **A `quit` interrupts the search only when the search cannot end by itself.** Upstream
+  aborts unconditionally, and this is a deliberate divergence: `go depth 13` followed by
+  `quit` is how every gate and every measurement harness drives this binary, and aborting
+  there would make a node count depend on scheduling. `go infinite` has no answer to wait
+  for, so that one is stopped.

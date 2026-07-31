@@ -37,6 +37,7 @@ fn main() {
     let _ = writeln!(out, "{} by the Stockfish developers (see AUTHORS)", uci::engine_name());
     let _ = out.flush();
 
-    let stdin = io::stdin();
-    uci::run(stdin.lock(), out);
+    // NOT `stdin.lock()`: the reader is moved to its own thread, and a lock guard is not
+    // `Send`. Nothing else in this process reads stdin, so there is no lock to hold.
+    uci::run(io::BufReader::new(io::stdin()), out);
 }

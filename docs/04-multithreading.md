@@ -74,7 +74,13 @@ away for a configuration change would cost strength for no reason.
 ## What is not here
 
 - **No NUMA model and no network replication.** Upstream replicates the NNUE weights per
-  NUMA node and binds threads to it. There is no network to replicate yet; when M3 lands,
-  this section says what happened.
-- **No ponder.** `Ponder` is declared and `ponderhit` is accepted; the search does not yet
-  convert a pondering search into a real one.
+  NUMA node and binds threads to it. There are weights to replicate now, and this is
+  nonetheless **blocked**: replication only pays if a thread can be pinned to the node
+  holding its copy, and `std` exposes no affinity API — both pinning and node-local
+  allocation are FFI, which the engine crate cannot reach without `unsafe` or a dependency.
+  [06-platform.md](06-platform.md) has the full reasoning.
+
+Pondering IS here. `Ponder` buys the current move a quarter more time; a budget that runs
+out while pondering sets a flag rather than stopping, because only the GUI can end a ponder;
+and `ponderhit` converts the search into a real one, stopping immediately if that flag was
+already set. The thinking done on the opponent's clock counts.

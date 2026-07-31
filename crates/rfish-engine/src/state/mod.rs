@@ -202,6 +202,11 @@ pub struct SharedState {
     /// Set when the budget has run out but the engine is pondering, so the search keeps
     /// going and stops the moment the GUI converts the ponder into a real move.
     pub stop_on_ponderhit: AtomicBool,
+    /// Set while a search is running that nothing but an explicit stop can end.
+    ///
+    /// The shell reads this to decide whether a `quit` has to interrupt the search or can
+    /// wait for it: a `go depth 13` will finish on its own and a `go infinite` never will.
+    pub searching_unbounded: AtomicBool,
 }
 
 impl SharedState {
@@ -259,6 +264,17 @@ impl SharedState {
     /// Set whether iterations should keep deepening.
     pub fn set_increase_depth(&self, yes: bool) {
         self.increase_depth.store(yes, Ordering::Relaxed);
+    }
+
+    /// Declare whether the search now starting can end by itself.
+    pub fn set_searching_unbounded(&self, yes: bool) {
+        self.searching_unbounded.store(yes, Ordering::Relaxed);
+    }
+
+    /// True when only an explicit stop can end the running search.
+    #[must_use]
+    pub fn searching_unbounded(&self) -> bool {
+        self.searching_unbounded.load(Ordering::Relaxed)
     }
 
     /// True when the budget ran out while pondering.

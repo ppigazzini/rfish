@@ -511,18 +511,49 @@ impl Engine {
 
 /// Read commands from `input` until `quit` or end of stream.
 ///
-/// A `stop` must be able to interrupt a running search, and the search runs on this thread.
-/// The input loop therefore reads a line, dispatches it, and returns — a blocking search is
-/// interrupted by the shared stop flag, which the pool checks. That is the same shape
-/// upstream uses, with the flag made explicit.
-pub(crate) fn run(input: impl BufRead, mut output: impl Write) {
+/// **Reading and searching cannot share a thread.** The search runs where `go` was
+/// dispatched, so a loop that reads one line, dispatches it, and only then reads the next
+/// cannot see a `stop` until the search it would stop has already ended. `go infinite`
+/// followed by `stop` hung forever, which is the shape every analysis GUI uses.
+///
+/// So stdin is drained by its own thread. The two commands that must act DURING a search
+/// act on that thread, against the shared atomics they were built for; everything else
+/// queues and is dispatched here, in order, exactly as before.
+///
+/// **A `quit` interrupts the search only when the search cannot end by itself.** Upstream
+/// aborts unconditionally, and rfish deliberately does not: `go depth 13` followed by
+/// `quit` is how every gate and every measurement harness drives this binary, and aborting
+/// there would turn a node count into a number that depends on scheduling. A `go infinite`
+/// has no such answer to wait for, so that one is stopped.
+pub(crate) fn run(input: impl BufRead + Send + 'static, mut output: impl Write) {
     let mut engine = Engine::new();
     // Report the network situation once at startup, the way upstream does, so a user who
     // forgot the net finds out immediately rather than after a weak game.
     engine.load_network(&mut output);
 
-    for line in input.lines() {
-        let Ok(line) = line else { break };
+    let shared = Arc::clone(engine.pool.shared());
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+
+    // Detached on purpose: it owns only stdin and a sender, and blocking on a read that
+    // will never complete is precisely what it is for.
+    std::thread::spawn(move || {
+        for line in input.lines() {
+            let Ok(line) = line else { break };
+            match line.trim() {
+                "stop" => shared.request_stop(),
+                "ponderhit" => shared.ponder_hit(),
+                "quit" if shared.searching_unbounded() => shared.request_stop(),
+                _ => {}
+            }
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Re-dispatching `stop` and `ponderhit` here is harmless: both are idempotent, and the
+    // next `go` resets the signals regardless.
+    for line in rx {
         if !engine.handle(&line, &mut output) {
             break;
         }

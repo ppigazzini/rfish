@@ -44,11 +44,13 @@ after a two-minute bench.
 
 The anchor. `bench` must reproduce `tools/signature.golden`.
 
-**The depth is not upstream's 13.** rfish evaluates with the classical scaffolding, which
-prunes far worse, so depth 13 over the full list takes hours rather than seconds. The gate
-uses a lower depth — read it from `crates/xtask/src/gates.rs`, never from prose — chosen so
-the gate runs in well under a minute, which is the property that decides whether anyone runs
-it. **Raise it to 13 in the same commit that lands the NNUE forward pass.**
+**The depth is upstream's 13**, which became affordable when the NNUE forward pass landed
+and the tree stopped being enormous. Read it from `crates/xtask/src/gates.rs`, never from
+prose. The COUNT is still rfish's own, because the search's pruning constants are not
+upstream's yet — see CONTRIBUTING.md, "Two different numbers".
+
+The gate has to run in well under a minute, because that is the property that decides
+whether anyone runs it before pushing. If a change makes it slower, fix the change.
 
 ### `perft`
 

@@ -17,8 +17,8 @@ confident wrong verdict. A golden pinning rfish's own output would pin whatever 
 currently does; only a differential comparison catches the off-by-one.
 
 Not done: the 5-man cursed-win and blessed-loss branches, which need a 5-man table set to
-exercise, and the root-move ranking is written but not yet consulted by the search's move
-ordering.
+exercise, and a block cache, without which a 7-man set would be gigabytes resident. Both
+are blocked on table data rather than on code.
 
 ## What the files hold
 
