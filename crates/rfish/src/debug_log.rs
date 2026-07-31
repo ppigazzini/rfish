@@ -101,9 +101,19 @@ impl<W: Write> Write for TeeWriter<W> {
 mod tests {
     use super::*;
 
+    /// Serialise the tests in this module against each other.
+    ///
+    /// `LOG` is one global for the whole process and libtest runs these on parallel threads,
+    /// so without this a `set_path` in one test closes the transcript another is midway
+    /// through writing — which reads as a truncated file rather than as a race, and fails on
+    /// whichever runner lost the timing that day. Ignore poison: a panic in one test must
+    /// report ITS assertion, not resurface as a lock error in the next.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
     /// The transcript records both directions, in order, with upstream's prefixes.
     #[test]
     fn a_transcript_records_both_directions_in_order() {
+        let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!("rfish-log-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let path = dir.join("transcript.txt");
@@ -130,6 +140,7 @@ mod tests {
     /// Turning it off must stop recording, and must not error.
     #[test]
     fn an_empty_path_turns_the_transcript_off() {
+        let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         set_path("").expect("closing an unopened log is fine");
         assert!(!is_active());
         record_input("this goes nowhere");
@@ -138,6 +149,7 @@ mod tests {
     /// A path that cannot be opened is reported, not swallowed.
     #[test]
     fn an_unopenable_path_is_an_error() {
+        let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(set_path("/this/directory/does/not/exist/log.txt").is_err());
         // And the failure leaves logging OFF rather than half-configured.
         assert!(!is_active());
