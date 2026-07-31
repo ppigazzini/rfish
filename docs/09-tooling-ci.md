@@ -236,7 +236,7 @@ observable -- `movestogo -5` is accepted there, `nodes 99999999999999999999` is 
 overflow. The error line is byte-identical to a pristine upstream build's, diffed rather than
 eyeballed.
 
-**Found and OPEN: a buffered `stop` cannot end an unbounded search.**
+**Found and FIXED: a buffered `stop` could not end an unbounded search.**
 
   printf 'position startpos\ngo mate 1\nstop\nisready\nquit\n' | ./stockfish
 
@@ -247,15 +247,27 @@ already running -- and that same read-ahead means the reader requests the stop B
 main loop has dispatched the `go`, whose `SharedState::reset` then clears it. A `stop` that
 arrives after the search starts works correctly; only the buffered ordering loses.
 
-Fixing it by moving the clear out of `reset` and into the reader was tried and REVERTED: the
-unit suite and the `search` golden both drive `Engine::handle` directly, bypassing the reader,
-so nothing cleared the flag for them and a stale stop truncated the next search. The fix
-needs to survive both entry points and is a concurrency change, not a parser one.
+The fix is a split, and it took two attempts. `SharedState::reset` no longer touches the stop
+flag; `clear_stop` owns it, and is called at the earliest point that OBSERVES a search
+command. There are two such points, which is what the first attempt got wrong:
 
-The fuzz step therefore delivers its stops the way a GUI does -- after a pause, one per line
-of the burst, because a burst can start several unbounded searches and the commands queued
-behind the first are not dispatched until it returns. That reproduces real timing instead of
-re-finding this every night, and the reproduction above is one line if anyone wants it back.
+| entry | who clears |
+|---|---|
+| the shipped binary | the input reader, when it reads a `go` or `bench` line |
+| a direct `Engine::handle` — tests, golden harnesses | `cmd_go` / `cmd_bench`, gated on `reader_owns_stop` |
+
+Doing it in both would race the reader and undo a real `stop`; doing it in neither leaves a
+stale one to truncate the next search. Both mistakes were made before the flag existed — the
+first attempt cleared only in the reader and broke the unit suite and the `search` golden.
+
+A third clear closes the loop: `ThreadPool::search` drops the stop it raised to bring its own
+helpers home, at the END of the search. Without it, a `go` following a `go` inherits the
+previous one's stop and returns at depth zero.
+
+Verified against a pristine upstream build across six orderings — buffered `stop` after
+`go mate 1` and after `go infinite`, a delayed `stop`, a plain bounded `go`, an idle `stop`
+BEFORE a `go` (which upstream ignores, and so must this), and two `go`s back to back. All six
+agree.
 
 There is no `msrv` lane. It ran `cargo +<rust-version> build` and cannot pass while the
 engine enables `portable_simd`, which no stable channel accepts.
