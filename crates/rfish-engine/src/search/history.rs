@@ -38,6 +38,35 @@ fn boxed<T: Copy, const N: usize>(fill: T) -> Box<[T; N]> {
     }
 }
 
+/// A table row forced onto a cache-line boundary.
+///
+/// The history tables are the largest randomly indexed structures the search touches, and
+/// their natural alignment is the alignment of an `i16` -- two bytes. The allocator hands
+/// back sixteen, so every table began sixteen bytes INTO a line and every row inherited
+/// that offset for the life of the process: a row that should occupy one line occupied
+/// two, and a lookup that should be one fetch was two.
+///
+/// Nothing reads these tables at a coarser granularity than a row, so the alignment was an
+/// omission rather than a decision. `Deref` keeps the indexing at the call sites unchanged.
+#[repr(align(64))]
+#[derive(Clone, Copy, Debug)]
+pub struct Line<T>(T);
+
+impl<T> core::ops::Deref for Line<T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> core::ops::DerefMut for Line<T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
 /// Rows in a table indexed by the raw 16-bit move.
 pub const MOVE_HISTORY_SIZE: usize = 1 << 16;
 /// Plies near the root that get their own ordering table.
@@ -162,7 +191,7 @@ impl LowPlyHistory {
 /// Capture history, indexed by the moving piece, its destination, and what it took.
 #[derive(Debug)]
 pub struct CaptureHistory {
-    table: Box<[[[i16; PIECE_TYPE_SLOTS]; SQUARE_NB]; PIECE_NB]>,
+    table: Box<[Line<[[i16; PIECE_TYPE_SLOTS]; SQUARE_NB]>; PIECE_NB]>,
 }
 
 /// Slots for the captured piece type. Upstream's `PIECE_TYPE_NB` is 8; the values used run
@@ -171,7 +200,7 @@ const PIECE_TYPE_SLOTS: usize = 8;
 
 impl Default for CaptureHistory {
     fn default() -> CaptureHistory {
-        CaptureHistory { table: boxed([[0; PIECE_TYPE_SLOTS]; SQUARE_NB]) }
+        CaptureHistory { table: boxed(Line([[0; PIECE_TYPE_SLOTS]; SQUARE_NB])) }
     }
 }
 
@@ -192,7 +221,13 @@ impl CaptureHistory {
     }
 
     pub fn fill(&mut self, v: i16) {
-        self.table.iter_mut().flatten().flatten().for_each(|x| *x = v);
+        for row in self.table.iter_mut() {
+            // `fill` on the innermost slice, so this stays a wide store rather than the
+            // element-at-a-time loop a nested `for_each` compiles to.
+            for inner in row.iter_mut() {
+                inner.fill(v);
+            }
+        }
     }
 }
 
@@ -244,7 +279,7 @@ impl PieceToHistory {
 /// a capture, then by the parent move's (piece, destination).
 #[derive(Debug)]
 pub struct ContinuationHistory {
-    table: Box<[[[i16; SQUARE_NB]; PIECE_NB]; 2 * 2 * PIECE_NB * SQUARE_NB]>,
+    table: Box<[Line<[[i16; SQUARE_NB]; PIECE_NB]>; 2 * 2 * PIECE_NB * SQUARE_NB]>,
 }
 
 /// The flat index of a continuation plane.
@@ -257,7 +292,7 @@ pub fn cont_plane_index(in_check: bool, capture: bool, pc: Piece, to: Square) ->
 
 impl Default for ContinuationHistory {
     fn default() -> ContinuationHistory {
-        ContinuationHistory { table: boxed([[-586; SQUARE_NB]; PIECE_NB]) }
+        ContinuationHistory { table: boxed(Line([[-586; SQUARE_NB]; PIECE_NB])) }
     }
 }
 
@@ -276,7 +311,13 @@ impl ContinuationHistory {
 
     /// Reset every plane to upstream's negative sentinel.
     pub fn fill(&mut self, v: i16) {
-        self.table.iter_mut().flatten().flatten().for_each(|x| *x = v);
+        for row in self.table.iter_mut() {
+            // `fill` on the innermost slice, so this stays a wide store rather than the
+            // element-at-a-time loop a nested `for_each` compiles to.
+            for inner in row.iter_mut() {
+                inner.fill(v);
+            }
+        }
     }
 }
 
@@ -284,7 +325,7 @@ impl ContinuationHistory {
 /// given parent move, keyed the same way but clamped at the correction limit.
 #[derive(Debug)]
 pub struct ContinuationCorrectionHistory {
-    table: Box<[[[i16; SQUARE_NB]; PIECE_NB]; PIECE_NB * SQUARE_NB]>,
+    table: Box<[Line<[[i16; SQUARE_NB]; PIECE_NB]>; PIECE_NB * SQUARE_NB]>,
 }
 
 /// The flat index of a continuation-correction plane. Unlike the continuation history this
@@ -297,7 +338,7 @@ pub fn corr_plane_index(pc: Piece, to: Square) -> usize {
 
 impl Default for ContinuationCorrectionHistory {
     fn default() -> ContinuationCorrectionHistory {
-        ContinuationCorrectionHistory { table: boxed([[5; SQUARE_NB]; PIECE_NB]) }
+        ContinuationCorrectionHistory { table: boxed(Line([[5; SQUARE_NB]; PIECE_NB])) }
     }
 }
 
@@ -314,19 +355,25 @@ impl ContinuationCorrectionHistory {
     }
 
     pub fn fill(&mut self, v: i16) {
-        self.table.iter_mut().flatten().flatten().for_each(|x| *x = v);
+        for row in self.table.iter_mut() {
+            // `fill` on the innermost slice, so this stays a wide store rather than the
+            // element-at-a-time loop a nested `for_each` compiles to.
+            for inner in row.iter_mut() {
+                inner.fill(v);
+            }
+        }
     }
 }
 
 /// Pawn-structure history: quiet-move scores conditioned on the pawn skeleton.
 #[derive(Debug)]
 pub struct PawnHistory {
-    table: Box<[[[i16; SQUARE_NB]; PIECE_NB]; PAWN_HISTORY_SIZE]>,
+    table: Box<[Line<[[i16; SQUARE_NB]; PIECE_NB]>; PAWN_HISTORY_SIZE]>,
 }
 
 impl Default for PawnHistory {
     fn default() -> PawnHistory {
-        PawnHistory { table: boxed([[0; SQUARE_NB]; PIECE_NB]) }
+        PawnHistory { table: boxed(Line([[0; SQUARE_NB]; PIECE_NB])) }
     }
 }
 
@@ -350,7 +397,13 @@ impl PawnHistory {
     }
 
     pub fn fill(&mut self, v: i16) {
-        self.table.iter_mut().flatten().flatten().for_each(|x| *x = v);
+        for row in self.table.iter_mut() {
+            // `fill` on the innermost slice, so this stays a wide store rather than the
+            // element-at-a-time loop a nested `for_each` compiles to.
+            for inner in row.iter_mut() {
+                inner.fill(v);
+            }
+        }
     }
 }
 
