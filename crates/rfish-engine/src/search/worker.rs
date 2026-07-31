@@ -44,10 +44,20 @@ use crate::state::{
 };
 
 use super::history::{Histories, LOW_PLY_HISTORY_SIZE, cont_plane_index, corr_plane_index};
-use super::movepick::{ContKeys, MovePicker};
+use super::movepick::{ContKeys, MoveBuf, MovePicker};
 use super::score::Score;
 use super::skill::{Prng, Skill};
 use super::tt::{TranspositionTable, value_from_tt, value_to_tt};
+
+/// Move-buffer slots per ply: the ordinary node, the singular re-entry, and quiescence.
+const SLOTS_PER_PLY: usize = 3;
+/// The slot an ordinary node at `ply` uses.
+const SLOT_NODE: usize = 0;
+/// The slot a singular search -- the same ply, one move excluded -- uses.
+const SLOT_EXCLUDED: usize = 1;
+/// The slot quiescence uses, so razoring out of a singular search cannot collide with the
+/// ordinary node's list two levels up.
+const SLOT_QSEARCH: usize = 2;
 
 /// How many moves a node remembers for the end-of-node history update.
 const SEARCHED_LIST_CAPACITY: usize = 32;
@@ -172,6 +182,15 @@ pub struct SearchWorker {
     best_move_changes: f64,
     /// The log-scaled reduction table, indexed by depth and by move number.
     reductions: Vec<i32>,
+    /// One reusable move buffer per (ply, kind) slot, allocated once and never freed.
+    ///
+    /// Keyed by kind as well as ply because the search RE-ENTERS a ply twice over: a
+    /// singular search re-runs the same ply with a move excluded while the outer node is
+    /// still walking its own move list, and razoring drops into quiescence at the same ply
+    /// from inside that singular search. One buffer per ply would let the inner picker
+    /// overwrite the outer's list mid-iteration. Neither re-entry can nest further --
+    /// singular search requires no excluded move -- so three slots per ply are enough.
+    move_pool: Vec<MoveBuf>,
     /// How many nodes remain before the next clock check.
     calls_cnt: i32,
     /// How many threads share the root, for the pooled instability term.
@@ -240,6 +259,9 @@ impl SearchWorker {
             last_iteration_pv: Vec::new(),
             best_move_changes: 0.0,
             reductions: vec![0; crate::board::types::MAX_MOVES],
+            move_pool: (0..SLOTS_PER_PLY * STACK_SIZE)
+                .map(|_| MoveBuf::with_capacity(crate::board::types::MAX_MOVES))
+                .collect(),
             calls_cnt: 0,
             thread_count: 1,
             optimism: [0; 2],
@@ -1496,6 +1518,8 @@ impl SearchWorker {
             prob_cut_beta = beta + 241 - 64 * i32::from(improving);
             if depth >= 3 && !is_decisive(beta) && !(is_valid(tt_value) && tt_value < prob_cut_beta)
             {
+                let slot = SLOTS_PER_PLY * ply as usize
+                    + if excluded_move.is_some() { SLOT_EXCLUDED } else { SLOT_NODE };
                 let mut mp = MovePicker::new_probcut(
                     &self.pos,
                     tt_move,
@@ -1504,7 +1528,7 @@ impl SearchWorker {
                 let prob_cut_depth = depth - if improving { 5 } else { 3 };
 
                 loop {
-                    let mv = mp.next_move(&self.pos, &self.histories);
+                    let mv = mp.next_move(&self.pos, &self.histories, &mut self.move_pool[slot]);
                     if mv.is_none() {
                         break;
                     }
@@ -1571,6 +1595,8 @@ impl SearchWorker {
             Some(self.stack[si - 6].continuation),
         ];
 
+        let slot = SLOTS_PER_PLY * ply as usize
+            + if excluded_move.is_some() { SLOT_EXCLUDED } else { SLOT_NODE };
         let mut mp = MovePicker::new(&self.pos, cont_keys, tt_move, depth, ply);
         let mut value = best_value;
         let mut move_count = 0i32;
@@ -1578,7 +1604,7 @@ impl SearchWorker {
         // Step 13. Loop through all pseudo-legal moves until no moves remain or a beta
         // cutoff occurs.
         loop {
-            let mv = mp.next_move(&self.pos, &self.histories);
+            let mv = mp.next_move(&self.pos, &self.histories, &mut self.move_pool[slot]);
             if mv.is_none() {
                 break;
             }
@@ -2306,12 +2332,13 @@ impl SearchWorker {
             Square::NONE
         };
 
+        let slot = SLOTS_PER_PLY * ply as usize + SLOT_QSEARCH;
         let mut mp = MovePicker::new(&self.pos, cont_keys, tt_move, DEPTH_QS, ply);
 
         // Step 5. Loop through all pseudo-legal moves until no moves remain or a beta
         // cutoff occurs.
         loop {
-            let mv = mp.next_move(&self.pos, &self.histories);
+            let mv = mp.next_move(&self.pos, &self.histories, &mut self.move_pool[slot]);
             if mv.is_none() {
                 break;
             }

@@ -67,10 +67,23 @@ enum Stage {
 
 /// A move with the score the picker sorts it by.
 #[derive(Clone, Copy, Debug)]
-struct ScoredMove {
+pub struct ScoredMove {
     mv: Move,
     score: i32,
 }
+
+/// One node's move buffer, owned by the worker and lent to the picker per call.
+///
+/// A `Vec` whose allocation is REUSED, never a fresh one. Upstream's picker carries
+/// `ExtMove moves[MAX_MOVES]` inline; the direct translation of that -- an inline array in
+/// the picker -- is measurably WORSE here, because safe Rust must initialise 2 KB per node
+/// where C++ leaves it undefined. Measured on an identical tree: the inline array removed
+/// 97M instructions of allocator traffic and added 473M of initialisation.
+///
+/// The workhorse-collection pattern from the Rust Performance Book gets both: `clear()`
+/// keeps the capacity, so after the first visit to a slot there is neither an allocation
+/// nor an initialisation.
+pub type MoveBuf = Vec<ScoredMove>;
 
 /// Quiet moves scoring at or below this are deferred behind the bad captures.
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
@@ -117,11 +130,6 @@ pub struct MovePicker {
     ply: i32,
     skip_quiets: bool,
 
-    /// The scored move list. Upstream keeps captures and quiets in one buffer with five
-    /// pointers into it; the same layout is expressed here as one `Vec` and four indices,
-    /// because the bad-capture stage rewinds into a region the quiet stage has already
-    /// passed and a second buffer could not model that.
-    moves: Vec<ScoredMove>,
     /// Cursor into `moves`.
     cur: usize,
     /// One past the last move the current stage may yield.
@@ -177,7 +185,6 @@ impl MovePicker {
             depth,
             ply,
             skip_quiets: false,
-            moves: Vec::with_capacity(64),
             cur: 0,
             end_cur: 0,
             end_bad_captures: 0,
@@ -200,7 +207,6 @@ impl MovePicker {
             depth: 0,
             ply: 0,
             skip_quiets: false,
-            moves: Vec::with_capacity(32),
             cur: 0,
             end_cur: 0,
             end_bad_captures: 0,
@@ -216,7 +222,7 @@ impl MovePicker {
     }
 
     /// The next move, or [`Move::NONE`] when the sequence is exhausted.
-    pub fn next_move(&mut self, pos: &Position, h: &Histories) -> Move {
+    pub fn next_move(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) -> Move {
         loop {
             match self.stage {
                 Stage::MainTt | Stage::EvasionTt | Stage::QSearchTt | Stage::ProbCutTt => {
@@ -230,14 +236,14 @@ impl MovePicker {
                 }
 
                 Stage::CaptureInit | Stage::ProbCutInit | Stage::QCaptureInit => {
-                    self.generate(pos, GenType::Captures);
-                    self.score_captures(pos, h);
+                    Self::generate(pos, GenType::Captures, buf);
+                    Self::score_captures(pos, h, buf);
                     self.cur = 0;
                     self.end_bad_captures = 0;
-                    self.end_cur = self.moves.len();
-                    self.end_captures = self.moves.len();
-                    self.end_generated = self.moves.len();
-                    partial_insertion_sort(&mut self.moves[..self.end_cur], i32::MIN);
+                    self.end_cur = buf.len();
+                    self.end_captures = buf.len();
+                    self.end_generated = buf.len();
+                    partial_insertion_sort(&mut buf[..self.end_cur], i32::MIN);
                     self.stage = match self.stage {
                         Stage::CaptureInit => Stage::GoodCapture,
                         Stage::ProbCutInit => Stage::ProbCut,
@@ -251,7 +257,7 @@ impl MovePicker {
                     // quiet moves. The threshold scales with the move's own score, so a
                     // capture the history likes is given more benefit of the doubt.
                     while self.cur < self.end_cur {
-                        let sm = self.moves[self.cur];
+                        let sm = buf[self.cur];
                         if sm.mv == self.tt_move {
                             self.cur += 1;
                             continue;
@@ -260,7 +266,7 @@ impl MovePicker {
                             self.cur += 1;
                             return sm.mv;
                         }
-                        self.moves.swap(self.end_bad_captures, self.cur);
+                        buf.swap(self.end_bad_captures, self.cur);
                         self.end_bad_captures += 1;
                         self.cur += 1;
                     }
@@ -269,14 +275,14 @@ impl MovePicker {
 
                 Stage::QuietInit => {
                     if !self.skip_quiets {
-                        self.generate_append(pos, GenType::Quiets);
-                        self.score_quiets(pos, h);
-                        self.end_cur = self.moves.len();
-                        self.end_generated = self.moves.len();
+                        Self::generate_append(pos, GenType::Quiets, buf);
+                        self.score_quiets(pos, h, buf);
+                        self.end_cur = buf.len();
+                        self.end_generated = buf.len();
                         let from = self.cur;
                         let to = self.end_cur;
                         partial_insertion_sort(
-                            &mut self.moves[from..to],
+                            &mut buf[from..to],
                             -3560i32.saturating_mul(self.depth),
                         );
                     }
@@ -285,7 +291,8 @@ impl MovePicker {
 
                 Stage::GoodQuiet => {
                     if !self.skip_quiets
-                        && let Some(m) = self.select(pos, |sm, _| sm.score > GOOD_QUIET_THRESHOLD)
+                        && let Some(m) =
+                            self.select(pos, buf, |sm, _| sm.score > GOOD_QUIET_THRESHOLD)
                     {
                         return m;
                     }
@@ -296,7 +303,7 @@ impl MovePicker {
                 }
 
                 Stage::BadCapture => {
-                    if let Some(m) = self.select(pos, |_, _| true) {
+                    if let Some(m) = self.select(pos, buf, |_, _| true) {
                         return m;
                     }
                     // Then the quiet moves the good-quiet stage left behind.
@@ -307,7 +314,8 @@ impl MovePicker {
 
                 Stage::BadQuiet => {
                     if !self.skip_quiets
-                        && let Some(m) = self.select(pos, |sm, _| sm.score <= GOOD_QUIET_THRESHOLD)
+                        && let Some(m) =
+                            self.select(pos, buf, |sm, _| sm.score <= GOOD_QUIET_THRESHOLD)
                     {
                         return m;
                     }
@@ -315,17 +323,17 @@ impl MovePicker {
                 }
 
                 Stage::EvasionInit => {
-                    self.generate(pos, GenType::Evasions);
-                    self.score_evasions(pos, h);
+                    Self::generate(pos, GenType::Evasions, buf);
+                    self.score_evasions(pos, h, buf);
                     self.cur = 0;
-                    self.end_cur = self.moves.len();
-                    self.end_generated = self.moves.len();
-                    partial_insertion_sort(&mut self.moves[..self.end_cur], i32::MIN);
+                    self.end_cur = buf.len();
+                    self.end_generated = buf.len();
+                    partial_insertion_sort(&mut buf[..self.end_cur], i32::MIN);
                     self.stage = Stage::Evasion;
                 }
 
                 Stage::Evasion | Stage::QCapture => {
-                    if let Some(m) = self.select(pos, |_, _| true) {
+                    if let Some(m) = self.select(pos, buf, |_, _| true) {
                         return m;
                     }
                     self.stage = Stage::Done;
@@ -333,7 +341,7 @@ impl MovePicker {
 
                 Stage::ProbCut => {
                     let threshold = self.threshold;
-                    if let Some(m) = self.select(pos, |sm, p| p.see_ge(sm.mv, threshold)) {
+                    if let Some(m) = self.select(pos, buf, |sm, p| p.see_ge(sm.mv, threshold)) {
                         return m;
                     }
                     self.stage = Stage::Done;
@@ -346,12 +354,12 @@ impl MovePicker {
 
     /// The next move in `[cur, end_cur)` that is not the transposition move and satisfies
     /// `filter`. Advances `cur` past everything it rejects.
-    fn select<F>(&mut self, pos: &Position, filter: F) -> Option<Move>
+    fn select<F>(&mut self, pos: &Position, buf: &MoveBuf, filter: F) -> Option<Move>
     where
         F: Fn(&ScoredMove, &Position) -> bool,
     {
         while self.cur < self.end_cur {
-            let sm = self.moves[self.cur];
+            let sm = buf[self.cur];
             self.cur += 1;
             if sm.mv != self.tt_move && filter(&sm, pos) {
                 return Some(sm.mv);
@@ -365,22 +373,22 @@ impl MovePicker {
     /// The transposition move is NOT filtered out here — upstream leaves it in the list and
     /// skips it in `select`, and the difference matters: the entry still occupies a slot,
     /// so it still shifts what the partial sort's threshold admits.
-    fn generate(&mut self, pos: &Position, gt: GenType) {
-        self.moves.clear();
-        self.generate_append(pos, gt);
+    fn generate(pos: &Position, gt: GenType, buf: &mut MoveBuf) {
+        buf.clear();
+        Self::generate_append(pos, gt, buf);
     }
 
     /// Generate onto the end of the existing buffer.
-    fn generate_append(&mut self, pos: &Position, gt: GenType) {
+    fn generate_append(pos: &Position, gt: GenType, buf: &mut MoveBuf) {
         let mut list = MoveList::new();
         generate_into(pos, gt, &mut list);
         for &m in list.as_slice() {
-            self.moves.push(ScoredMove { mv: m, score: 0 });
+            buf.push(ScoredMove { mv: m, score: 0 });
         }
     }
 
-    fn score_captures(&mut self, pos: &Position, h: &Histories) {
-        for sm in &mut self.moves {
+    fn score_captures(pos: &Position, h: &Histories, buf: &mut MoveBuf) {
+        for sm in buf.iter_mut() {
             let to = sm.mv.to();
             let pc = pos.moved_piece(sm.mv);
             let captured = pos.piece_on(to);
@@ -396,7 +404,7 @@ impl MovePicker {
         }
     }
 
-    fn score_quiets(&mut self, pos: &Position, h: &Histories) {
+    fn score_quiets(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
         let us = pos.side_to_move();
         let them = !us;
 
@@ -417,8 +425,8 @@ impl MovePicker {
 
         // The quiet list starts where the captures ended; only the new entries are scored.
         let start = self.end_captures;
-        for i in start..self.moves.len() {
-            let mv = self.moves[i].mv;
+        for slot in &mut buf[start..] {
+            let mv = slot.mv;
             let from = mv.from();
             let to = mv.to();
             let pc = pos.moved_piece(mv);
@@ -447,13 +455,13 @@ impl MovePicker {
                 score += 8 * h.low_ply.get(self.ply as usize, mv.raw()) / (1 + self.ply);
             }
 
-            self.moves[i].score = score;
+            slot.score = score;
         }
     }
 
-    fn score_evasions(&mut self, pos: &Position, h: &Histories) {
+    fn score_evasions(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
         let us = pos.side_to_move();
-        for sm in &mut self.moves {
+        for sm in buf.iter_mut() {
             let to = sm.mv.to();
             let pc = pos.moved_piece(sm.mv);
             if pos.is_capture_stage(sm.mv) {
@@ -489,9 +497,10 @@ mod tests {
 
     fn collect(pos: &Position, h: &Histories, tt: Move) -> Vec<Move> {
         let mut mp = MovePicker::new(pos, [None; 6], tt, 4, 0);
+        let mut buf = MoveBuf::new();
         let mut out = Vec::new();
         loop {
-            let m = mp.next_move(pos, h);
+            let m = mp.next_move(pos, h, &mut buf);
             if m.is_none() {
                 break;
             }
@@ -555,9 +564,10 @@ mod tests {
         let h = Histories::default();
         let pos = Position::from_fen("4k3/8/8/3q4/4P3/8/8/R3K3 w - - 0 1", false).expect("valid");
         let mut mp = MovePicker::new(&pos, [None; 6], Move::NONE, 0, 0);
+        let mut buf = MoveBuf::new();
         let mut any = false;
         loop {
-            let m = mp.next_move(&pos, &h);
+            let m = mp.next_move(&pos, &h, &mut buf);
             if m.is_none() {
                 break;
             }
@@ -573,9 +583,10 @@ mod tests {
         let h = Histories::default();
         let pos = Position::from_fen("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1", false).expect("valid");
         let mut mp = MovePicker::new(&pos, [None; 6], Move::NONE, 0, 0);
+        let mut buf = MoveBuf::new();
         let mut out = Vec::new();
         loop {
-            let m = mp.next_move(&pos, &h);
+            let m = mp.next_move(&pos, &h, &mut buf);
             if m.is_none() {
                 break;
             }
@@ -594,10 +605,11 @@ mod tests {
         let h = Histories::default();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut mp = MovePicker::new(&pos, [None; 6], Move::NONE, 4, 0);
+        let mut buf = MoveBuf::new();
         mp.skip_quiet_moves();
         let mut seen = 0;
         loop {
-            let m = mp.next_move(&pos, &h);
+            let m = mp.next_move(&pos, &h, &mut buf);
             if m.is_none() {
                 break;
             }
@@ -614,8 +626,9 @@ mod tests {
         let h = Histories::default();
         let pos = Position::from_fen("4k3/8/8/3q4/4P3/8/8/R3K3 w - - 0 1", false).expect("valid");
         let mut mp = MovePicker::new_probcut(&pos, Move::NONE, 0);
+        let mut buf = MoveBuf::new();
         loop {
-            let m = mp.next_move(&pos, &h);
+            let m = mp.next_move(&pos, &h, &mut buf);
             if m.is_none() {
                 break;
             }
