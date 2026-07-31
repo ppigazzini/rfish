@@ -411,24 +411,29 @@ pub fn threat_active(pos: &Position, perspective: Color, out: &mut Vec<u32>) {
             }
         }
 
-        for pt in [PieceType::Knight, PieceType::Bishop, PieceType::Rook, PieceType::Queen] {
-            let attacker = Piece::new(c, pt);
-            // A knight and a queen may threaten a queen; a bishop and a rook may not.
-            let targets = if pt == PieceType::Knight || pt == PieceType::Queen {
-                queen_targets
-            } else {
-                minor_slider_targets
-            };
-            for from in pos.pieces_of(c, pt) {
-                for to in piece_attacks(pt, from, occupied) & targets {
-                    let index =
-                        threat_index(perspective, attacker, from, to, pos.piece_on(to), ksq);
-                    if index < THREAT_DIMENSIONS {
-                        out.push(index);
+        // Written out per piece type rather than looped over one, so `piece_attacks`
+        // resolves to that type's own kernel at each site. Through a runtime piece type it
+        // is an indirect branch taken once per attacker, and the predictor misses it --
+        // ../zfish 24883582 measured 193K misses over its bench from this one call.
+        // A knight and a queen may threaten a queen; a bishop and a rook may not.
+        macro_rules! scan {
+            ($pt:expr, $targets:expr) => {{
+                let attacker = Piece::new(c, $pt);
+                for from in pos.pieces_of(c, $pt) {
+                    for to in piece_attacks($pt, from, occupied) & $targets {
+                        let index =
+                            threat_index(perspective, attacker, from, to, pos.piece_on(to), ksq);
+                        if index < THREAT_DIMENSIONS {
+                            out.push(index);
+                        }
                     }
                 }
-            }
+            }};
         }
+        scan!(PieceType::Knight, queen_targets);
+        scan!(PieceType::Bishop, minor_slider_targets);
+        scan!(PieceType::Rook, minor_slider_targets);
+        scan!(PieceType::Queen, queen_targets);
     }
 }
 
