@@ -37,10 +37,22 @@ pub const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq 
 
 /// Per-ply state that a move cannot cheaply undo.
 ///
+/// **`#[repr(C)]` and the field order are upstream's, and both are load-bearing.** Rust's
+/// default representation reorders fields by alignment, which scatters the nine fields a
+/// move CARRIES FORWARD through the struct; upstream keeps them as a contiguous prefix so
+/// the forward copy is one run of bytes ending at `key`. With the order unpinned that copy
+/// is a set of disjoint field moves instead, and `offsetof(key)` -- the boundary the whole
+/// scheme is built on -- does not exist at all.
+///
+/// The one upstream field absent here is `previous`: rfish's chain is a contiguous `Vec`
+/// walked by index, so the pointer has nothing to point at. Everything else is upstream's
+/// sequence, field for field.
+///
 /// The fields divide into two groups, exactly as upstream's do. The first is COPIED
 /// forward when a move is made and updated incrementally; the second is RECOMPUTED from
 /// scratch. Adding a field to the first group without updating it in `do_move` leaves a
 /// stale value that no gate necessarily catches.
+#[repr(C)]
 #[derive(Clone, Debug)]
 pub struct StateInfo {
     // ---- copied forward and updated incrementally ----
@@ -56,14 +68,14 @@ pub struct StateInfo {
     pub non_pawn_key: [Key; COLOR_NB],
     /// Sum of each colour's non-pawn, non-king piece values.
     pub non_pawn_material: [Value; COLOR_NB],
+    /// The castling rights still available.
+    pub castling_rights: CastlingRights,
     /// Halfmove clock, in plies.
     pub rule50: i32,
     /// Plies since the last null move, bounding the repetition walk.
     pub plies_from_null: i32,
     /// The en-passant target, or [`Square::NONE`].
     pub ep_square: Square,
-    /// The castling rights still available.
-    pub castling_rights: CastlingRights,
 
     // ---- recomputed, never copied ----
     /// The position key.
