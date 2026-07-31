@@ -293,7 +293,7 @@ impl FeatureTransformer {
     /// read once and written once however many rows are folded into it, where applying one
     /// row at a time read and wrote all of it every time.
     fn fold_rows_i16(weights: &[i16], adds: &[u32], subs: &[u32], acc: &mut [i16]) {
-        for (t, chunk) in acc.chunks_exact_mut(TILE).enumerate() {
+        for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
             let off = t * TILE;
             let mut tile = [0i16; TILE];
             tile.copy_from_slice(chunk);
@@ -319,7 +319,7 @@ impl FeatureTransformer {
     /// [`FeatureTransformer::fold_rows_i16`] for the threat and pawn-pair rows, whose
     /// weights are one byte wide.
     fn fold_rows_i8(weights: &[i8], adds: &[u32], subs: &[u32], acc: &mut [i16]) {
-        for (t, chunk) in acc.chunks_exact_mut(TILE).enumerate() {
+        for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
             let off = t * TILE;
             let mut tile = [0i16; TILE];
             tile.copy_from_slice(chunk);

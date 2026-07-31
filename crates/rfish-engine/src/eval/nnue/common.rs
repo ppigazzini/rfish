@@ -119,8 +119,8 @@ impl<R: Read> NetReader<R> {
     pub fn i16s(&mut self, out: &mut [i16]) -> Result<(), NetError> {
         let mut buf = vec![0u8; out.len() * 2];
         self.read_exact(&mut buf)?;
-        for (o, c) in out.iter_mut().zip(buf.chunks_exact(2)) {
-            *o = i16::from_le_bytes([c[0], c[1]]);
+        for (o, c) in out.iter_mut().zip(buf.as_chunks::<2>().0) {
+            *o = i16::from_le_bytes(*c);
         }
         Ok(())
     }
@@ -143,8 +143,8 @@ impl<R: Read> NetReader<R> {
     pub fn i32s(&mut self, out: &mut [i32]) -> Result<(), NetError> {
         let mut buf = vec![0u8; out.len() * 4];
         self.read_exact(&mut buf)?;
-        for (o, c) in out.iter_mut().zip(buf.chunks_exact(4)) {
-            *o = i32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+        for (o, c) in out.iter_mut().zip(buf.as_chunks::<4>().0) {
+            *o = i32::from_le_bytes(*c);
         }
         Ok(())
     }
