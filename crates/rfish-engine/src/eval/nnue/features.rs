@@ -254,11 +254,16 @@ fn pseudo_attacks(pc: Piece, from: Square) -> Bitboard {
 
 /// Everything derived from the empty-board attack sets, built once.
 struct ThreatTables {
-    /// For each piece and origin, how many attack slots every earlier origin used.
-    offsets: [[u32; SQUARE_NB]; PIECE_NB],
-    /// For each piece, origin and destination, the destination's rank within the origin's
-    /// empty-board attack set.
-    rank_in_attacks: Box<[[[u8; SQUARE_NB]; SQUARE_NB]; PIECE_NB]>,
+    /// For each piece, origin and destination, the destination's slot within the piece's
+    /// block: how many attack slots every earlier origin used, PLUS the destination's rank
+    /// within this origin's empty-board attack set.
+    ///
+    /// The two were separate tables, and a threat index added one to the other at every
+    /// lookup — three loads behind three separately scaled bases. They are constants of each
+    /// other, so they are summed once here instead. ../zfish 662d82ef made the same merge.
+    /// `u16` holds it comfortably: the largest sum is a queen's, around 1400 against a
+    /// ceiling of 65535, and the builder asserts it rather than trusting the arithmetic.
+    slot: Box<[[[u16; SQUARE_NB]; SQUARE_NB]; PIECE_NB]>,
     /// For each (attacker, attacked) and whether `from < to`, the class base — or
     /// [`THREAT_DIMENSIONS`] when the pair is not encoded, which the caller drops.
     class_base: [[[u32; 2]; PIECE_NB]; PIECE_NB],
@@ -282,8 +287,7 @@ const ALL_PIECES: [Piece; 12] = [
 
 impl ThreatTables {
     fn build() -> ThreatTables {
-        let mut offsets = [[0u32; SQUARE_NB]; PIECE_NB];
-        let mut rank_in_attacks = vec![[[0u8; SQUARE_NB]; SQUARE_NB]; PIECE_NB].into_boxed_slice();
+        let mut slot = vec![[[0u16; SQUARE_NB]; SQUARE_NB]; PIECE_NB].into_boxed_slice();
         // Per piece: how many attack slots it uses in total, and where its block starts.
         let mut slots_per_piece = [0u32; PIECE_NB];
         let mut block_start = [0u32; PIECE_NB];
@@ -293,12 +297,14 @@ impl ThreatTables {
             let i = pc.index();
             let mut used = 0u32;
             for from in Square::all() {
-                offsets[i][from.index()] = used;
                 let attacks = pseudo_attacks(pc, from);
                 for to in Square::all() {
-                    // The rank of `to` is how many attacked squares come before it.
+                    // The rank of `to` is how many attacked squares come before it, and the
+                    // origin's own base is what every earlier origin already used.
                     let below = Bitboard((1u64 << to.index()) - 1);
-                    rank_in_attacks[i][from.index()][to.index()] = (attacks & below).count() as u8;
+                    let rank = (attacks & below).count();
+                    let combined = u16::try_from(used + rank).expect("a threat slot fits u16");
+                    slot[i][from.index()][to.index()] = combined;
                 }
                 // A pawn on the first or last rank cannot exist, so it contributes nothing
                 // and its slots are not reserved.
@@ -340,11 +346,7 @@ impl ThreatTables {
             }
         }
 
-        ThreatTables {
-            offsets,
-            rank_in_attacks: rank_in_attacks.try_into().expect("PIECE_NB rows"),
-            class_base,
-        }
+        ThreatTables { slot: slot.try_into().expect("PIECE_NB rows"), class_base }
     }
 }
 
@@ -374,8 +376,7 @@ pub fn threat_index(
     let attacked_o = (attacked.raw() ^ swap) as usize;
 
     t.class_base[attacker_o][attacked_o][usize::from(from_o < to_o)]
-        + t.offsets[attacker_o][from_o]
-        + u32::from(t.rank_in_attacks[attacker_o][from_o][to_o])
+        + u32::from(t.slot[attacker_o][from_o][to_o])
 }
 
 /// Every active threat feature, for one perspective.
