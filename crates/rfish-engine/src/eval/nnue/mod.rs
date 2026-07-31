@@ -97,7 +97,7 @@ impl LayerStack {
         let mut fc_1_out = [0i32; L3];
         let mut fc_2_out = [0i32; 1];
 
-        self.fc_0.propagate(transformed, &mut fc_0_out);
+        self.fc_0.propagate_sparse(transformed, &mut fc_0_out);
         // The squared and the plain activation of the SAME accumulator are concatenated:
         // the layer that follows sees both, which is where the network's non-linearity in
         // this stage comes from.
