@@ -117,6 +117,26 @@ impl IntoIterator for MoveList {
     }
 }
 
+/// Anything generation can append a move to.
+///
+/// Exists so the move picker can generate STRAIGHT into its own scored buffer. Before it,
+/// generation always built a fresh [`MoveList`] first, and a `MoveList` is a 256-entry
+/// array that safe Rust has to initialise: 512 bytes of `memset` per generation, 593k of
+/// them on a depth-9 bench, against a Stockfish that leaves the same buffer undefined and
+/// pays nothing. The trait is generic rather than dynamic, so each generator monomorphises
+/// into the sink it is given and the indirection costs nothing.
+pub trait MoveSink {
+    /// Append one move.
+    fn push_move(&mut self, m: Move);
+}
+
+impl MoveSink for MoveList {
+    #[inline(always)]
+    fn push_move(&mut self, m: Move) {
+        self.push(m);
+    }
+}
+
 /// Which subset of moves a generator produces.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GenType {
@@ -143,7 +163,7 @@ pub fn generate(pos: &Position, gt: GenType) -> MoveList {
 }
 
 /// Generate into an existing list, so the move picker can reuse one buffer per ply.
-pub fn generate_into(pos: &Position, gt: GenType, list: &mut MoveList) {
+pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
     let us = pos.side_to_move();
     let checkers = pos.checkers();
 
@@ -182,7 +202,7 @@ pub fn generate_into(pos: &Position, gt: GenType, list: &mut MoveList) {
     for pt in [PieceType::Knight, PieceType::Bishop, PieceType::Rook, PieceType::Queen] {
         for from in pos.pieces_of(us, pt) {
             for to in piece_attacks(pt, from, pos.occupied()) & target {
-                list.push(Move::new(from, to));
+                list.push_move(Move::new(from, to));
             }
         }
     }
@@ -206,20 +226,20 @@ pub fn generate_into(pos: &Position, gt: GenType, list: &mut MoveList) {
     }
 }
 
-fn generate_king_moves(pos: &Position, us: Color, target: Bitboard, list: &mut MoveList) {
+fn generate_king_moves<S: MoveSink>(pos: &Position, us: Color, target: Bitboard, list: &mut S) {
     let ksq = pos.king_square(us);
     for to in KING_ATTACKS[ksq.index()] & target {
-        list.push(Move::new(ksq, to));
+        list.push_move(Move::new(ksq, to));
     }
 }
 
-fn generate_castling(pos: &Position, us: Color, list: &mut MoveList) {
+fn generate_castling<S: MoveSink>(pos: &Position, us: Color, list: &mut S) {
     for cr in [CastlingRights::king_side(us), CastlingRights::queen_side(us)] {
         if pos.can_castle(cr) && !pos.castling_impeded(cr) {
             // The move encodes the ROOK's square as its destination -- upstream's
             // king-takes-rook convention, which is what makes Chess960 castling fit the
             // same 16 bits as every other move.
-            list.push(Move::typed(
+            list.push_move(Move::typed(
                 MoveType::Castling,
                 pos.king_square(us),
                 pos.castling_rook_square(cr),
@@ -229,12 +249,12 @@ fn generate_castling(pos: &Position, us: Color, list: &mut MoveList) {
     }
 }
 
-fn generate_pawn_moves(
+fn generate_pawn_moves<S: MoveSink>(
     pos: &Position,
     us: Color,
     gt: GenType,
     target: Bitboard,
-    list: &mut MoveList,
+    list: &mut S,
 ) {
     let them = !us;
     let up = Direction::pawn_push(us);
@@ -267,10 +287,10 @@ fn generate_pawn_moves(
 
         let back = opposite(up);
         for to in b1 {
-            list.push(Move::new(to.shift(back), to));
+            list.push_move(Move::new(to.shift(back), to));
         }
         for to in b2 {
-            list.push(Move::new(to.shift(back).shift(back), to));
+            list.push_move(Move::new(to.shift(back).shift(back), to));
         }
     }
 
@@ -296,7 +316,7 @@ fn generate_pawn_moves(
             for to in set {
                 let from = to.shift(back);
                 if gt != GenType::Quiets {
-                    list.push(Move::typed(MoveType::Promotion, from, to, PieceType::Queen));
+                    list.push_move(Move::typed(MoveType::Promotion, from, to, PieceType::Queen));
                 }
                 let underpromote = match gt {
                     GenType::Captures => enemy,
@@ -305,7 +325,7 @@ fn generate_pawn_moves(
                 };
                 if underpromote {
                     for promo in [PieceType::Rook, PieceType::Bishop, PieceType::Knight] {
-                        list.push(Move::typed(MoveType::Promotion, from, to, promo));
+                        list.push_move(Move::typed(MoveType::Promotion, from, to, promo));
                     }
                 }
             }
@@ -319,7 +339,7 @@ fn generate_pawn_moves(
         {
             let back = opposite(dir);
             for to in set & enemies {
-                list.push(Move::new(to.shift(back), to));
+                list.push_move(Move::new(to.shift(back), to));
             }
         }
 
@@ -331,7 +351,7 @@ fn generate_pawn_moves(
                 return;
             }
             for from in pawn_attacks_from(them, ep) & not_on_seventh {
-                list.push(Move::typed(MoveType::EnPassant, from, ep, PieceType::Knight));
+                list.push_move(Move::typed(MoveType::EnPassant, from, ep, PieceType::Knight));
             }
         }
     }
@@ -357,8 +377,27 @@ const fn opposite(d: Direction) -> Direction {
 pub fn generate_legal(pos: &Position) -> MoveList {
     let gt = if pos.in_check() { GenType::Evasions } else { GenType::NonEvasions };
     let mut list = generate(pos, gt);
-    list.retain(|m| pos.legal(m));
+    list.retain(|m| !needs_legality_test(pos, m) || pos.legal(m));
     list
+}
+
+/// Whether `m` could possibly be illegal, so the expensive test is worth running.
+///
+/// Only three classes can be: a piece that is pinned against its own king, a king move
+/// (which must not walk into an attack), and an en-passant capture (which removes two
+/// pieces from one rank and can expose the king along it). Everything else was already
+/// proven legal by generation, and upstream's `generate<LEGAL>` filters on exactly this
+/// predicate rather than testing every move.
+///
+/// Testing everything is not a small overcharge: `Position::legal` is one of the hottest
+/// functions in the engine, and a full pass over ~35 pseudo-legal moves runs it about
+/// seven times more often than it is needed.
+#[inline]
+fn needs_legality_test(pos: &Position, m: Move) -> bool {
+    let us = pos.side_to_move();
+    (pos.blockers_for_king(us) & pos.colored(us)).contains(m.from())
+        || m.from() == pos.king_square(us)
+        || m.move_type() == MoveType::EnPassant
 }
 
 /// True when the side to move has at least one legal move.
@@ -368,7 +407,7 @@ pub fn generate_legal(pos: &Position) -> MoveList {
 #[must_use]
 pub fn has_legal_move(pos: &Position) -> bool {
     let gt = if pos.in_check() { GenType::Evasions } else { GenType::NonEvasions };
-    generate(pos, gt).iter().any(|&m| pos.legal(m))
+    generate(pos, gt).iter().any(|&m| !needs_legality_test(pos, m) || pos.legal(m))
 }
 
 /// Count the leaf nodes of the game tree to `depth`.
@@ -600,7 +639,7 @@ mod tests {
     fn move_list_retains_in_order_and_bounds_its_capacity() {
         let mut list = MoveList::new();
         for i in 1..10u16 {
-            list.push(Move::from_raw(i));
+            list.push_move(Move::from_raw(i));
         }
         list.retain(|m| m.raw() % 2 == 0);
         assert_eq!(

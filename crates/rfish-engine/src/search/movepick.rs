@@ -16,7 +16,7 @@
 //!
 //! Golden: `Stockfish/src/movepick.cpp`.
 
-use crate::board::movegen::{GenType, MoveList, generate_into};
+use crate::board::movegen::{GenType, MoveSink, generate_into};
 use crate::board::position::Position;
 use crate::board::types::{Move, MoveType, Piece, PieceType, Square, Value, piece_value};
 
@@ -84,6 +84,15 @@ pub struct ScoredMove {
 /// keeps the capacity, so after the first visit to a slot there is neither an allocation
 /// nor an initialisation.
 pub type MoveBuf = Vec<ScoredMove>;
+
+impl MoveSink for MoveBuf {
+    /// Scored zero: every entry gets its real score from the scoring pass that follows,
+    /// which walks exactly the range this generation appended.
+    #[inline(always)]
+    fn push_move(&mut self, m: Move) {
+        self.push(ScoredMove { mv: m, score: 0 });
+    }
+}
 
 /// Quiet moves scoring at or below this are deferred behind the bad captures.
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
@@ -380,11 +389,9 @@ impl MovePicker {
 
     /// Generate onto the end of the existing buffer.
     fn generate_append(pos: &Position, gt: GenType, buf: &mut MoveBuf) {
-        let mut list = MoveList::new();
-        generate_into(pos, gt, &mut list);
-        for &m in list.as_slice() {
-            buf.push(ScoredMove { mv: m, score: 0 });
-        }
+        // Straight into the picker's own buffer. Going through a `MoveList` first cost a
+        // 512-byte zero-fill and a second pass over every move, per generation.
+        generate_into(pos, gt, buf);
     }
 
     fn score_captures(pos: &Position, h: &Histories, buf: &mut MoveBuf) {
