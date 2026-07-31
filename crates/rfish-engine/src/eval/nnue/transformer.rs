@@ -31,7 +31,7 @@
 //! `Stockfish/src/nnue/nnue_accumulator.cpp`.
 
 use crate::board::position::Position;
-use crate::board::types::{COLOR_NB, Color, Key};
+use crate::board::types::{COLOR_NB, Color, Key, SQUARE_NB, Square};
 
 use super::common::{FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
 use super::features::{
@@ -86,21 +86,52 @@ impl Default for Accumulator {
 ///
 /// One per worker. Keeping only the most recent is deliberate: in a search, consecutive
 /// evaluations are a parent and its child, or two siblings, and those differ by a handful of
-/// features. A deeper stack would cost memory for cases that do not arise.
+/// One perspective's accumulator and the feature sets that produced it.
+///
+/// Per PERSPECTIVE, not per position, because the two sides go stale independently: every
+/// feature a perspective sees is indexed against ITS OWN king square, so White's king moving
+/// invalidates everything White sees and nothing Black sees.
 #[derive(Clone, Debug)]
-struct Cached {
-    key: Key,
-    accumulation: [Vec<i16>; COLOR_NB],
-    psqt: [[i32; PSQT_BUCKETS]; COLOR_NB],
+struct Side {
+    /// The king square these were computed for, or `None` when the slot holds nothing.
+    king: Option<Square>,
+    acc: Vec<i16>,
+    psqt: [i32; PSQT_BUCKETS],
     /// The active sets that produced the above, SORTED so the next diff is a merge walk.
-    halfka: [Vec<u32>; COLOR_NB],
-    threats: [Vec<u32>; COLOR_NB],
+    halfka: Vec<u32>,
+    threats: Vec<u32>,
+}
+
+impl Side {
+    fn empty() -> Side {
+        Side {
+            king: None,
+            acc: Vec::new(),
+            psqt: [0; PSQT_BUCKETS],
+            halfka: Vec::new(),
+            threats: Vec::new(),
+        }
+    }
 }
 
 /// Scratch buffers an evaluation reuses, so a search does not allocate per node.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct EvalScratch {
-    cached: Option<Cached>,
+    /// The position the live slots hold, or [`EMPTY_KEY`] when they hold nothing.
+    key: Key,
+    /// The accumulator the search is walking, one per perspective.
+    live: [Side; COLOR_NB],
+    /// One slot per king square per perspective — upstream's accumulator refresh cache.
+    ///
+    /// A king move re-indexes EVERY feature that perspective sees, both orientations being
+    /// keyed off the king square, so the live slot after one is worth nothing and the diff
+    /// against it is the whole set. What this holds is the last accumulator computed for
+    /// each king square, which is a far closer starting point than the biases: the diff
+    /// against it is only the pieces that moved since, not all of them.
+    ///
+    /// Grown to 64 slots on first use rather than allocated up front, because a worker that
+    /// never evaluates should not pay for it.
+    cache: [Vec<Side>; COLOR_NB],
     /// Freshly computed sets, reused between calls to avoid reallocating.
     next_halfka: [Vec<u32>; COLOR_NB],
     next_threats: [Vec<u32>; COLOR_NB],
@@ -109,13 +140,34 @@ pub struct EvalScratch {
     subs: Vec<u32>,
 }
 
+/// The key of a slot no evaluation has filled yet. No real position hashes to it.
+const EMPTY_KEY: Key = Key::MAX;
+
+impl Default for EvalScratch {
+    fn default() -> EvalScratch {
+        EvalScratch {
+            key: EMPTY_KEY,
+            live: [Side::empty(), Side::empty()],
+            cache: [Vec::new(), Vec::new()],
+            next_halfka: [Vec::new(), Vec::new()],
+            next_threats: [Vec::new(), Vec::new()],
+            adds: Vec::new(),
+            subs: Vec::new(),
+        }
+    }
+}
+
 impl EvalScratch {
-    /// Forget the cached accumulator.
+    /// Forget every cached accumulator.
     ///
     /// Not needed for correctness — a diff against any position is still exact — but a
     /// caller that has jumped somewhere unrelated saves the work of a large diff.
     pub fn reset(&mut self) {
-        self.cached = None;
+        self.key = EMPTY_KEY;
+        for i in 0..COLOR_NB {
+            self.live[i] = Side::empty();
+            self.cache[i].clear();
+        }
     }
 }
 
@@ -377,8 +429,7 @@ impl FeatureTransformer {
 
         // The same position twice in a row -- a quiescence stand-pat after a main-search
         // evaluation, say -- needs no work at all.
-        let unchanged = scratch.cached.as_ref().is_some_and(|c| c.key == key);
-        if !unchanged {
+        if scratch.key != key {
             for p in Color::ALL {
                 Self::active_sets(
                     pos,
@@ -388,48 +439,75 @@ impl FeatureTransformer {
                 );
             }
 
-            // With no cached state, start from the biases and an empty active set: the
-            // "diff" is then every feature, which is exactly the from-scratch computation.
-            // One code path serves both, so there is no second implementation to disagree.
-            let c = scratch.cached.get_or_insert_with(|| Cached {
-                key,
-                accumulation: [self.biases.clone(), self.biases.clone()],
-                psqt: [[0; PSQT_BUCKETS]; COLOR_NB],
-                halfka: [Vec::new(), Vec::new()],
-                threats: [Vec::new(), Vec::new()],
-            });
             for p in Color::ALL {
                 let i = p.index();
-                let (acc, psqt) = (&mut c.accumulation[i], &mut c.psqt[i]);
+                let ksq = pos.king_square(p);
+
+                let refreshed = scratch.live[i].king != Some(ksq);
+                if refreshed {
+                    // This perspective's king has moved, so every feature it sees has been
+                    // re-indexed and the live slot is no longer a useful base. Take the last
+                    // accumulator computed for THIS king square instead. With none -- the
+                    // first evaluation from this square -- the base is the biases and an
+                    // empty active set, so the "diff" is every feature, which is exactly the
+                    // from-scratch computation. One code path serves both, so there is no
+                    // second implementation to disagree.
+                    if scratch.cache[i].is_empty() {
+                        scratch.cache[i].resize(SQUARE_NB, Side::empty());
+                    }
+                    let src = &scratch.cache[i][ksq.index()];
+                    let live = &mut scratch.live[i];
+                    if src.king.is_some() {
+                        live.acc.clone_from(&src.acc);
+                        live.psqt = src.psqt;
+                        live.halfka.clone_from(&src.halfka);
+                        live.threats.clone_from(&src.threats);
+                    } else {
+                        live.acc.clear();
+                        live.acc.extend_from_slice(&self.biases);
+                        live.psqt = [0; PSQT_BUCKETS];
+                        live.halfka.clear();
+                        live.threats.clear();
+                    }
+                    live.king = Some(ksq);
+                }
+
+                let live = &mut scratch.live[i];
                 self.diff_apply(
-                    &c.halfka[i],
+                    &live.halfka,
                     &scratch.next_halfka[i],
                     true,
-                    acc,
-                    psqt,
+                    &mut live.acc,
+                    &mut live.psqt,
                     &mut scratch.adds,
                     &mut scratch.subs,
                 );
                 self.diff_apply(
-                    &c.threats[i],
+                    &live.threats,
                     &scratch.next_threats[i],
                     false,
-                    acc,
-                    psqt,
+                    &mut live.acc,
+                    &mut live.psqt,
                     &mut scratch.adds,
                     &mut scratch.subs,
                 );
-                c.halfka[i].clone_from(&scratch.next_halfka[i]);
-                c.threats[i].clone_from(&scratch.next_threats[i]);
+                live.halfka.clone_from(&scratch.next_halfka[i]);
+                live.threats.clone_from(&scratch.next_threats[i]);
+
+                // Refresh this king square's slot only when the refresh path was taken.
+                // Writing it on every evaluation costs a copy per evaluation to make a rare
+                // case cheaper, which is the trade the per-ply stack already lost twice.
+                if refreshed {
+                    scratch.cache[i][ksq.index()].clone_from(live);
+                }
             }
-            c.key = key;
+            scratch.key = key;
         }
 
-        let cached = scratch.cached.as_ref().expect("just populated");
         let us = pos.side_to_move();
         let perspectives = [us, !us];
-        let psqt = (cached.psqt[perspectives[0].index()][bucket]
-            - cached.psqt[perspectives[1].index()][bucket])
+        let psqt = (scratch.live[perspectives[0].index()].psqt[bucket]
+            - scratch.live[perspectives[1].index()].psqt[bucket])
             / 2;
 
         let half = L1 / 2;
@@ -439,7 +517,7 @@ impl FeatureTransformer {
         // reason: the product is never negative, so there is no rounding direction to get
         // wrong.
         for (p, side) in perspectives.iter().enumerate() {
-            let (lo, hi) = cached.accumulation[side.index()].split_at(half);
+            let (lo, hi) = scratch.live[side.index()].acc.split_at(half);
             let out = &mut output[half * p..half * (p + 1)];
             for ((o, &a), &b) in out.iter_mut().zip(lo.iter()).zip(hi.iter()) {
                 let sum0 = a.clamp(0, FT_MAX) as u16;
