@@ -47,7 +47,13 @@ jobs:
       - name: Read the pinned toolchain
         id: rt
         shell: bash
-        run: echo "channel=$(grep -m1 -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+        # POSIX `sed`, not `grep -oP`. `-P` is a GNU extension: macOS ships BSD grep, which
+        # rejects the flag outright, and Git Bash on Windows is often built without PCRE. This
+        # step runs on all three, so the portable form is the only correct one.
+        run: |
+          channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
+          test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
