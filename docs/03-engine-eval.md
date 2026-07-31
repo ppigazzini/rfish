@@ -117,7 +117,15 @@ parent means COPYING the parent's 4 KiB accumulator into the child's slot first,
 evaluation. The single slot pays nothing at all in the common case, because a depth-first
 search evaluates a node and then its child, and the slot already holds the parent; it loses
 only on a subtree return. Copying every time to make the bad case cheap cost more than the
-bad case did. Do not re-derive this.
+bad case did.
+
+It was then tried a SECOND time, with the obvious objection to the first attempt answered:
+the fold already loads every entry and stores every entry, so having it load from the parent
+and store to the child absorbs the copy at no instruction cost, and no separate `clone_from`
+is needed. That version is also worse — **3,528M to 3,806M**. Two independent implementations
+losing says the effect is real and not an artefact of either: the single slot holds the
+parent on the descent, which is the common case, and the stack pays to touch two 4 KiB
+accumulators per evaluation where the slot touches one. Do not re-derive this a third time.
 
 ### What the gap is now
 
@@ -149,6 +157,7 @@ attempt starts past them rather than at them.
 | pairing non-zero inputs to sum two products in `i16` | 3,673M → 4,298M |
 | multiplying the sparse layer in the 16-bit domain | 3,673M → 3,757M |
 | folding both feature kinds in a single sweep | 3,599M → 3,800M |
+| per-ply stack again, with the parent read fused into the fold | 3,528M → 3,806M |
 | fold tile of 32 / of 256 | 4,093M / 4,037M against 3,599M at 128 |
 
 The last four all say the same thing: the sparse layer's inner loop and the fold are

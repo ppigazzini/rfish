@@ -303,6 +303,68 @@ looks like, and the spine gap is nonetheless dominated by structural defects lik
 allocator rather than by the checks. Chase the structure first; the checks are the last few
 per cent, not the first twenty.
 
+### Vectorisation: what actually governs it here
+
+The links above are about allocations and bounds checks. Those were the spine's problem and
+they are solved. They are **not** the evaluation's problem, and a reader who arrives here
+looking for why the NNUE is slower than upstream will not find it above. What follows is
+measured on this codebase rather than cited.
+
+**First: look at the disassembly before theorising.** The assumption that safe Rust "cannot
+vectorise" is false here and cost time. Built at `-C target-cpu=native` on a Zen 4 box, the
+accumulator fold emits exactly what a hand-written kernel would:
+
+```
+vmovdqu64 (%rcx),%zmm3 ... vpaddw 0x40(%rsi,%rdi,2),%zmm2,%zmm2
+```
+
+four 512-bit registers carrying a 128-entry tile, one `vpaddw` per 32 entries. `objdump -d`
+and count `%zmm` / `%ymm` / `%xmm` in the hot symbol; do that first, every time.
+
+**What was measured to BLOCK widening:**
+
+- **Loop-carried state.** Pairing non-zero inputs through an `Option<(usize, i16)>` carried
+  between iterations cost **+625M instructions** — the arithmetic was strictly cheaper and
+  the loop stopped vectorising. Anything that makes iteration *n* depend on iteration *n-1*
+  ends the discussion.
+- **A `&mut [T]` output.** The compiler must assume stores through it alias the weights
+  being read, and spills the accumulators every iteration. A `&mut [T; N]` with `N` a const
+  generic does not have that problem: **-269M**.
+- **Indexing where a chunk would do.** `w[i * N..i * N + N]` costs a multiply and a bounds
+  check per iteration; `chunks_exact(N)` zipped against the driver gives the same rows with
+  neither: **-20M**.
+
+**What was measured NOT to help,** all of it reshaping code to look more like upstream's
+kernels: multiplying in the 16-bit domain (+84M), folding two weight kinds in one sweep
+(+201M), zero-skipping in groups of four as `vpdpbusd` does (+1015M). **The shapes upstream
+chose are the ones its instructions reward, not the ones the autovectoriser rewards.** Port
+upstream's *algorithm*; do not port the register-level shape it wrote for an instruction
+this toolchain will not emit.
+
+**Tile widths are measured, never reasoned.** 32 / 64 / 128 / 256 gave 4,093M / 3,673M /
+3,598M / 4,037M — not monotonic in either direction, and the peak is tier-specific.
+
+### The ceiling, and where it comes from
+
+Upstream's first affine layer is one `vpdpbusd` per four input bytes. There is no way to
+reach that instruction from this project's constraints, and three separate attempts to
+recover its arithmetic in scalar form all lost (above). This is not a limit of Rust the
+language — it is a limit of the intersection this port has chosen:
+
+| route to explicit SIMD | safe? | stable? | usable here |
+|---|---|---|---|
+| `std::arch` intrinsics | **no** — every intrinsic is an `unsafe fn` | yes | no, `unsafe_code = "forbid"` |
+| `std::simd` (`portable_simd`) | **yes** — no `unsafe` needed | **no** — nightly only | no, `rust-toolchain.toml` pins stable |
+| autovectorised scalar loops | yes | yes | **this is what rfish uses** |
+
+The sibling ports are not doing something cleverer with the same tools. ../zfish writes
+upstream's kernels directly — 173 `@Vector` uses across ten NNUE files, plus per-ISA files
+like `nnue_affine_vnni.zig` — because Zig has portable SIMD vectors in the *safe, stable*
+language. Rust's equivalent exists and needs no `unsafe`, but is nightly. That single
+difference, not code quality, is why a Zig port sits near upstream on the evaluation while
+this one sits at 1.8x. Anyone comparing the two engines' NNUE throughput should read that
+table first.
+
 **What is deliberately NOT on this list:** `smallvec`, `arrayvec`, `bumpalo` and every other
 allocation crate. They are the standard answer to §9 and rfish cannot use any of them — the
 engine crate has zero dependencies, and that is a reviewed property. The workhorse pattern
