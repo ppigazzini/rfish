@@ -178,6 +178,21 @@ move **excluded**, at half depth and a zero window. Three outcomes:
   whole subtree can be skipped;
 - neither, at a node expected to fail high → **reduce** the move in favour of the others.
 
+### What the two paths that do NOT extend leave behind
+
+**Multi-cut also feeds the correction history.** The excluded-move search returning above
+beta says the static evaluation was low, and outside check that difference is recorded the
+way a completed search records one. Two details are upstream's and are load-bearing: the
+bonus is weighted by the SINGULAR depth — the depth the evidence came from, not the depth of
+the node handing it back — and it is clamped to a quarter of `CORRECTION_LIMIT` at both
+ends, so one multi-cut cannot move a table entry as far as a real search would.
+`multicut_correction_bonus` is a free function precisely so a test can pin both boundaries;
+a node count moves when any term changes but cannot say which one did.
+
+**The reduction is a single -3.** It used to be two arms — 3 when the transposition move was
+assumed to fail high over beta, 2 when the node was merely a cut node. Upstream collapsed
+them, so either condition now reduces by 3 and the -2 arm no longer exists.
+
 Two bugs came out of adding it, and both are worth knowing because neither was caught by
 anything except running the thing:
 

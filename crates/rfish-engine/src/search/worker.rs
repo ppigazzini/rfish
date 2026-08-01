@@ -98,6 +98,22 @@ fn value_draw(nodes: u64) -> Value {
     VALUE_DRAW - 1 + (nodes & 0x2) as Value
 }
 
+/// The correction-history bonus a multi-cut records (upstream `c5aef2bf1`'s predecessor).
+///
+/// A fail high above the static evaluation is evidence the evaluation was low, and how much
+/// evidence depends on the depth it came from — the SINGULAR depth, which is where the
+/// search happened, not the depth of the node handing the result back.
+///
+/// A free function rather than a closure over the stack, so the arithmetic can be pinned by
+/// a test at the boundaries it turns on: a node count moves when any term here changes but
+/// cannot say WHICH term moved, and cannot tell a transcription slip from an intended
+/// retune at all.
+#[inline]
+fn multicut_correction_bonus(value: Value, static_eval: Value, singular_depth: i32) -> i32 {
+    ((value - static_eval) * singular_depth * 177 / 1024)
+        .clamp(-CORRECTION_LIMIT / 4, CORRECTION_LIMIT / 4)
+}
+
 /// How the search reports progress.
 ///
 /// Implemented by the shell as UCI `info` lines, and by tests as a no-op or a recorder.
@@ -1818,9 +1834,11 @@ impl SearchWorker {
                     // found more here than the evaluation said was available, so feed the
                     // difference back the way a completed search would.
                     if !self.stack[si].in_check && v > self.stack[si].static_eval {
-                        let bonus = ((v - self.stack[si].static_eval) * singular_depth * 177
-                            / 1024)
-                            .clamp(-CORRECTION_LIMIT / 4, CORRECTION_LIMIT / 4);
+                        let bonus = multicut_correction_bonus(
+                            v,
+                            self.stack[si].static_eval,
+                            singular_depth,
+                        );
                         self.update_correction_history(si, bonus);
                     }
 
@@ -2979,5 +2997,26 @@ mod tests {
         // At depth one the root's twenty moves are made, plus whatever quiescence needs.
         // The start position has no captures, so quiescence makes none.
         assert_eq!(r.nodes, 20);
+    }
+
+    #[test]
+    fn the_multicut_correction_bonus_saturates_at_a_quarter_of_the_limit() {
+        // Both ends of the clamp. A quarter of CORRECTION_LIMIT is the cap upstream chose,
+        // and /4 read as /2 would let a single multi-cut move the table twice as far.
+        let cap = CORRECTION_LIMIT / 4;
+        assert_eq!(multicut_correction_bonus(30_000, 0, 64), cap);
+        assert_eq!(multicut_correction_bonus(0, 30_000, 64), -cap);
+    }
+
+    #[test]
+    fn the_multicut_correction_bonus_scales_with_the_singular_depth() {
+        // The excess is measured from the static evaluation, and the depth it is weighted by
+        // is the SINGULAR depth. Below the clamp the formula is exact, so pin it there.
+        assert_eq!(multicut_correction_bonus(100, 0, 1), 100 * 177 / 1024);
+        assert_eq!(multicut_correction_bonus(100, 0, 2), 200 * 177 / 1024);
+        // Equal evaluation and value is no evidence at all.
+        assert_eq!(multicut_correction_bonus(50, 50, 8), 0);
+        // 177/1024 and not 177/1000: the shift is a power of two.
+        assert_ne!(multicut_correction_bonus(1000, 0, 1), 1000 * 177 / 1000);
     }
 }
