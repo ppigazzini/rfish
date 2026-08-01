@@ -152,6 +152,35 @@ inherit it.
 
 **A perf number without its tier is not a number.**
 
+## Resyncing to a newer upstream
+
+Four things this repository had to get right the last time the pin moved, each of which
+would have produced a green gate over a wrong engine:
+
+- **Land one upstream commit per commit, and check each against upstream built at THAT
+  commit.** Not against the old pin, and not only at the end. Two search changes landed
+  together cannot be attributed when the node count is wrong, and building the oracle once
+  at the end hides which change moved what.
+- **A commit with no counterpart is a RESULT, not a gap to skip silently.** Of the five
+  commits in the last sync, two had no counterpart here — LoongArch intrinsics and a shared
+  memory implementation rfish cannot have — and one was already equivalent. Record all three
+  in the commit body; a reader who cannot tell "ported" from "did not apply" has to redo the
+  analysis.
+- **Rebuild the oracle before trusting a differential gate.** `nnue-check` and `tb` compare
+  against `../Stockfish/src/stockfish`, and a binary left over from the previous pin
+  compares the new engine against the old upstream while reporting a clean pass.
+- **A golden pins THIS engine, so a golden alone cannot see a divergence from upstream.**
+  The last sync's `search.golden` had recorded a `bestmove` with no ponder move for years,
+  green every run, while upstream printed one — `extract_ponder_from_tt` had never been
+  ported. Re-deriving a golden records whatever the engine now does. Before accepting one,
+  drive the same case through the ORACLE and diff.
+
+**Driving the oracle needs a driver that waits.** Upstream runs `go` on a separate thread and
+treats end-of-input as `quit`, so a script that writes every line at once and closes stdin
+truncates the search and collects a `bestmove` from a search that never finished — which
+reads as a divergence that is not there. Send a line, and after a `go` read until `bestmove`
+before sending the next.
+
 ## Comparability: what must be held equal before a ratio means anything
 
 A ledger entry is a ratio against an upstream build, so it is a statement about the two
