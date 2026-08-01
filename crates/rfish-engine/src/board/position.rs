@@ -1579,60 +1579,87 @@ impl Position {
             result = !result;
 
             // Take with the cheapest attacker, then let the x-ray behind it join in.
-            let mut taken = false;
-            for pt in PieceType::REAL {
-                let candidates = stm_attackers & self.pieces(pt);
-                if candidates.is_empty() {
-                    continue;
-                }
-                if pt == PieceType::King {
-                    // The king may only take when the other side has run out: if it has an
-                    // attacker left, taking would be illegal, so the side that was about to
-                    // capture with its king loses the exchange instead.
-                    //
-                    // No value test here. Upstream has none, and adding one would matter:
-                    // the king's tabulated value is zero, so `0 - swap` is negative for
-                    // every winning exchange and would break out of the loop with the
-                    // wrong answer.
-                    if (attackers & !self.colored(stm)).any() {
-                        result = !result;
-                    }
-                    return result;
-                }
-                swap = piece_value(Piece::new(Color::White, pt)) - swap;
+            //
+            // Written as a chain rather than as a loop over `PieceType::REAL`, which is the
+            // shape upstream uses and the shape the cost says to use: the loop form tested
+            // every type against a runtime `pt`, dispatched the x-ray update through a
+            // `match` on it, looked the piece value up in a table it could not fold, and
+            // carried a flag to tell "took something" apart from "ran out". Each arm below
+            // knows its own piece type at compile time, so the value is a constant and the
+            // x-ray update is the one line that arm needs. The ORDER is upstream's and is
+            // load-bearing: cheapest attacker first, king last.
+            let bb = stm_attackers & self.pieces(PieceType::Pawn);
+            if bb.any() {
+                swap = piece_value(Piece::new(Color::White, PieceType::Pawn)) - swap;
                 if swap < i32::from(result) {
-                    // Taking loses the exchange, so this side stops here.
                     return result;
                 }
-                occupied ^= Bitboard::from_square(candidates.lsb());
-                match pt {
-                    PieceType::Pawn | PieceType::Bishop => {
-                        attackers |= bishop_attacks(to, occupied)
-                            & (self.pieces(PieceType::Bishop) | self.pieces(PieceType::Queen));
-                    }
-                    PieceType::Rook => {
-                        attackers |= rook_attacks(to, occupied)
-                            & (self.pieces(PieceType::Rook) | self.pieces(PieceType::Queen));
-                    }
-                    PieceType::Queen => {
-                        // Each ray must be matched against the pieces that can travel it.
-                        // A single `queen_attacks` intersected with every slider would
-                        // admit a BISHOP standing on a rook ray as an attacker of a square
-                        // it cannot reach — which reads as an extra defender and flips the
-                        // verdict of the whole exchange.
-                        attackers |= (bishop_attacks(to, occupied)
-                            & (self.pieces(PieceType::Bishop) | self.pieces(PieceType::Queen)))
-                            | (rook_attacks(to, occupied)
-                                & (self.pieces(PieceType::Rook) | self.pieces(PieceType::Queen)));
-                    }
-                    _ => {}
+                occupied ^= Bitboard::from_square(bb.lsb());
+                attackers |= bishop_attacks(to, occupied)
+                    & (self.pieces(PieceType::Bishop) | self.pieces(PieceType::Queen));
+                continue;
+            }
+            let bb = stm_attackers & self.pieces(PieceType::Knight);
+            if bb.any() {
+                swap = piece_value(Piece::new(Color::White, PieceType::Knight)) - swap;
+                if swap < i32::from(result) {
+                    return result;
                 }
-                taken = true;
-                break;
+                // A knight opens no ray, so nothing joins behind it.
+                occupied ^= Bitboard::from_square(bb.lsb());
+                continue;
             }
-            if !taken {
-                break;
+            let bb = stm_attackers & self.pieces(PieceType::Bishop);
+            if bb.any() {
+                swap = piece_value(Piece::new(Color::White, PieceType::Bishop)) - swap;
+                if swap < i32::from(result) {
+                    return result;
+                }
+                occupied ^= Bitboard::from_square(bb.lsb());
+                attackers |= bishop_attacks(to, occupied)
+                    & (self.pieces(PieceType::Bishop) | self.pieces(PieceType::Queen));
+                continue;
             }
+            let bb = stm_attackers & self.pieces(PieceType::Rook);
+            if bb.any() {
+                swap = piece_value(Piece::new(Color::White, PieceType::Rook)) - swap;
+                if swap < i32::from(result) {
+                    return result;
+                }
+                occupied ^= Bitboard::from_square(bb.lsb());
+                attackers |= rook_attacks(to, occupied)
+                    & (self.pieces(PieceType::Rook) | self.pieces(PieceType::Queen));
+                continue;
+            }
+            let bb = stm_attackers & self.pieces(PieceType::Queen);
+            if bb.any() {
+                swap = piece_value(Piece::new(Color::White, PieceType::Queen)) - swap;
+                if swap < i32::from(result) {
+                    return result;
+                }
+                occupied ^= Bitboard::from_square(bb.lsb());
+                // Each ray must be matched against the pieces that can travel it. A single
+                // `queen_attacks` intersected with every slider would admit a BISHOP
+                // standing on a rook ray as an attacker of a square it cannot reach — which
+                // reads as an extra defender and flips the verdict of the whole exchange.
+                attackers |= (bishop_attacks(to, occupied)
+                    & (self.pieces(PieceType::Bishop) | self.pieces(PieceType::Queen)))
+                    | (rook_attacks(to, occupied)
+                        & (self.pieces(PieceType::Rook) | self.pieces(PieceType::Queen)));
+                continue;
+            }
+
+            // Only the king is left. It may take only when the other side has run out: with
+            // an attacker still standing, taking would be illegal, so the side that was
+            // about to capture with its king loses the exchange instead.
+            //
+            // No value test here. Upstream has none, and adding one would matter: the
+            // king's tabulated value is zero, so `0 - swap` is negative for every winning
+            // exchange and would leave with the wrong answer.
+            if (attackers & !self.colored(stm)).any() {
+                result = !result;
+            }
+            return result;
         }
         result
     }
