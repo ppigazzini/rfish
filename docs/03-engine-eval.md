@@ -287,12 +287,32 @@ declined, and it is bounded by the ~230M the whole threat machinery costs.
 Below that: the first affine layer would have to match `vpdpbusd`, which `std::simd` has no
 operation for, so a further constraint would have to go before parity is even the right word.
 
-What remains splits roughly three ways. The first affine layer, where upstream's four-way
-byte dot does in one instruction what takes four here — four separate attempts to recover
-that in scalar form are in the table above and all of them lost. The accumulator fold, now
-within about a third of upstream's incremental update. And recomputing the active set at
-all, worth roughly 300M, which is the per-move delta this section declined to write and the
-only one of the three that a code change could still remove.
+### What remains, measured per symbol rather than estimated
+
+The "roughly 300M for recomputing the active set" this section used to carry was an
+estimate. A per-symbol profile of the PGO build against the PGO oracle, both at avx2 and
+startup subtracted, splits the evaluation gap as:
+
+| | rfish | upstream |
+|---|---|---|
+| affine layers | ~375M | ~165M (`Eval::evaluate`) |
+| accumulator update and transform | ~610M | ~411M (`AccumulatorStack::evaluate_side`) |
+| building the threat and pawn-pair set | ~158M | 0 — it has no equivalent |
+
+So the three ways it splits are the first affine layer, where upstream's four-way byte dot
+does in one instruction what takes four here and four scalar attempts to recover it have all
+lost; the accumulator fold, now within about a third of upstream's incremental update; and
+recomputing the active set, which is **~158M and not ~300M**. Quote the measured row.
+
+**The per-move delta is a REDESIGN, not an edit, and the reason is the refresh cache.**
+Upstream can apply a delta because its accumulator is a stack that moves in lockstep with
+`do_move`/`undo_move`, so the base is always the parent. rfish keys its accumulator on the
+position instead, and diffs against whatever the live slot holds — which after a king move is
+a *cache* slot for that king square, a different board, and a different board PER PERSPECTIVE.
+A delta therefore cannot be shared between the two perspectives in exactly the case the cache
+exists to serve, and the per-ply stack that would fix that has been measured twice and lost
+twice (see the falsified table above). Anyone taking this on should cost the bookkeeping
+first: the prize is the ~158M row, not the whole evaluation gap.
 
 ### The search spine is a SEPARATE gap, and it is not closed
 
