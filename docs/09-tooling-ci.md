@@ -317,6 +317,75 @@ The oracle for that job is built AT THE PIN, in `../Stockfish/src`, because that
 gates look and because `find_oracle` checks the SHA — a build of master is rejected rather
 than silently compared against.
 
+### The call-count fingerprint
+
+`cargo xtask fingerprint` asks the question none of the four above can: not "does rfish
+compute upstream's numbers" but **"does it get there by calling what upstream calls, as
+often"**. Every other differential in this tree compares VALUES — the bench anchor, the
+goldens, `nnue-check`, `upstream-nodes` — and every one of them passes over a state divergence
+that happens not to move a number on the positions it drives.
+
+It found two on its first run, both in how a move is rendered for output, and both invisible
+to every value gate:
+
+- the PV reporter walked a **cloned position**, playing each PV move to name the next, and
+  truncated the line at the first move that failed a legality check. Upstream renders against
+  the root — `UCIEngine::move(m, pos.is_chess960())` — and prints the stored line whole.
+- `bestmove … ponder X` named the ponder move in the position **after** the best move, cloning
+  and playing it first. Upstream names it against the root too.
+
+Together: 1492 position clones and 1492 `do_move`/`undo_move` pairs per `bench 16 1 8` that
+upstream never performs, and a PV that could come out shorter than upstream prints it. The
+node count, all 51 `bestmove` lines, all 51 ponder moves and all 394 `info` lines were
+identical throughout — which is exactly why nothing else could see it.
+
+**Why call counts and not cost.** A call count is inlining-immune at the callee: it does not
+care how the callee was reached, only that it was. That is what lets a rustc tree be compared
+against a clang one at all, where a cost claim has to argue attribution first. callgrind also
+simulates rather than samples, so the answer is deterministic — which matters on a box where
+NPS cannot settle a few per cent.
+
+It is **not** immune at the caller, and that limit is load-bearing: upstream inlines
+`legal`, `gives_check`, `see_ge` and `undo_move` into its search templates under LTO, so its
+symbol counts omit every inlined site. Those four are therefore NOT gated, and
+`tools/fingerprint_groups.tsv` records why with the numbers. The proof needs no second
+measurement: upstream reports `do_move` 163345 and `undo_move` 68736 over the same bench, and
+every do_move in a search is undone, so 94609 of its undo_moves were inlined away. Gating
+them would assert that two compilers inline identically, which is not a fact about this port.
+
+A group whose pattern matches nothing on one side is a **MISS and fails**, never a zero — a
+symbol the compiler inlined away would otherwise read as agreement at zero-versus-zero
+forever. Both failure modes were proved rather than assumed: reinstating the ponder clone
+turns `do_move` red at exactly +49, and a pattern matching nothing reports MISS; the step
+exits 1 naming both.
+
+It is ~50x slower than the bench it profiles, so it stays out of `parity` and runs in the
+weekly lane, which already builds an oracle.
+
+### An oracle must be stamped, and the pair must share a net
+
+`cargo xtask oracle` writes the upstream SHA it extracted into `.rfish-oracle-base` beside the
+tree, and `perf` and `fingerprint` refuse an oracle whose stamp is not `UPSTREAM_BASE`.
+
+**This caught a real one.** The oracle directory is built once, reused, and lives OUTSIDE the
+repository, so advancing the pin leaves it untouched and nothing about its filename changes.
+After the `c5aef2bf1` sync the avx2 oracle here was still the `23cf5d82` tree — it benched
+3184328 where the pin benches 2508687 — and every measurement taken against it compared this
+port to an upstream it is not a translation of. The instruction differential would eventually
+have noticed, because it compares node counts before quoting a ratio; eventually is the
+problem, since that check only runs when callgrind does, so at `--tier native` or on a box
+without valgrind the wall-clock A/B ran against the wrong binary and reported a ratio with no
+warning at all.
+
+Both commands also refuse a pair that loaded **different nets**, for the same reason both
+sibling ports added that check: a node count is a property of the net as much as of the
+search, and a mismatch fails in the direction that looks like a porting bug.
+
+`cargo xtask build --arch <tier>` and `perf --tier <tier>` now resolve through **one** table.
+`--arch` took its argument as a raw `-C target-cpu`, so the tier vocabulary every measurement
+is quoted in — `sse41`, `avx2`, `native` — was the one vocabulary it did not accept, and
+`--arch avx2` died inside rustc naming neither the flag nor the tier.
+
 `rfish_fuzz.yml` is a second workflow, on a nightly schedule rather than on push. It runs
 `cargo xtask fuzz`, which drives three harnesses: mutated UCI text at the shipped binary,
 random legal positions through the real search in-process, and mutated table bytes at the

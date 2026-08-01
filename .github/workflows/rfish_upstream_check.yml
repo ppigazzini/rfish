@@ -144,3 +144,17 @@ jobs:
       - run: cargo xtask tb
       - run: cargo xtask golden-audit
       - run: cargo xtask upstream-nodes --positions 25 --depth 8
+
+      # The call-count fingerprint: not "does rfish compute upstream's numbers" but "does it
+      # get there by calling what upstream calls, as often". Every check above compares
+      # VALUES and each passes over a state divergence that happens not to move one; this
+      # found two on its first run. It needs an oracle AND valgrind, and it is ~50x slower
+      # than the bench it profiles, which is why it lives here and not in `parity`.
+      #
+      # `cargo xtask oracle` builds its own tree beside the workspace, stamped with the SHA
+      # it was extracted at -- the step below refuses to measure against an oracle that is
+      # not at the pin, so this is not a duplicate of the build above.
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      - run: cargo xtask oracle --tier avx2
+      - run: cargo xtask fingerprint --tier avx2
