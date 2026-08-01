@@ -199,13 +199,29 @@ pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
     };
 
     generate_pawn_moves(pos, us, gt, target, list);
-    for pt in [PieceType::Knight, PieceType::Bishop, PieceType::Rook, PieceType::Queen] {
-        for from in pos.pieces_of(us, pt) {
-            for to in piece_attacks(pt, from, pos.occupied()) & target {
-                list.push_move(Move::new(from, to));
+
+    // Written out per piece type rather than looped over one, so `piece_attacks` resolves to
+    // that type's own kernel at each site. Through a RUNTIME piece type the match inside it
+    // cannot fold, and what is left is an indirect branch taken once per attacker that the
+    // predictor misses -- the same reason the NNUE threat scan is written out, where
+    // ../zfish 24883582 measured 193K misses over its bench from one such call.
+    //
+    // The ORDER is the loop's and must stay: two generators that emit the same set in a
+    // different sequence search different trees, because the move picker's partial sort
+    // leaves equal-scored moves in generation order.
+    macro_rules! generate_for {
+        ($pt:expr) => {{
+            for from in pos.pieces_of(us, $pt) {
+                for to in piece_attacks($pt, from, pos.occupied()) & target {
+                    list.push_move(Move::new(from, to));
+                }
             }
-        }
+        }};
     }
+    generate_for!(PieceType::Knight);
+    generate_for!(PieceType::Bishop);
+    generate_for!(PieceType::Rook);
+    generate_for!(PieceType::Queen);
 
     // The king is generated last, and never restricted to the check-answering target: it
     // escapes by leaving, which no target mask describes.
