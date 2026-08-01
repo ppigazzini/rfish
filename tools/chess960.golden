@@ -1,5 +1,4 @@
 rfish 0.1.0 by the Stockfish developers (see AUTHORS)
-info string Network replica 1: Local memory.
 
  +---+---+---+---+---+---+---+---+
  | b | q | n | b |   | r | k | r | 8
@@ -23,6 +22,7 @@ info string Network replica 1: Local memory.
 Fen: bqnb1rkr/pp3ppp/3ppn2/2p5/5P2/P2P4/NPP1P1PP/BQ1BNRKR w HFhf - 2 9
 Key: 07EA21D9A952A6B4
 Checkers: 
+info string Network replica 1: Local memory.
 b2b3: 25
 c2c3: 25
 e2e3: 25

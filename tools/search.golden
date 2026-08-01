@@ -15,6 +15,7 @@ info depth 12 seldepth 15 multipv 1 score cp 25 nodes 11079 tbhits 0 pv e2e4 e7e
 info depth 13 seldepth 19 multipv 1 score cp 25 nodes 14153 tbhits 0 pv e2e4 e7e5 g1f3 b8c6 f1b5 g8e7 b1c3 a7a6 b5c6 e7c6 d2d4 e5d4 f3d4
 info depth 14 seldepth 23 multipv 1 score cp 28 lowerbound nodes 20002 tbhits 0 pv e2e4 e7e5
 bestmove e2e4 ponder e7e5
+info string Network replica 1: Local memory.
 info depth 1 seldepth 2 multipv 1 score mate 1 nodes 15 tbhits 0 pv a1a8
 info depth 2 seldepth 2 multipv 1 score mate 1 nodes 30 tbhits 0 pv a1a8
 info depth 3 seldepth 2 multipv 1 score mate 1 nodes 45 tbhits 0 pv a1a8
@@ -22,6 +23,7 @@ info depth 4 seldepth 2 multipv 1 score mate 1 nodes 60 tbhits 0 pv a1a8
 info depth 5 seldepth 2 multipv 1 score mate 1 nodes 75 tbhits 0 pv a1a8
 info depth 6 seldepth 2 multipv 1 score mate 1 nodes 90 tbhits 0 pv a1a8
 bestmove a1a8
+info string Network replica 1: Local memory.
 info depth 1 seldepth 4 multipv 1 score cp -2 nodes 7 tbhits 0 pv e4d5
 info depth 2 seldepth 3 multipv 1 score cp 11 nodes 25 tbhits 0 pv e4d5
 info depth 3 seldepth 4 multipv 1 score cp 6 nodes 65 tbhits 0 pv e4d5 e8d7 e1d1

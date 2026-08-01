@@ -2837,66 +2837,92 @@ impl SearchWorker {
         tt: &TranspositionTable,
         sink: &mut dyn InfoSink,
     ) {
-        let bound = if self.root_moves[self.pv_index].score_lowerbound {
-            Some(true)
-        } else if self.root_moves[self.pv_index].score_upperbound {
-            Some(false)
-        } else {
-            None
-        };
-
-        // With the root in the tables, show what the tables say. A mate score is left alone:
-        // a forced mate is more specific than "this is a win", so it outranks the verdict.
-        let raw = self.root_moves[self.pv_index].uci_score;
-        let is_tb_score = self.root_in_tb && raw.abs() < VALUE_MATE_IN_MAX_PLY;
-        let mut score = if is_tb_score { self.root_moves[self.pv_index].tb_score } else { raw };
-
-        // A proven win whose PV stops in mid-air tells the operator nothing about how it is
-        // won. Walk it out to mate while the tables can still vouch for every move.
-        if is_decisive(score)
-            && score.abs() < VALUE_MATE_IN_MAX_PLY
-            && (bound.is_none() || is_tb_score)
-        {
-            self.syzygy_extend_pv(&mut score);
-        }
-
-        let rm = &self.root_moves[self.pv_index];
-        // Real milliseconds even under `nodestime`: a GUI reading `time` wants wall clock,
-        // and the node budget is the engine's business rather than the GUI's.
+        // EVERY multipv line, not just the one that finished. Upstream re-prints the whole
+        // set each time it reports, so a GUI in MultiPV mode sees all of them at every
+        // depth; reporting only `pv_index` published the last line and nothing else.
+        let lines = self.multi_pv.min(self.root_moves.len());
         let elapsed = self.budget.elapsed_time().max(1) as u64;
         let nodes = self.shared.node_count().max(self.nodes);
-        // Render the PV against a copy, because Chess960 castling notation depends on the
-        // position each move is played in.
-        let mut walk = self.pos.clone();
-        let mut pv = Vec::with_capacity(rm.pv.len());
-        for &m in &rm.pv {
-            if !walk.pseudo_legal(m) || !walk.legal(m) {
-                break;
-            }
-            pv.push(move_to_uci(&walk, m));
-            walk.do_move(m);
-        }
+        let tb_hits = self.tb_hits + if self.root_in_tb { self.root_moves.len() as u64 } else { 0 };
+        let hashfull = tt.hashfull(GENERATION_MAX_AGE);
 
-        let report = DepthReport {
-            depth,
-            // The move's own selective depth, not the worker's running maximum. The two
-            // differ once a later root move has been searched deeper than the one being
-            // reported, and it is the reported move's line the number describes.
-            sel_depth: rm.sel_depth,
-            multi_pv: self.pv_index + 1,
-            score: Score::new(score, &self.pos),
-            wdl: super::score::wdl(score, &self.pos),
-            bound,
-            nodes,
-            nps: nodes * 1000 / elapsed,
-            hashfull: tt.hashfull(GENERATION_MAX_AGE),
-            // Every root move the tables ranked is a hit, on top of the ones the search
-            // scored below the root.
-            tb_hits: self.tb_hits + if self.root_in_tb { self.root_moves.len() as u64 } else { 0 },
-            time_ms: elapsed,
-            pv: &pv,
-        };
-        sink.depth_finished(&report);
+        for i in 0..lines {
+            // A move the current iteration has not scored yet is reported from the previous
+            // one, at the previous depth. At depth one there IS no previous iteration, so
+            // upstream prints only the first such line.
+            let use_previous = self.root_moves[i].score == -VALUE_INFINITE;
+            if depth == 1 && use_previous && i > 0 {
+                continue;
+            }
+            let d = if use_previous { (depth - 1).max(1) } else { depth };
+            let mut score = if use_previous {
+                self.root_moves[i].previous_score
+            } else {
+                self.root_moves[i].uci_score
+            };
+            if score == -VALUE_INFINITE {
+                score = VALUE_ZERO;
+            }
+
+            let bound = if self.root_moves[i].score_lowerbound {
+                Some(true)
+            } else if self.root_moves[i].score_upperbound {
+                Some(false)
+            } else {
+                None
+            };
+
+            // With the root in the tables, show what the tables say. A mate score is left
+            // alone: a forced mate is more specific than "this is a win".
+            let is_tb_score = self.root_in_tb && score.abs() < VALUE_MATE_IN_MAX_PLY;
+            if is_tb_score {
+                score = self.root_moves[i].tb_score;
+            }
+
+            // A proven win whose PV stops in mid-air tells the operator nothing about how it
+            // is won. Walk it out while the tables can still vouch for every move -- but not
+            // for a line carried over from the previous iteration, which was extended then.
+            if is_decisive(score)
+                && score.abs() < VALUE_MATE_IN_MAX_PLY
+                && !use_previous
+                && (bound.is_none() || is_tb_score)
+            {
+                self.pv_index = i;
+                self.syzygy_extend_pv(&mut score);
+            }
+
+            // Render the PV against a copy: Chess960 castling notation depends on the
+            // position each move is played in.
+            let rm = &self.root_moves[i];
+            let source = if use_previous { &rm.previous_pv } else { &rm.pv };
+            let mut walk = self.pos.clone();
+            let mut pv = Vec::with_capacity(source.len());
+            for &m in source {
+                if !walk.pseudo_legal(m) || !walk.legal(m) {
+                    break;
+                }
+                pv.push(move_to_uci(&walk, m));
+                walk.do_move(m);
+            }
+
+            let report = DepthReport {
+                depth: d,
+                // The move's own selective depth, not the worker's running maximum: the two
+                // differ once a later root move has been searched deeper than this one.
+                sel_depth: rm.sel_depth,
+                multi_pv: i + 1,
+                score: Score::new(score, &self.pos),
+                wdl: super::score::wdl(score, &self.pos),
+                bound,
+                nodes,
+                nps: nodes * 1000 / elapsed,
+                hashfull,
+                tb_hits,
+                time_ms: elapsed,
+                pv: &pv,
+            };
+            sink.depth_finished(&report);
+        }
     }
 }
 

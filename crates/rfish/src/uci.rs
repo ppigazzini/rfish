@@ -88,6 +88,8 @@ impl<W: Write> InfoSink for UciSink<W> {
 
 /// The engine session: everything that survives between commands.
 pub(crate) struct Engine {
+    /// The network lines to print before each search, built when the net is loaded.
+    net_report: String,
     /// The command line being handled, as upstream's `currentCmd`.
     ///
     /// Only the critical-error report reads it, and that report quotes the WHOLE line.
@@ -140,6 +142,7 @@ impl Engine {
         let numa = NumaConfig::from_system(numa::DEFAULT_AUTO_POLICY, true);
         Engine {
             fatal: false,
+            net_report: String::new(),
             current_cmd: String::new(),
             pos: Position::startpos(),
             options,
@@ -462,9 +465,18 @@ impl Engine {
     /// Upstream emits these lazily, when the first search forces the thread pool into
     /// existence. rfish builds its pool eagerly, so it reports eagerly; the content is the
     /// same and an operator reading a log sees the same facts.
-    pub(crate) fn report_configuration(&self, out: &mut impl Write) {
+    /// What upstream prints before EVERY search, and only before a search.
+    ///
+    /// Upstream sends these "after the go command is sent for old GUIs and python-chess",
+    /// so a session that never searches prints none of them and a `bench` prints them once
+    /// per position. rfish used to print them once at startup instead, which differed on
+    /// both counts.
+    fn report_search_configuration(&self, out: &mut impl Write) {
         self.report_numa_config(out);
         self.report_thread_allocation(out);
+        if !self.net_report.is_empty() {
+            let _ = writeln!(out, "{}", self.net_report);
+        }
     }
 
     /// Load the network named by `EvalFile`, reporting either way.
@@ -475,13 +487,12 @@ impl Engine {
         let name = self.options.text("EvalFile").to_string();
         self.network = match nnue::find_and_load(&name) {
             Some(Ok(net)) => {
-                let _ = writeln!(out, "info string NNUE evaluation using {}", net.name());
-                // One replica, in this process's own memory. Upstream can report "Shared
-                // memory." here because it maps the weights through POSIX shm so several
-                // engine processes share one copy; that is `shm_open` plus `mmap`, which
-                // are FFI, so rfish always holds its own. The wording is upstream's for the
-                // case rfish is always in.
-                let _ = writeln!(out, "info string Network replica 1: Local memory.");
+                self.net_report = format!(
+                    "info string NNUE evaluation using {} ({})\n\
+                     info string Network replica 1: Local memory.",
+                    net.name(),
+                    net.arch_summary()
+                );
                 Some(Arc::new(net))
             }
             // A file that exists but does not load is reported as the failure it is. Falling
@@ -541,6 +552,8 @@ impl Engine {
     }
 
     fn cmd_go(&mut self, args: &[&str], out: &mut impl Write) {
+        // Upstream prints these before dispatching `go`, including `go perft`.
+        self.report_search_configuration(out);
         // With no reader thread ahead of this call, here is the earliest point that observes
         // the command, so here is where the previous search's stop is dropped.
         if !self.reader_owns_stop {
@@ -740,6 +753,9 @@ impl Engine {
                     self.handle(&cmd, out);
                 }
                 BenchEntry::Position { fen, moves } => {
+                    // Upstream drives each bench position through `go`, so it announces once
+                    // per position rather than once per run.
+                    self.report_search_configuration(out);
                     let chess960 = self.options.check("UCI_Chess960");
                     let mut pos = match Position::from_fen(&fen, chess960) {
                         Ok(p) => p,
@@ -853,7 +869,6 @@ pub(crate) fn run(input: impl BufRead + Send + 'static, output: impl Write) -> b
     // Report the topology and the network situation once at startup, the way upstream does,
     // so a user who forgot the net -- or who is on a machine whose nodes the engine could
     // not read -- finds out immediately rather than after a weak game.
-    engine.report_configuration(&mut output);
     engine.load_network(&mut output);
 
     // The reader below clears the stop flag, so `handle` must not: see `reader_owns_stop`.

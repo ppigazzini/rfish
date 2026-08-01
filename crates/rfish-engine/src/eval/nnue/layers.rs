@@ -179,6 +179,12 @@ impl AffineLayer {
         *output = acc.to_array();
     }
 
+    /// How many bytes of weights and biases this layer holds.
+    #[must_use]
+    pub fn weight_bytes(&self) -> usize {
+        self.biases.len() * 4 + self.weights.len()
+    }
+
     /// How many outputs this layer has.
     #[must_use]
     pub fn output_dims(&self) -> usize {

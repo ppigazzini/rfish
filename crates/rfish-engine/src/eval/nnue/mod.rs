@@ -43,6 +43,7 @@ use common::{
     HIDDEN_ONE_VAL, L1, L2, L3, LAYER_STACKS, NetReader, NetWriter, OUTPUT_SCALE, VERSION,
     WEIGHT_SCALE_BITS,
 };
+use features::{HALFKA_DIMENSIONS, THREAT_AND_PP_DIMENSIONS};
 use layers::{AffineLayer, clipped_relu, sqr_clipped_relu};
 use transformer::{EvalScratch, FeatureTransformer};
 
@@ -66,6 +67,11 @@ struct LayerStack {
 }
 
 impl LayerStack {
+    /// How many bytes of weights and biases this stack holds.
+    fn weight_bytes(&self) -> usize {
+        self.fc_0.weight_bytes() + self.fc_1.weight_bytes() + self.fc_2.weight_bytes()
+    }
+
     fn new() -> LayerStack {
         LayerStack {
             fc_0: AffineLayer::new(L1, L2),
@@ -240,6 +246,26 @@ impl Network {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Upstream's architecture summary: the resident size in MiB, then the layer widths.
+    ///
+    /// Upstream builds this from `sizeof` its own structures. rfish computes it from the
+    /// ARCHITECTURE instead -- the weight blocks the file describes -- because a Rust
+    /// struct's padding is not C++'s and the number has to be the same one upstream prints,
+    /// not the same expression.
+    #[must_use]
+    pub fn arch_summary(&self) -> String {
+        let bytes = self.transformer.weight_bytes()
+            + self.stacks.iter().map(LayerStack::weight_bytes).sum::<usize>();
+        format!(
+            "{}MiB, ({}, {}, {}, {}, 1)",
+            bytes / (1024 * 1024),
+            HALFKA_DIMENSIONS + THREAT_AND_PP_DIMENSIONS,
+            L1,
+            L2,
+            L3
+        )
     }
 
     /// The free-text architecture description the trainer wrote.

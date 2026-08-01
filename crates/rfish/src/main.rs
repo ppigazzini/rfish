@@ -29,7 +29,8 @@ fn main() {
         // must never be derived from.
         let mut out = debug_log::TeeWriter::new(out);
         let mut engine = uci::Engine::new();
-        engine.report_configuration(&mut out);
+        // The net is loaded here but NOT announced: upstream announces before a
+        // search, so a session that never searches announces nothing.
         engine.load_network(&mut out);
         let line = args.join(" ");
         debug_log::record_input(&line);
