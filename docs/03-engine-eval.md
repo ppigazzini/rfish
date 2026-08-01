@@ -199,7 +199,8 @@ subtracted by a `quit`-only profile:
 |---|---|---|---|
 | `g++`, no PGO, `nehalem` (the ledger's own tier) | 2,979,106,126 | 1,958,088,252 | 1.521 |
 | `g++`, no PGO, avx2 | 2,170,601,764 | 1,460,813,993 | 1.486 |
-| **clang + PGO + LTO, avx2** | **2,171,591,691** | **1,246,593,188** | **1.742** |
+| clang + PGO + LTO, avx2 | 2,171,591,691 | 1,246,593,188 | 1.742 |
+| **the same, after the membership diff below** | **2,080,763,904** | **1,246,598,569** | **1.669** |
 
 **The gap WIDENS when the comparison is made fair, and the reason is one-sided.** PGO is
 worth almost nothing to rustc here and 15% to clang, so the honest figure is the largest of
@@ -220,8 +221,8 @@ both sides clang + PGO + LTO:
 
 | | median paired time vs upstream | spread |
 |---|---|---|
-| rfish, avx2 vs avx2 oracle | **1.63x** | 1.43..1.90 |
-| rfish, native vs native oracle | **1.77x** | 1.38..1.99 |
+| rfish, avx2 vs avx2 oracle | **1.52x** | 1.29..1.82 |
+| rfish, native vs native oracle (before the membership diff) | 1.77x | 1.38..1.99 |
 
 Both spreads exclude 1.000, so the direction holds at this sample size; neither is tight
 enough to read a few per cent from. The instruction axis is the one that resolves small
@@ -234,7 +235,7 @@ the raw counts:
 
 | | instructions vs own upstream | time vs own upstream |
 |---|---|---|
-| rfish, avx2 | 1.742 | 1.63x |
+| rfish, avx2 | 1.669 | 1.52x |
 | ../mcfish, avx2 | **0.872** | 1.05x (spread straddles 1.000) |
 
 `../mcfish` retires FEWER instructions than the upstream it clones and still does not beat
@@ -324,7 +325,8 @@ identical trees at 625,992 nodes:
 | oracle | rfish | upstream | ratio |
 |---|---|---|---|
 | as upstream ships it | 1,445,638,904 | 1,518,970,470 | 0.952 |
-| **with the NNUE threat scan compiled out** | **1,445,638,857** | **1,297,100,189** | **1.115** |
+| with the NNUE threat scan compiled out | 1,445,638,857 | 1,297,100,189 | 1.115 |
+| **the same, after the two dispatch fixes below** | **1,405,589,511** | **1,297,103,102** | **1.084** |
 
 **The first row is the trap, and this page published its ancestor for a long time.** Upstream
 maintains the threat feature set inside `do_move`, writing a `DirtyThreats` that
@@ -334,12 +336,41 @@ which recomputes threats inside its evaluation, is charged for none. Compiling i
 both sides doing the same work, and the node count is unchanged either way, which is what
 proves the scan was dead rather than load-bearing.
 
-So the spine is at **1.115x**, not at parity, and the earlier "1.022x and ahead on every
-cache axis" was an artefact of that asymmetry plus a `g++` oracle. Paired time at depth 13
-reads 1.34x, worse than the instruction ratio — the spine has an IPC deficit on top of its
-instruction deficit. `../mcfish` measures 1.074x on the same corrected harness against its
-own base, so roughly a tenth over upstream is what both ports currently pay for the spine,
-and neither port's constraint explains the other's number.
+So the spine is **not** at parity, and the earlier "1.022x and ahead on every cache axis" was
+an artefact of that asymmetry plus a `g++` oracle. Paired time at depth 13 reads 1.34x, worse
+than the instruction ratio — the spine has an IPC deficit on top of its instruction deficit.
+`../mcfish` measures 1.074x on the same corrected harness against its own base, so roughly a
+tenth over upstream is what both ports currently pay for the spine, and neither port's
+constraint explains the other's number.
+
+### What the counters say after the dispatch fixes
+
+Both axes, same instrument, clang + PGO on both sides, startup subtracted, node counts
+identical. "was" is this branch's starting point, "now" is HEAD:
+
+| | NNUE was | NNUE now | spine was | spine now |
+|---|---|---|---|---|
+| instructions | 1.742 | **1.669** | 1.115 | **1.084** |
+| data reads | 1.449 | 1.451 | 1.223 | 1.216 |
+| L1 icache misses | 2.102 | **1.496** | 1.998 | **2.213** |
+| conditional mispredicts | 2.569 | **2.175** | 1.414 | **1.305** |
+| indirect branches | 1.479 | **0.863** | 2.265 | **1.133** |
+| indirect mispredicts | 1.490 | **0.770** | 2.248 | **1.009** |
+
+Three things to read off it, and one of them is a cost rather than a win:
+
+- **The indirect-branch gap is closed.** It came from one defect repeated: a piece type known
+  at the call site but passed at RUNTIME, so the match inside `piece_attacks` could not fold
+  and left an indirect branch per attacker. Writing the types out at each site brought
+  indirect mispredicts to 1.009 of upstream's on the spine and BELOW upstream's on the NNUE
+  axis. Look for this shape before looking anywhere else.
+- **Instruction-cache pressure on the spine went UP**, 1.998 to 2.213, because unrolling
+  trades code size for branch behaviour. It is paid for several times over — spine
+  instructions fell 2.8% — but it is a real regression on that counter and the next unrolling
+  should be measured against it rather than assumed free.
+- **Read traffic did not move at all**, 1.449 to 1.451, across every change on this branch.
+  It is the accumulator diff touching two feature sets, and only the per-move delta above
+  will move it.
 
 ## The quantisation is the specification
 
