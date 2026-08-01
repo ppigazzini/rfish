@@ -95,37 +95,42 @@ demand. For the 3-to-5 man sets that is megabytes and nobody notices. For a 7-ma
 would be gigabytes, and a block cache over positioned reads would be needed before that is
 usable. That work is not done.
 
-## The extended PV, and the generation order it turned out to depend on
+## The extended PV, and the two defects it took to make it match
 
-`syzygy_extend_pv` walks a won PV out to mate by repeatedly taking the top-ranked move. When
-several moves are ranked EQUALLY -- which is the normal case in a simple win -- the one taken
-is whichever the legal generator emitted first, so the displayed line is decided by
-generation order.
+`syzygy_extend_pv` walks a won PV out to mate by repeatedly taking the top-ranked move. Its
+output diverged from upstream's for the same position, at the same score and the same node
+count, and it took two independent fixes to close.
 
-That is how a real defect surfaced. Dumping the ranks for the first extension step of
-`8/8/8/8/8/4k3/8/4K2R w` after `h1h4` showed both black replies fully tied:
+**Generation order decided ties nobody else broke.** Dumping the ranks for the first
+extension step of `8/8/8/8/8/4k3/8/4K2R w` after `h1h4` showed both black replies exactly
+tied:
 
 ```text
 TBRANK ply=1 mv=e3d3 pen=-17 rank=-262126
 TBRANK ply=1 mv=e3f3 pen=-17 rank=-262126
 ```
 
-so neither the DTZ rank nor the mobility tie-break chose between them, and rfish and upstream
-still showed different lines. The cause was `generate_legal`: upstream filters IN PLACE by
-moving the LAST element over a rejected one, which does NOT preserve order, and rfish used a
-stable compaction. See `board/movegen.rs` -- the swap is the behaviour, not an implementation
-detail of it.
+Neither the DTZ rank nor the mobility tie-break chose between them, so whichever the legal
+generator emitted first won. `generate_legal` was compacting stably where upstream filters by
+moving the LAST element over the rejected one — see `board/movegen.rs`.
 
-**What remains open.** With the order fixed, the extension agrees with upstream at depth 1 and
-2 and still diverges from depth 3 on, at the third ply of the line, on identical node counts
-and identical scores. That is inside the SEARCH's own PV rather than the extension, and it
-only appears with the root in the tables -- where the tables score many moves equally and the
-PV again records whichever tie the ordering happened to pick. Whoever takes it up should dump
-the root move list and its tbRanks before and after `rank_root_moves`, the way the ranks above
-were dumped, rather than reading the two functions side by side.
+**`dtz_is_dtm` was applied at the root and nowhere else.** Upstream's OR lives INSIDE
+`rank_root_moves`, so it reaches every caller; rfish had it at the root ranking only. When
+mate is the only zeroing move DTZ *is* distance to mate, so ranking by it distinguishes a
+shorter win from a longer one. Without it every win in step 1's walk was equally top-ranked,
+the walk never truncated, and rfish displayed the SEARCH's continuation where upstream
+displays the tables' shortest mate. That is why the two agreed at depth 1 and 2 and diverged
+from depth 3 on — the shallow PVs were short enough that there was nothing left to truncate.
 
-Until it is closed there is no tablebase case in `tools/cases/`, because
-`cargo xtask golden-audit` adjudicates every case against upstream and would be red on it.
+`tools/cases/tbpv.uci` pins both, and `cargo xtask golden-audit` adjudicates it against
+upstream rather than against a previous run of rfish.
+
+**The audit rewrites `SyzygyPath` for the oracle.** Every case runs from the engine's own
+directory, so a relative path resolves against the ORACLE's source tree — `src/syzygy/`,
+which holds C++ files and no tables. The oracle then finds nothing and the case reads as a
+divergence that is really a rig with no tablebases in it. `rewrite_syzygy_path` makes a
+relative value absolute against this repository's `resources/`, so both engines read the same
+files. ../zfish records the identical trap.
 
 ## How the search uses it
 
