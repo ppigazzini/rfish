@@ -165,6 +165,39 @@ attempt starts past them rather than at them.
 | fold tile of 32 / of 256 | 4,093M / 4,037M against 3,599M at 128 |
 | the fold rewritten with `std::simd`, one vector and two | a wash at `native`, worse at `nehalem` |
 | refreshing the king-square cache on every evaluation | 3,202M → 3,199M, i.e. nothing |
+| the sparse layer in groups of four, folded by `vpmaddwd` | 2,108M → 2,759M (32 lanes) / 2,698M (64) |
+
+### Groups of four, with the fold this time — and it still loses
+
+The sparse layer's largest single block is the first affine layer, and the reason is known:
+upstream's `vpdpbusd` dots FOUR inputs against SIXTEEN outputs in one instruction, and
+`std::simd` has no operation for it. The obvious answer is to reach the same shape without
+naming the instruction, and both sibling ports point at how — a group-of-four weight layout
+plus a deinterleaved widening multiply-add, which LLVM lowers to `vpmaddwd` from generic IR.
+../zfish uses exactly that as its portable tier and measures it at +32% against a
+hand-written `pmaddubsw`.
+
+It was built here — upstream's scrambled layout `g*OUT*4 + j*4 + m`, the group zero test, the
+two-stage even/odd fold — and it is **bit-exact and 28% SLOWER**. Both are worth recording:
+
+- **The fold materialised.** The build emits 42 `vpmaddwd`, against none before. This is not
+  LLVM refusing to cooperate, and the next attempt should not go looking for a way to coax
+  the pattern out; the pattern was there.
+- **The shuffles cost more than the fold saves.** Reaching `vpmaddwd` from portable vectors
+  needs a deinterleave of both operands per chunk, and a chunk is 8 outputs at 32 lanes or 16
+  at 64. Upstream's instruction does 16 outputs with NO shuffle at all. Widening the chunk
+  helped and did not come close to paying: 2,759M at 32 lanes, 2,698M at 64, against 2,108M
+  for the per-input kernel.
+- **The density argument in this file survives, and now has a second leg.** A group of four
+  at ~40% input density survives the zero test about 87% of the time, so the coarser test
+  skips almost nothing. The earlier row measured that with the per-input kernel underneath
+  and could fairly have been dismissed as testing the wrong cost model — this run replaced
+  the cost model and the conclusion held.
+
+What that leaves: the gap on this layer is the INSTRUCTION, not the shape, and closing it
+needs `std::arch` — which is out, every intrinsic in it being an `unsafe fn`. Treat the first
+affine layer as the price of the constraint until `std::simd` grows a four-way byte dot, and
+spend effort on the blocks where rfish is behind for reasons it can still fix.
 
 The fold entry is worth reading with the disassembly beside it: it was ALREADY emitting
 `vpaddw` on four `zmm` registers, so explicit SIMD had nothing left to give it. Check what
