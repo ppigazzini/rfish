@@ -120,8 +120,9 @@ cargo xtask <step> — the rfish build driver
                                        tiers: sse41, avx2 (default), native
 
   Scheduled — a wall-clock budget, so NOT part of parity
-    fuzz [SECONDS]        random UCI text at the shell and random positions at the
-                          search; prints its seed, replay with RFISH_FUZZ_SEED=N
+    fuzz [SECONDS]        random UCI text at the shell, random positions at the search
+                          and mutated bytes at the tablebase decoder; prints its seed,
+                          replay with RFISH_FUZZ_SEED=N
 
   Regenerate a golden — DANGEROUS, read CONTRIBUTING.md first
     signature-update      re-derive tools/signature.golden

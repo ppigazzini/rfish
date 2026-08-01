@@ -10,7 +10,12 @@
 //!   nonsense option value or a truncated FEN has to be survived;
 //! - the search itself, in `rfish_engine::search::fuzz`, reached in-process because that is
 //!   the only way to spend a budget on movegen, the move picker, the transposition table,
-//!   pruning, qsearch and the accumulator rather than on tokenising.
+//!   pruning, qsearch and the accumulator rather than on tokenising;
+//! - the TABLEBASE PARSE, in `rfish_engine::platform::syzygy::fuzz`, which is the only input
+//!   here that is a binary FILE rather than text. Both sibling ports fuzz it -- ../mcfish with
+//!   a dedicated lane, ../zfish with its own targets -- and it is the surface where a bad byte
+//!   becomes an index rather than a rejected token. It found six panics on the day it was
+//!   written; see `docs/05-tablebases.md`.
 //!
 //! # What a clean run means
 //!
@@ -233,18 +238,18 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(1, |d| d.as_nanos() as u64)
         });
-    let half = (seconds / 2).max(1);
+    // Three ways, because there are three harnesses and each answers a question the other two
+    // cannot: text at the shell, positions at the search, bytes at the decoder.
+    let share = (seconds / 3).max(1);
     println!("fuzz: seed {seed} -- replay this run with RFISH_FUZZ_SEED={seed}");
 
     let engine = build_engine(GATE_PROFILE)?;
     let resources = crate::resources_dir();
     let mut rng = Rng(seed.max(1));
-    let deadline = Instant::now() + Duration::from_secs(half);
+    let deadline = Instant::now() + Duration::from_secs(share);
     let mut scripts = 0usize;
 
     while Instant::now() < deadline {
-        // A burst rather than one line at a time: state carries between commands, and the
-        // failures worth finding are the ones that need a `position` before a `go`.
         // A burst rather than one line at a time: state carries between commands, and the
         // failures worth finding are the ones that need a `position` before a `go`.
         let burst: Vec<String> = (0..6).map(|_| line(&mut rng)).collect();
@@ -279,28 +284,40 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
     }
     println!("fuzz: {scripts} UCI scripts survived, engine still answering");
 
-    // The search half, in-process, under the profile whose debug assertions and overflow
-    // checks are what turn a silent wrong number into a failure.
-    let status = Command::new(cargo())
-        .current_dir(crate::resources_dir())
-        .args([
-            "test",
-            "--package",
-            "rfish-engine",
-            "--profile",
-            "gate",
-            "search::fuzz::tests::soak",
-            "--",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env("RFISH_FUZZ_SECONDS", half.to_string())
-        .env("RFISH_FUZZ_SEED", seed.to_string())
-        .status()
-        .map_err(|e| format!("running the search soak: {e}"))?;
+    // The in-process halves, under the profile whose debug assertions and overflow checks are
+    // what turn a silent wrong number into a failure. Both are `#[ignore]`d tests rather than
+    // xtask code: they need the engine's own internals, and reaching those from here would
+    // mean making them public for the benefit of a harness.
+    for (name, filter, what) in [
+        ("search", "search::fuzz::tests::soak", "the search soak"),
+        ("tablebase parse", "platform::syzygy::fuzz::tests::tb_parse_soak", "the tablebase soak"),
+    ] {
+        println!("fuzz: {name}, {share}s");
+        let status = Command::new(cargo())
+            .current_dir(crate::resources_dir())
+            .args([
+                "test",
+                "--package",
+                "rfish-engine",
+                // The literal, NOT `GATE_PROFILE`: that one is `release`, and release turns
+                // OFF the debug assertions and overflow checks that make a soak able to see a
+                // wrong number at all.
+                "--profile",
+                "gate",
+                filter,
+                "--",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("RFISH_FUZZ_SECONDS", share.to_string())
+            .env("RFISH_FUZZ_SEED", seed.to_string())
+            .status()
+            .map_err(|e| format!("running {what}: {e}"))?;
 
-    Ok(Outcome::check(
-        status.success(),
-        format!("the search soak failed; replay with RFISH_FUZZ_SEED={seed}"),
-    ))
+        if !status.success() {
+            return Ok(Outcome::Fail(format!("{what} failed; replay with RFISH_FUZZ_SEED={seed}")));
+        }
+    }
+
+    Ok(Outcome::Pass)
 }

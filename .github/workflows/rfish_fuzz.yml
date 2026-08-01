@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: "Total budget, split between the UCI and search harnesses"
+        description: "Total budget, split between the UCI, search and tablebase harnesses"
         required: false
         default: "600"
       seed:
@@ -65,6 +65,14 @@ jobs:
           path: resources/*.nnue
           key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
       - run: cargo xtask net
+      # The 3-man Syzygy set, for the third harness. The tablebase soak SKIPS without tables
+      # rather than failing -- correct, but a lane that silently skips the harness it was
+      # extended for proves nothing, which is the same reasoning the gates lane fetches under.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: resources/syzygy
+          key: syzygy-3man-${{ hashFiles('crates/xtask/src/net.rs') }}
+      - run: cargo xtask tb-fetch
       # No seed pinned on the schedule: each night walks positions the last one did not,
       # which is the entire reason to run this repeatedly. The step PRINTS the seed it chose,
       # and a failure is replayed by dispatching this workflow with it.

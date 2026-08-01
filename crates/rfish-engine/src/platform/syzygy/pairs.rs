@@ -72,33 +72,48 @@ pub struct PairsData {
 }
 
 /// Read a little-endian `u16`.
+///
+/// **Bounded, and that is the point.** A table file is untrusted input from a mirror, and
+/// every offset below is derived from the file's OWN header — so a corrupt header aims a
+/// read past the end of the mapping. In safe Rust that is a bounds check, which panics and
+/// takes the process with it: a denial of service reachable from a downloaded file. The
+/// fuzzer in `fuzz.rs` found exactly that on its first run, at `u32_be`, reading offset 7824
+/// of a 7824-byte table.
+///
+/// Out of range reads as zero rather than propagating: `decompress` returns a plain `i32`
+/// with nowhere to report a failure, and a wrong verdict from a table the user corrupted is
+/// a better outcome than a dead engine. For a VALID table every read here is in range, so
+/// nothing about the shipped behaviour changes — `tb` still matches upstream on all 264
+/// probes and the bench signature is untouched.
 #[inline]
 fn u16_le(b: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([b[off], b[off + 1]])
+    b.get(off..off + 2).map_or(0, |s| u16::from_le_bytes([s[0], s[1]]))
 }
 
-/// Read a little-endian `u32`.
+/// Read a little-endian `u32`. Bounded for the reason [`u16_le`] gives.
 #[inline]
 fn u32_le(b: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+    b.get(off..off + 4).map_or(0, |s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 /// Read a big-endian `u32`. The compressed payload is big-endian; everything around it is
 /// little-endian, and mixing the two up produces a plausible wrong value rather than an
-/// error.
+/// error. Bounded for the reason [`u16_le`] gives.
 #[inline]
 fn u32_be(b: &[u8], off: usize) -> u32 {
-    u32::from_be_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+    b.get(off..off + 4).map_or(0, |s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
 }
 
-/// Read a big-endian `u64`.
+/// Read a big-endian `u64`. Bounded for the reason [`u16_le`] gives.
 #[inline]
 fn u64_be(b: &[u8], off: usize) -> u64 {
-    let mut v = 0u64;
-    for i in 0..8 {
-        v = (v << 8) | u64::from(b[off + i]);
-    }
-    v
+    b.get(off..off + 8).map_or(0, |s| {
+        let mut v = 0u64;
+        for &byte in s {
+            v = (v << 8) | u64::from(byte);
+        }
+        v
+    })
 }
 
 impl PairsData {
@@ -106,14 +121,26 @@ impl PairsData {
     #[inline]
     fn left(&self, b: &[u8], sym: usize) -> usize {
         let o = self.btree + 3 * sym;
-        (usize::from(b[o + 1] & 0xF) << 8) | usize::from(b[o])
+        b.get(o..o + 3).map_or(0, |n| (usize::from(n[1] & 0xF) << 8) | usize::from(n[0]))
     }
 
     /// A symbol's right child, or `0xFFF` at a leaf.
     #[inline]
     fn right(&self, b: &[u8], sym: usize) -> usize {
         let o = self.btree + 3 * sym;
-        (usize::from(b[o + 2]) << 4) | usize::from(b[o + 1] >> 4)
+        // A read past the end answers LEAF rather than zero: zero is a real symbol index, so
+        // it would send the descent to symbol 0 and could cycle, where a leaf terminates.
+        b.get(o..o + 3).map_or(0xFFF, |n| (usize::from(n[2]) << 4) | usize::from(n[1] >> 4))
+    }
+
+    /// A symbol's expanded length, with an out-of-range symbol reading as a leaf.
+    ///
+    /// The symbol index is decoded FROM the payload, so a corrupt block names symbols the
+    /// tree does not have. Zero terminates the descent, which is what a refusal looks like
+    /// from inside a function with no error channel.
+    #[inline]
+    fn symlen_of(&self, sym: usize) -> u8 {
+        self.symlen.get(sym).copied().unwrap_or(0)
     }
 }
 
@@ -138,11 +165,20 @@ pub fn decompress(d: &PairsData, bytes: &[u8], idx: u64) -> i32 {
     offset += idx as i64 % d.span as i64 - (d.span / 2) as i64;
 
     // Walk to the block that actually contains the value.
-    while offset < 0 {
+    //
+    // Both walks are BOUNDED by the block count, which upstream leaves implicit. Upstream can:
+    // its interpolation is exact for a table its own writer produced, so the correction is a
+    // step or two. A corrupt sparse index puts the walk anywhere -- backwards past block zero,
+    // or forwards forever once a truncated read answers a length of zero -- and neither is a
+    // memory error here, only a subtraction overflow and an infinite loop. Clamping ends the
+    // walk at the edge and lets the probe return a wrong verdict for a file the user broke.
+    let last_block = d.block_length_size.saturating_sub(1) as usize;
+    block = block.min(last_block);
+    while offset < 0 && block > 0 {
         block -= 1;
         offset += i64::from(u16_le(bytes, d.block_length + 2 * block)) + 1;
     }
-    while offset > i64::from(u16_le(bytes, d.block_length + 2 * block)) {
+    while offset > i64::from(u16_le(bytes, d.block_length + 2 * block)) && block < last_block {
         offset -= i64::from(u16_le(bytes, d.block_length + 2 * block)) + 1;
         block += 1;
     }
@@ -158,35 +194,53 @@ pub fn decompress(d: &PairsData, bytes: &[u8], idx: u64) -> i32 {
         // Every symbol of a given length is a consecutive integer, so the length is found
         // by comparing the padded buffer against the lowest symbol of each length.
         let mut len = 0usize;
-        while buf < d.base64[len] {
+        // Bounded by the table: the padding makes `base64` a total order for a WELL-FORMED
+        // payload, so the search always stops. Corrupt bits need not, and running off the end
+        // of a `Vec` is the panic this whole pass is about.
+        while len + 1 < d.base64.len() && buf < d.base64[len] {
             len += 1;
         }
-        sym = ((buf - d.base64[len]) >> (64 - len - usize::from(d.min_sym_len))) as usize;
+        let shift = 64usize.saturating_sub(len + usize::from(d.min_sym_len));
+        sym = (buf.wrapping_sub(d.base64[len]) >> shift) as usize;
         sym += usize::from(u16_le(bytes, d.lowest_sym + 2 * len));
 
-        if offset < i64::from(d.symlen[sym]) + 1 {
+        if offset < i64::from(d.symlen_of(sym)) + 1 {
             break;
         }
-        offset -= i64::from(d.symlen[sym]) + 1;
+        offset -= i64::from(d.symlen_of(sym)) + 1;
         let consumed = len + usize::from(d.min_sym_len);
-        buf <<= consumed;
+        // The bit window, bounded. A symbol is at most 64 bits wide in a real table, so
+        // neither shift here can reach the width of the type -- but `consumed` is computed
+        // from the file and `buf_size` follows it, so a corrupt payload drives both past 64
+        // and a shift that wide is a panic. Shifting a `u64` out entirely IS zero, so the
+        // saturating answer is also the arithmetically right one.
+        buf = buf.checked_shl(consumed as u32).unwrap_or(0);
         buf_size -= consumed as i32;
 
         if buf_size <= 32 {
             buf_size += 32;
-            buf |= u64::from(u32_be(bytes, ptr)) << (64 - buf_size);
+            let shift = 64 - buf_size;
+            if (0..64).contains(&shift) {
+                buf |= u64::from(u32_be(bytes, ptr)) << shift;
+            }
             ptr += 4;
         }
     }
 
     // Expand the symbol. Recursive Pairing makes a symbol's two children adjacent in the
     // value sequence, so the offset chooses a side and the search descends.
-    while d.symlen[sym] != 0 {
+    //
+    // The step count is bounded by the number of symbols. A valid tree is acyclic, so the
+    // descent visits each symbol at most once and the bound never binds; a corrupt btree can
+    // name a symbol as its own ancestor, and then only the bound ends the loop.
+    let mut steps = d.symlen.len() + 1;
+    while d.symlen_of(sym) != 0 && steps > 0 {
+        steps -= 1;
         let l = d.left(bytes, sym);
-        if offset < i64::from(d.symlen[l]) + 1 {
+        if offset < i64::from(d.symlen_of(l)) + 1 {
             sym = l;
         } else {
-            offset -= i64::from(d.symlen[l]) + 1;
+            offset -= i64::from(d.symlen_of(l)) + 1;
             sym = d.right(bytes, sym);
         }
     }
@@ -197,7 +251,7 @@ pub fn decompress(d: &PairsData, bytes: &[u8], idx: u64) -> i32 {
 ///
 /// Written iteratively over an explicit stack rather than recursively: the pairing tree can
 /// be thousands deep on a large table, and a recursive walk overflows the thread stack.
-fn compute_symlen(d: &mut PairsData, bytes: &[u8], root: usize, visited: &mut [bool]) {
+fn compute_symlen(d: &mut PairsData, bytes: &[u8], root: usize, visited: &mut [bool]) -> bool {
     let mut stack = vec![(root, false)];
     while let Some((s, expanded)) = stack.pop() {
         if expanded {
@@ -217,6 +271,13 @@ fn compute_symlen(d: &mut PairsData, bytes: &[u8], root: usize, visited: &mut [b
             continue;
         }
         let sl = d.left(bytes, s);
+        // A child outside the symbol table means the btree is not a btree. REFUSE, rather
+        // than clamp: this is parse time, the caller has an error channel, and a refused
+        // table is probed as if absent -- which is a correct answer, where a verdict decoded
+        // from a tree that does not close is a wrong one presented as fact.
+        if sl >= d.symlen.len() || sr >= d.symlen.len() {
+            return false;
+        }
         // Re-push this symbol to be summed once both children are known.
         stack.push((s, true));
         if !visited[sr] {
@@ -226,6 +287,7 @@ fn compute_symlen(d: &mut PairsData, bytes: &[u8], root: usize, visited: &mut [b
             stack.push((sl, false));
         }
     }
+    true
 }
 
 /// Read one sub-table's sizes and symbol tables, returning the offset just past them.
@@ -250,10 +312,18 @@ pub fn set_sizes(d: &mut PairsData, bytes: &[u8], mut off: usize) -> Option<usiz
     let terminator = d.group_len.iter().position(|&l| l == 0).unwrap_or(TB_PIECES);
     let tb_size = d.group_idx[terminator];
 
-    d.sizeof_block = 1usize << bytes.get(off)?;
+    // Both widths are stored as a shift, so a byte past 63 is not a large table -- it is a
+    // shift wider than the type, which panics under the gate profile's overflow checks and
+    // silently masks in release. Neither is a table; refuse the file.
+    let block_shift = *bytes.get(off)?;
     off += 1;
-    d.span = 1usize << bytes.get(off)?;
+    let span_shift = *bytes.get(off)?;
     off += 1;
+    if block_shift >= 32 || span_shift >= 32 {
+        return None;
+    }
+    d.sizeof_block = 1usize << block_shift;
+    d.span = 1usize << span_shift;
     d.sparse_index_size = tb_size.div_ceil(d.span as u64) as usize;
     let padding = u32::from(*bytes.get(off)?);
     off += 1;
@@ -267,6 +337,11 @@ pub fn set_sizes(d: &mut PairsData, bytes: &[u8], mut off: usize) -> Option<usiz
     off += 1;
     d.lowest_sym = off;
 
+    // A maximum below the minimum underflows the length, and the code table it would size is
+    // meaningless anyway.
+    if d.max_sym_len < d.min_sym_len {
+        return None;
+    }
     let n = usize::from(d.max_sym_len) - usize::from(d.min_sym_len) + 1;
     d.base64 = vec![0u64; n];
 
@@ -276,10 +351,17 @@ pub fn set_sizes(d: &mut PairsData, bytes: &[u8], mut off: usize) -> Option<usiz
     for i in (0..n.saturating_sub(1)).rev() {
         let lo_i = u64::from(u16_le(bytes, d.lowest_sym + 2 * i));
         let lo_i1 = u64::from(u16_le(bytes, d.lowest_sym + 2 * (i + 1)));
-        d.base64[i] = (d.base64[i + 1] + lo_i - lo_i1) / 2;
+        // Wrapping, because upstream's expression is unsigned and so wraps: for a valid table
+        // `lo_i >= lo_i1` and neither side wraps at all, but a corrupt table inverts the pair
+        // and a bare `-` would trap under the gate profile's overflow checks.
+        d.base64[i] = d.base64[i + 1].wrapping_add(lo_i).wrapping_sub(lo_i1) / 2;
     }
     for i in 0..n {
-        d.base64[i] <<= 64 - i - usize::from(d.min_sym_len);
+        // `i + min_sym_len` is a symbol length in bits: at least one and at most 64 in a real
+        // table. A corrupt header can claim zero or more than 64, and either end makes the
+        // shift as wide as the type or wider -- undefined in C++, a panic here.
+        let shift = 64usize.checked_sub(i + usize::from(d.min_sym_len)).filter(|&s| s < 64)?;
+        d.base64[i] <<= shift;
     }
 
     off += n * 2;
@@ -290,8 +372,8 @@ pub fn set_sizes(d: &mut PairsData, bytes: &[u8], mut off: usize) -> Option<usiz
 
     let mut visited = vec![false; sym_count];
     for sym in 0..sym_count {
-        if !visited[sym] {
-            compute_symlen(d, bytes, sym, &mut visited);
+        if !visited[sym] && !compute_symlen(d, bytes, sym, &mut visited) {
+            return None;
         }
     }
 

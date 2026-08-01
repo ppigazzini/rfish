@@ -252,6 +252,17 @@ impl TbTable {
                 }
                 off += 1;
             }
+            // A pawnful table leads with a PAWN in both colour views -- the index computation
+            // reads `pieces[0]` as the lead pawn's piece code and the whole file split is
+            // built on it. Upstream never checks, because its own writer produced the file;
+            // a corrupt one names something else, and the probe would then index a pawn table
+            // by a knight. Refuse it here, where there is still an error channel to refuse
+            // through, so the invariant the prober asserts on is one the parse established.
+            if self.has_pawns
+                && items.iter().any(|side| side[f].pieces[0] & 0x7 != PieceType::Pawn.index() as u8)
+            {
+                return None;
+            }
             for (i, side) in items.iter_mut().enumerate() {
                 set_groups(
                     &mut side[f],

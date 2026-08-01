@@ -17,6 +17,8 @@
 //! Golden: `Stockfish/src/syzygy/tbprobe.cpp`.
 
 pub mod discovery;
+#[cfg(test)]
+pub mod fuzz;
 pub mod pairs;
 pub mod probe;
 pub mod table;

@@ -164,3 +164,47 @@ already established.
 
 With no path set the registry is empty, no probe fires, no ranking happens, and the bench
 signature is unaffected. That property has its own check in the gate.
+
+## The parse is untrusted input, and is fuzzed as such
+
+A table file is a **binary blob from a mirror**, and every offset the decoder walks is
+derived from the file's own header. That makes it the most exposed surface in the port: the
+UCI shell reads text a user typed, the search reads positions the engine itself produced,
+and this reads bytes nobody in the process vouches for.
+
+What can go wrong here is a **panic**, not memory corruption. `forbid(unsafe_code)` means a
+bad index is a bounds check, and a bounds check is a process that exits — a denial of service
+reachable from a downloaded file. Upstream indexes the same places unchecked, where the
+same corrupt byte is undefined behaviour instead; neither is acceptable, and only one of them
+is fixable from inside safe Rust.
+
+`platform::syzygy::fuzz` mutates a **real** table's bytes, writes them to a `.rtbw`/`.rtbz`,
+and probes through discovery, the magic and size checks, the group set-up, the index
+arithmetic and both the WDL and DTZ decoders — the engine's own path, not a stand-in for it.
+Seeding from a table that parses is the point: a random blob dies at the magic number and
+never reaches a decoder. It found **six** distinct panics on its first afternoon, in an
+already-verified prober that matches upstream on all 264 differential probes:
+
+| where | what a corrupt byte did |
+|---|---|
+| the four byte readers | read past the end of the mapping |
+| `set_sizes`, block and span | a shift width taken from a byte, so `1 << 200` |
+| `set_sizes`, `base64` | an unsigned subtraction upstream lets wrap, trapped by the gate profile |
+| `set_sizes`, the padding shift | a symbol length of zero, so a shift as wide as the type |
+| `compute_symlen` | a btree child naming a symbol the table does not have |
+| `decompress`, the bit window | a symbol wider than 64 bits, so a shift past the type |
+| the probe's lead pawn | a pawnful table whose first piece is not a pawn |
+
+Two different fixes, chosen by **where the error can still be reported**:
+
+- **At parse time, refuse.** `set_sizes` returns `Option`, so a table with an impossible
+  shift, an inverted symbol-length range or a btree that does not close is rejected and the
+  probe answers as if the file were absent. That is a correct answer.
+- **At decode time, clamp.** `decompress` returns a plain `i32` with nowhere to report a
+  failure, so the block walk, the code-length search, the bit window and the tree descent are
+  bounded and a corrupt file yields a wrong verdict rather than a dead engine.
+
+The order matters: a wrong verdict is worse than a refusal, so anything that *can* be caught
+at parse time is refused there, and clamping is only what remains. **None of it changes a
+valid table**: every bound is slack for a file upstream's own writer produced, `cargo xtask
+tb` still matches the oracle on all 264 probes, and the bench signature is untouched.
