@@ -1785,12 +1785,12 @@ impl SearchWorker {
                     }
 
                     return v;
-                } else if tt_value >= beta {
+                } else if tt_value >= beta || cut_node {
                     // Neither singular nor multi-cut. The transposition move is expected to
-                    // fail high anyway, so search it shallower in favour of the others.
+                    // fail high anyway, or this is a cut node -- either way search it
+                    // shallower in favour of the others. Upstream collapsed the two cases
+                    // into one: the -2 arm is gone, and a cut node now reduces by 3.
                     extension = -3;
-                } else if cut_node {
-                    extension = -2;
                 }
             }
 
