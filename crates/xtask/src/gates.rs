@@ -431,6 +431,12 @@ fn drive_oracle(
 
     let mut out = String::new();
     for line in lines {
+        // Point the oracle at the SAME tables. Every case runs from the engine's own
+        // directory, so `SyzygyPath value syzygy` is relative -- and relative to the ORACLE
+        // it resolves to upstream's own `src/syzygy/`, which holds source files and no
+        // tables. The oracle then reports finding none and the case reads as a divergence
+        // that is really a rig with no tablebases in it.
+        let line = &rewrite_syzygy_path(line);
         // A case may end the oracle -- the error cases feed it `quit` among other things --
         // and writing past that is a broken pipe, not a failure of the audit. Stop feeding
         // it and keep whatever it said.
@@ -459,6 +465,21 @@ fn drive_oracle(
     let _ = child.wait();
     let _ = reader.join();
     Ok(out.replace('\r', ""))
+}
+
+/// Make a relative `SyzygyPath` absolute, against this repository's `resources/`.
+///
+/// Left alone when the case names an absolute path or sets something else.
+fn rewrite_syzygy_path(line: &str) -> String {
+    const KEY: &str = "setoption name SyzygyPath value ";
+    let Some(value) = line.strip_prefix(KEY) else {
+        return line.to_string();
+    };
+    let value = value.trim();
+    if value.is_empty() || std::path::Path::new(value).is_absolute() {
+        return line.to_string();
+    }
+    format!("{KEY}{}", resources_dir().join(value).display())
 }
 
 /// Quote a path for the shell that merges the oracle's two output streams.

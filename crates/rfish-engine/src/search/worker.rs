@@ -2840,7 +2840,13 @@ impl SearchWorker {
         {
             return None;
         }
-        tb.root_probe(pos, self.tb_use_rule50, rank_dtz)
+        // The OR is upstream's, and it lives inside `rank_root_moves` there -- so it applies
+        // to EVERY caller, not just the root ranking. When mate is the only zeroing move,
+        // DTZ is distance to mate, so ranking by it costs nothing and distinguishes a
+        // shorter win from a longer one. Without it the PV walk in step 1 finds every win
+        // equally top-ranked, never truncates, and shows the search's line where upstream
+        // shows the tables' shortest.
+        tb.root_probe(pos, self.tb_use_rule50, rank_dtz || pos.dtz_is_dtm())
     }
 
     /// Emit one `info` line for the current PV slot.
