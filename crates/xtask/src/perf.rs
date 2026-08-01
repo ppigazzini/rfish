@@ -770,3 +770,231 @@ fn next_rand(state: &mut u64) -> u64 {
     *state ^= *state << 17;
     *state
 }
+
+/// Assert this port CALLS the same things upstream does, as many times.
+///
+/// # The gap this fills
+///
+/// Every other differential here compares VALUES: `signature` pins node counts, the goldens
+/// pin UCI text, `nnue-check` pins evaluations, `upstream-nodes` pins node counts on random
+/// positions. All of them pass over a state divergence that happens not to move a number on
+/// the positions they drive. This compares HOW the two engines got there, and it found two
+/// real defects on its first run — both of which every value gate above was green through:
+///
+/// - the PV reporter rendered each move against a walked CLONE of the position, playing a
+///   `do_move` per PV move, and broke out at the first move that failed a legality check.
+///   Upstream renders against the root and prints the stored line whole. 1443 `do_move`s and
+///   1443 clones a bench, plus a PV that could come out shorter than upstream's.
+/// - `bestmove ... ponder X` named the ponder move in the position AFTER the best move,
+///   cloning and playing it first. Upstream names it against the root. 49 more of each.
+///
+/// Neither moved a node count, a golden, a `bestmove` or any of the 394 `info` lines.
+///
+/// # Why call counts and not cost
+///
+/// A call count is INLINING-IMMUNE at the callee: it does not care how the callee was
+/// reached, only that it was. That is what lets a rustc tree be compared against a clang one
+/// at all, where any cost claim has to argue attribution first. And callgrind SIMULATES
+/// rather than samples, so the answer is deterministic and a loaded box cannot flap it —
+/// which matters here, where NPS cannot settle a few per cent.
+///
+/// It is inlining-immune at the callee and NOT at the caller, which is the whole reason
+/// `tools/fingerprint_groups.tsv` holds only the symbols that survive on both sides. See that
+/// file for which ones do not, and the measurement that says so.
+///
+/// ~50x slower than the run it profiles, so this is not part of `parity`; it belongs in the
+/// weekly upstream lane, which already builds an oracle.
+pub(crate) fn fingerprint(args: &[&str]) -> Result<Outcome, String> {
+    let tier = tier_of(args)?;
+    if !tier.callgrind_safe {
+        return Ok(Outcome::Skipped(format!(
+            "tier {} emits instructions callgrind does not implement",
+            tier.name
+        )));
+    }
+    if !have("valgrind") {
+        return Ok(Outcome::Skipped("valgrind is not installed".to_string()));
+    }
+    let dir = oracle_dir(tier, false);
+    let theirs = dir.join("src/stockfish");
+    if !theirs.is_file() {
+        return Ok(Outcome::Skipped(format!(
+            "no oracle at {}; run `cargo xtask oracle --tier {}`",
+            theirs.display(),
+            tier.name
+        )));
+    }
+    verify_oracle(&dir, tier)?;
+    let their_dir = theirs.parent().map(Path::to_path_buf).unwrap_or_default();
+
+    // The `profiling` profile, NOT `release`: release strips symbols, and a profile whose
+    // functions are all `???` compares nothing. It is release code generation otherwise, so
+    // the tree it searches is the same tree.
+    println!("fingerprint: building rfish at tier {} with symbols", tier.name);
+    let mut cmd = Command::new(cargo());
+    cmd.current_dir(workspace_root())
+        .env("RUSTFLAGS", format!("-C target-cpu={}", tier.rustc))
+        .args(["build", "--profile", "profiling", "--package", "rfish", "--bin", "stockfish"]);
+    run(&mut cmd)?;
+    let ours = workspace_root().join("target/profiling/stockfish");
+
+    same_net(&ours, &resources_dir(), &theirs, &their_dir)?;
+
+    // The SAME TREE first. A different tree is a different workload and every row below would
+    // be noise wearing a number — and a node divergence is a bigger finding than anything
+    // this step could report, so it is reported as itself rather than as twelve odd rows.
+    let bench_nodes = |bin: &Path, cwd: &Path| -> Result<u64, String> {
+        let out = capture_both(Command::new(bin).current_dir(cwd).arg("bench").args(DIFF_BENCH))?;
+        // The bench TOTAL, not `searched_nodes`: that one reads the last `info` line, which is
+        // the final position's own count and leaves the other fifty unchecked.
+        crate::runner::node_total(&out)
+    };
+    let our_nodes = bench_nodes(&ours, &resources_dir())?;
+    let their_nodes = bench_nodes(&theirs, &their_dir)?;
+    if our_nodes != their_nodes {
+        return Err(format!(
+            "node counts differ (rfish {our_nodes}, upstream {their_nodes}) on bench {}; fix that \
+             first — it is a bigger finding than anything this step reports",
+            DIFF_BENCH.join(" ")
+        ));
+    }
+    println!(
+        "fingerprint: both engines search {our_nodes} nodes on bench {}",
+        DIFF_BENCH.join(" ")
+    );
+
+    let mine = callgrind_calls(&ours, &resources_dir(), "rfish")?;
+    let yours = callgrind_calls(&theirs, &their_dir, "upstream")?;
+
+    let path = workspace_root().join("tools/fingerprint_groups.tsv");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut bad = 0usize;
+    let mut rows = 0usize;
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, patterns)) = line.split_once('\t') else {
+            return Err(format!("{}: `{line}` is not NAME<TAB>PATTERNS", path.display()));
+        };
+        rows += 1;
+        let (ours_n, ours_hits) = sum_matching(&mine, patterns);
+        let (theirs_n, theirs_hits) = sum_matching(&yours, patterns);
+        // A pattern matching nothing on a side is a MISS, never a zero. A symbol the compiler
+        // inlined away would otherwise read as permanent silent agreement at zero-versus-zero.
+        if ours_hits == 0 || theirs_hits == 0 {
+            let side = if ours_hits == 0 { "rfish" } else { "upstream" };
+            println!("  {name:<20} no symbol matched on the {side} side  MISS");
+            bad += 1;
+        } else if ours_n == theirs_n {
+            println!("  {name:<20} {theirs_n:>9}  EXACT");
+        } else {
+            let delta = ours_n as i64 - theirs_n as i64;
+            println!("  {name:<20} upstream {theirs_n:>9}, rfish {ours_n:>9} ({delta:+})  DIFFERS");
+            bad += 1;
+        }
+    }
+    if rows == 0 {
+        return Err(format!("{} declares no groups", path.display()));
+    }
+    Ok(Outcome::check(
+        bad == 0,
+        format!(
+            "{bad} of {rows} groups diverge from upstream. A call-count divergence is an \
+             ALGORITHM difference and outranks any cost finding. Check the pattern FIRST — an \
+             inlined-away symbol reads exactly like a real divergence — then attribute the \
+             count to its callers before concluding anything."
+        ),
+    ))
+}
+
+/// Sum the call counts of every symbol matching any `|`-separated substring.
+///
+/// Substrings rather than regexes, because the engine crate has no dependencies and neither
+/// does this one. Every group needed here is a plain substring of a mangled name.
+fn sum_matching(counts: &[(String, u64)], patterns: &str) -> (u64, usize) {
+    let pats: Vec<&str> = patterns.split('|').map(str::trim).filter(|p| !p.is_empty()).collect();
+    let mut total = 0;
+    let mut hits = 0;
+    for (name, n) in counts {
+        if pats.iter().any(|p| name.contains(p)) {
+            total += n;
+            hits += 1;
+        }
+    }
+    (total, hits)
+}
+
+/// Profile one engine and return how many times each function was CALLED.
+///
+/// Callgrind names a callee with `cfn=` and the count of calls to it on the following
+/// `calls=` line, so summing those per callee is the number of times it was entered — the
+/// caller-independent quantity, which is exactly what survives the two compilers laying the
+/// code out differently.
+fn callgrind_calls(bin: &Path, cwd: &Path, label: &str) -> Result<Vec<(String, u64)>, String> {
+    println!("fingerprint: profiling {label} under callgrind (slow)");
+    let out =
+        std::env::temp_dir().join(format!("rfish-fingerprint-{label}-{}.out", std::process::id()));
+    let text = capture_both(
+        Command::new("valgrind")
+            .current_dir(cwd)
+            .args(["--tool=callgrind", "--cache-sim=no", "--branch-sim=no"])
+            .arg(format!("--callgrind-out-file={}", out.display()))
+            .arg(bin)
+            .arg("bench")
+            .args(DIFF_BENCH),
+    )?;
+    // A profile of a run that never searched looks entirely plausible and is worthless.
+    if !text.contains("Nodes searched") {
+        return Err(format!("the {label} profile carries no bench result: it did not search"));
+    }
+    let profile = std::fs::read_to_string(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let _ = std::fs::remove_file(&out);
+
+    let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut totals: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut callee: Option<String> = None;
+    for line in profile.lines() {
+        // `fn=` names the function being costed and `cfn=` the one it calls. Both use the
+        // same `(id) name` compression pool: the name appears once and every later reference
+        // is the bare id, so the map has to be built as the file is read.
+        if let Some(rest) = line.strip_prefix("cfn=").or_else(|| line.strip_prefix("fn=")) {
+            let is_callee = line.starts_with("cfn=");
+            let (id, name) = split_compressed(rest);
+            if let Some(name) = name {
+                names.insert(id.to_string(), name.to_string());
+            }
+            let resolved = names.get(id).cloned().unwrap_or_else(|| format!("?{id}"));
+            // An `fn=` line ENDS any pending callee: costs after it belong to the new frame.
+            callee = is_callee.then_some(resolved);
+        } else if let Some(rest) = line.strip_prefix("calls=")
+            && let Some(callee) = callee.take()
+        {
+            let n: u64 = rest.split_whitespace().next().unwrap_or("0").parse().unwrap_or(0);
+            *totals.entry(callee).or_default() += n;
+        }
+    }
+    if totals.is_empty() {
+        return Err(format!(
+            "the {label} profile names no calls at all; was it built with symbols?"
+        ));
+    }
+    Ok(totals.into_iter().collect())
+}
+
+/// Split callgrind's `(id) name` compression, where the name is present only the first time.
+fn split_compressed(rest: &str) -> (&str, Option<&str>) {
+    let rest = rest.trim_start();
+    let Some(inner) = rest.strip_prefix('(') else {
+        // Uncompressed: the whole thing is the name, and it is its own key.
+        return (rest, Some(rest));
+    };
+    match inner.split_once(')') {
+        Some((id, tail)) => {
+            let tail = tail.trim();
+            (id, (!tail.is_empty()).then_some(tail))
+        }
+        None => (rest, Some(rest)),
+    }
+}

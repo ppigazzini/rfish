@@ -1,0 +1,58 @@
+# Call-count fingerprint groups: NAME <TAB> PATTERN[|PATTERN...]
+#
+# One row per logical component. The patterns are plain SUBSTRINGS of a mangled symbol name,
+# matched against both engines' callgrind profiles and summed per side; `|` separates
+# alternatives, and a row normally carries one alternative per language because rustc and
+# clang do not name the same function the same way. Each row is the claim "rfish calls this as
+# many times as Stockfish does" -- a claim about the ALGORITHM, not about cost.
+#
+# A row whose pattern matches NOTHING on one side is a MISS and FAILS. A silent zero would
+# read as agreement forever, which is precisely what an inlined-away symbol produces. If a
+# compiler change inlines one of these, fix the row -- prefer a callee too big to inline over
+# its caller -- and never delete the check.
+#
+# WHAT THIS IS FOR. Every other differential in this tree compares values: the bench anchor,
+# the goldens, nnue-check, upstream-nodes. Each passes over a state divergence that happens
+# not to move a number on the positions it drives. Two real defects were found by this and by
+# nothing else, both in how a move is RENDERED for output:
+#
+#   * the PV reporter walked a cloned position, playing every PV move to name the next, and
+#     truncated the line at the first move that failed a legality check. Upstream renders
+#     against the root and prints the stored line whole.
+#   * `bestmove ... ponder X` named the ponder move in the position AFTER the best move,
+#     cloning and playing it first. Upstream names it against the root.
+#
+# Together, 1492 position clones and 1492 do_move/undo_move pairs per `bench 16 1 8` that
+# upstream does not perform, and a PV that could come out shorter than upstream prints it.
+# Every value gate was green through both.
+
+movepick_next	MovePicker::next_move|MovePicker>::next_move
+search_node	Worker::search<|SearchWorker>::node::
+qsearch	Worker::qsearch<|SearchWorker>::qsearch
+evaluate	Eval::evaluate(|rfish_engine::eval::evaluate
+nnue_network	AccumulatorStack::evaluate(|nnue::Network>::evaluate
+update_quiet	update_quiet_histories|SearchWorker>::update_quiet
+do_move	Position::do_move(|Position>::do_move_checked
+pseudo_legal	Position::pseudo_legal|Position>::pseudo_legal
+
+# NOT GATED, and the reason is measured rather than assumed.
+#
+# A call count is inlining-immune at the CALLEE -- it does not care how the callee was
+# reached -- but only while the callee itself survives as a symbol on both sides. Upstream is
+# clang with `-flto=full` plus PGO, and it inlines these four INTO the search templates, so
+# its symbol counts omit every inlined site. rfish keeps them as calls.
+#
+# The proof is internal to upstream's own profile and needs no second measurement: upstream
+# reports do_move 163345 and undo_move 68736 over the same bench. Every do_move in a search is
+# undone, so upstream's true undo_move count IS 163345 and the symbol is short by 94609 --
+# those calls were inlined away. rfish reports 163331, which is the number a consistent count
+# looks like. Gating these would assert that two compilers inline identically, which is not a
+# fact about this port.
+#
+#   undo_move	Position::undo_move|Position>::undo_move        upstream 68736, rfish 163331
+#   legal	Position::legal(|Position>::legal              upstream 96782, rfish 339061
+#   gives_check	Position::gives_check|Position>::gives_check    upstream 88990, rfish 317545
+#   see_ge	Position::see_ge|Position>::see_ge             upstream 89522, rfish 202943
+#
+# If a future change gives upstream a non-inlined symbol for any of them -- or gives rfish an
+# `#[inline(never)]` reason of its own -- move the row up rather than leaving it here.

@@ -78,6 +78,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "oracle" => perf::oracle(args),
         "perf" => perf::perf(args),
         "upstream-nodes" => perf::upstream_nodes(args),
+        "fingerprint" => perf::fingerprint(args),
         "fuzz" => fuzz::fuzz(args),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
@@ -102,6 +103,8 @@ cargo xtask <step> — the rfish build driver
     golden                the UCI case outputs match tools/*.golden
     golden-audit          every golden is what UPSTREAM produces, not just what we do
     upstream-nodes        node-for-node vs the oracle on RANDOM positions
+    fingerprint [--tier T]  assert rfish CALLS what upstream calls, as often, under
+                          callgrind; catches a state divergence no value gate can see
     test                  the unit and property suite
     fmt / fmt-fix         cargo fmt --check / cargo fmt
     clippy                cargo clippy -D warnings
