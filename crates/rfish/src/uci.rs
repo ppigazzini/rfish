@@ -900,6 +900,30 @@ impl Engine {
                     let _ =
                         writeln!(out, "\nPosition: {searched}/{total_positions} ({})", pos.fen());
 
+                    // Upstream builds ONE command per position out of the limit type --
+                    // `go = limitType == "eval" ? "eval" : "go " + limitType + " " + limit`
+                    // -- so `eval` and `perft` are not searches at all. Mapping every unknown
+                    // type onto `depth` ran a depth search for both: `bench 16 1 4 default
+                    // eval` searched where upstream traces the evaluation, and
+                    // `bench 16 1 3 default perft` searched where upstream counts moves.
+                    if spec.limit_kind == "eval" {
+                        // The position under evaluation is the shell's own, because that is
+                        // what `engine.trace_eval()` reads.
+                        let saved = core::mem::replace(&mut self.pos, pos);
+                        self.cmd_eval(out);
+                        self.pos = saved;
+                        continue;
+                    }
+                    if spec.limit_kind == "perft" {
+                        let (moves, total) = perft_divide(&mut pos, spec.limit);
+                        for (m, n) in moves {
+                            let _ = writeln!(out, "{}: {n}", move_to_uci(&pos, m));
+                        }
+                        let _ = writeln!(out, "\nNodes searched: {total}\n");
+                        total_nodes += total;
+                        continue;
+                    }
+
                     let mut limits = Limits {
                         start: Some(Instant::now()),
                         ply: pos.game_ply(),
