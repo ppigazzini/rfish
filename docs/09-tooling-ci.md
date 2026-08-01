@@ -166,9 +166,17 @@ would have produced a green gate over a wrong engine:
   memory implementation rfish cannot have — and one was already equivalent. Record all three
   in the commit body; a reader who cannot tell "ported" from "did not apply" has to redo the
   analysis.
-- **Rebuild the oracle before trusting a differential gate.** `nnue-check` and `tb` compare
-  against `../Stockfish/src/stockfish`, and a binary left over from the previous pin
-  compares the new engine against the old upstream while reporting a clean pass.
+- **Rebuild the oracle before trusting a differential gate, and CHECK ITS STAMP.** A binary
+  left over from the previous pin compares the new engine against the old upstream while
+  reporting a clean pass. Writing that down was not enough: one commit later the same trap
+  caught this repository anyway, because `../Stockfish/src` also held a **`stockfish-new`**
+  from the old pin, that name sorted first, and every differential gate quietly adjudicated
+  against the wrong commit. `find_oracle` now reads the short SHA upstream stamps into
+  `id name` and refuses anything that is not `UPSTREAM_BASE`. Trust the stamp, never the
+  filename or the timestamp.
+- **A golden cannot see a divergence from upstream, so ADJUDICATE it.** `cargo xtask
+  golden-audit` drives upstream through the same cases and diffs. It found three real
+  differences the goldens had been recording as correct for as long as they existed.
 - **A golden pins THIS engine, so a golden alone cannot see a divergence from upstream.**
   The last sync's `search.golden` had recorded a `bestmove` with no ponder move for years,
   green every run, while upstream printed one — `extract_ponder_from_tt` had never been

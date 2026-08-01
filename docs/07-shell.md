@@ -86,6 +86,29 @@ rendered by walking a copy so each move is named in the position it is played in
 
 `go perft N` is answered here and never reaches the search: it is a movegen command.
 
+## OPEN: a malformed command does not end the process, and upstream's does
+
+Upstream treats a command it cannot use as fatal. `position fen this is not a fen at all`
+prints
+
+```text
+info string CRITICAL ERROR: Command `position fen …` failed. Reason: Invalid FEN. Invalid piece: t
+```
+
+and **exits 1**. rfish prints `info string Invalid FEN: malformed board field`, keeps the
+previous position, and carries on — different text, and a process that is still running.
+
+This is unresolved, and it is recorded here rather than fixed because the decision is not
+local. Exiting on malformed input is what upstream does and the port's rule is that upstream
+wins; but `cargo xtask fuzz` exists to throw mutated UCI text at this shell, and an engine
+that exits on the first bad token changes what that harness measures. Whoever settles it has
+to settle both.
+
+Until then `cargo xtask golden-audit` reports the `errors` case as **not answerable** — not
+as passing. Upstream terminates partway through, so its remaining commands have no answer to
+adjudicate against, and a green line there would be the same lie the goldens told before the
+audit existed.
+
 ## What is not here
 
 - **No `help`, no `flip`, no `export_net`, no `tune`.** All declared out of scope until the
