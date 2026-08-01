@@ -152,6 +152,32 @@ inherit it.
 
 **A perf number without its tier is not a number.**
 
+## Comparability: what must be held equal before a ratio means anything
+
+A ledger entry is a ratio against an upstream build, so it is a statement about the two
+engines only when everything that is not an engine has been held equal. Three things had
+not been, and each moved the answer by more than the code changes the ledger tracks. All
+three are now the job of `cargo xtask pgo`, `oracle` and `perf`.
+
+- **The COMPILER, on both sides.** rfish is compiled by rustc, whose backend is LLVM. An
+  oracle built by `g++` measures GCC against LLVM at least as much as it measures upstream
+  against rfish — and it is not a small term: rebuilding the same upstream SHA with `clang++`
+  instead of `g++` moved its instruction count by double-digit per cent here. `cargo xtask
+  oracle` builds with `clang++`, and refuses to pretend the major version does not matter:
+  match it to the LLVM rustc carries, which `rustc -vV` prints.
+- **PROFILE-GUIDED OPTIMISATION, on both sides.** Upstream's own shipped recipe is
+  `make profile-build` — PGO on top of LTO — and it is what a player runs and what fishtest
+  measures. rfish had no PGO path at all, so every ledger row compared a profile-guided C++
+  binary against a rustc build that never saw a profile. `cargo xtask pgo` adds the missing
+  half: instrument, train on `bench`, merge, rebuild. Both sides train on the same workload
+  because upstream's `profile-build` trains on its own `bench` too.
+- **The TIER.** Already covered by `--arch`, and `--tier` now names the pair — rfish's
+  `-C target-cpu` and upstream's `ARCH=` for the same machine — so one flag moves both sides.
+
+**PGO cannot move the node count**, and `signature` against the PGO binary is what says so.
+The profile steers block layout and inlining; a bench total that moves under it is a bug in
+the engine, not a property of the profile.
+
 ## Measurement, and each instrument's blind spots
 
 - **`perf stat` / `cachegrind` count the whole process**, which includes the magic-table
@@ -159,6 +185,18 @@ inherit it.
   measurement, and only on the instruction axis — on the cycles axis the subtraction removes
   a term whose error rivals the effect. Time the search directly instead: the bench's own
   total contains no startup by construction.
+- **A batched best-of-N wall-clock reading is thermally void.** Running A five times and then
+  B five times measures the order as much as the binaries: the second batch runs on a hotter
+  core. Time is only comparable INTERLEAVED, with the order alternating each round and the
+  MEDIAN of the paired ratios reported alongside its spread — a spread that straddles 1.000
+  has established no direction and must be reported as establishing none. `cargo xtask perf`
+  runs that protocol; it is the one the sibling C port drives its nps A/B with, whose header
+  records that the rule was paid for by publishing "the spine is at parity" over a real
+  deficit.
+- **callgrind has a TIER CEILING.** It implements no AVX-512 and SIGILLs on the first
+  instruction it does not know, so the instruction axis tops out below the tier a player
+  actually builds. Measure instructions at `avx2` and time at `native`, and never quote one
+  tier's instruction ratio beside another tier's time ratio as though they agreed.
 - **callgrind is blind to software prefetch**, on both engines. No callgrind bar can certify
   a prefetch change.
 - **A serial cycle A/B has a run-to-run floor** of around a percent on a typical desktop,
