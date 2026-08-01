@@ -772,17 +772,47 @@ impl Position {
             return Ok(());
         }
 
-        // The square must be on the right rank for the side to move, must be empty, must
-        // have the captured pawn behind it, and some pawn must actually be able to take.
+        // Upstream's four conditions, all of them. An en-passant square that survives any
+        // fewer is recorded here and not there -- and the square is MIXED INTO THE KEY, so the
+        // two engines then disagree about which transposition-table entry a position owns.
         let us = self.side_to_move;
         let them = !us;
         let captured = sq.shift(Direction::pawn_push(them));
+        // The square BEYOND the ep square from the mover's side: the one the enemy pawn left.
+        // A piece standing there means the double push never happened, so the FEN is claiming
+        // a capture that cannot exist. Never off the board: an ep square is on relative rank 6,
+        // so this is rank 7.
+        let vacated = sq.shift(Direction::pawn_push(us));
+        let movers = pawn_attacks_from(them, sq) & self.pieces_of(us, PieceType::Pawn);
         let available = sq.relative_rank(us) == 5
             && self.is_empty_square(sq)
+            && vacated.is_ok()
+            && self.is_empty_square(vacated)
             && self.piece_on(captured) == Piece::new(them, PieceType::Pawn)
-            && (pawn_attacks_from(them, sq) & self.pieces_of(us, PieceType::Pawn)).any();
+            && movers.any();
 
-        self.st_mut().ep_square = if available { sq } else { Square::NONE };
+        // And the capture must be PLAYABLE by at least one of those pawns. A pawn pinned
+        // against its own king cannot take, and if none of them can the square is not an
+        // en-passant square at all -- upstream's `legalEP`.
+        let legal = available && {
+            let target = Bitboard::from_square(captured);
+            // Occupancy AFTER the capture: the captured pawn goes, the ep square is filled by
+            // whichever pawn took. Each candidate then leaves its own origin square in turn.
+            let after = self.occupied() ^ target ^ Bitboard::from_square(sq);
+            let king = self.king_square(us);
+            let mut rest = movers;
+            let mut any = false;
+            while rest.any() {
+                let from = rest.pop_lsb();
+                let occ = after ^ Bitboard::from_square(from);
+                // The captured pawn is off the board, so an attack it appears to give does
+                // not count -- hence `& !target`.
+                any |= (self.attackers_to_occ(king, occ) & self.colored(them) & !target).is_empty();
+            }
+            any
+        };
+
+        self.st_mut().ep_square = if legal { sq } else { Square::NONE };
         Ok(())
     }
 
