@@ -248,14 +248,7 @@ impl Engine {
                 let _ = writeln!(out, "{HELP}");
             }
             "bench" => self.cmd_bench(&rest, out),
-            "compiler" => {
-                let _ = writeln!(
-                    out,
-                    "Compiled by rustc {} for {}",
-                    env!("RFISH_RUSTC"),
-                    std::env::consts::ARCH
-                );
-            }
+            "compiler" => Self::cmd_compiler(out),
             "quit" => {
                 self.pool.shared().request_stop();
                 return false;
@@ -651,6 +644,48 @@ impl Engine {
             i += 1;
         }
         Ok(l)
+    }
+
+    /// Upstream's `compiler` block: four aligned fields between two blank lines.
+    ///
+    /// The CONTENT is necessarily this port's -- rustc built it, not g++ -- but the shape is
+    /// upstream's, because a bug report pastes this verbatim and a reader should not have to
+    /// learn a second layout to read it.
+    fn cmd_compiler(out: &mut impl Write) {
+        let os = match std::env::consts::OS {
+            "linux" => "Linux",
+            "macos" => "Apple",
+            "windows" => "Windows",
+            other => other,
+        };
+        // The feature list upstream prints, in upstream's order, for the ones rustc exposes.
+        let mut settings = Vec::new();
+        if cfg!(target_pointer_width = "64") {
+            settings.push("64bit");
+        }
+        for (on, name) in [
+            (cfg!(target_feature = "avx512f"), "AVX512F"),
+            (cfg!(target_feature = "avx2"), "AVX2"),
+            (cfg!(target_feature = "bmi2"), "BMI2"),
+            (cfg!(target_feature = "sse4.1"), "SSE41"),
+            (cfg!(target_feature = "ssse3"), "SSSE3"),
+            (cfg!(target_feature = "sse2"), "SSE2"),
+            (cfg!(target_feature = "popcnt"), "POPCNT"),
+        ] {
+            if on {
+                settings.push(name);
+            }
+        }
+        // `rustc 1.99.0-nightly (abc 2026-07-29)` -> `1.99.0-nightly`, which is what
+        // upstream's `__VERSION__` field carries: the version and nothing else.
+        let version = env!("RFISH_RUSTC").split_whitespace().nth(1).unwrap_or("unknown");
+
+        let _ = writeln!(out);
+        let _ = writeln!(out, "Compiled by                : rustc {version} on {os}");
+        let _ = writeln!(out, "Compilation architecture   : {}", env!("RFISH_TARGET_CPU"));
+        let _ = writeln!(out, "Compilation settings       : {}", settings.join(" "));
+        let _ = writeln!(out, "Compiler __VERSION__ macro : {version}");
+        let _ = writeln!(out);
     }
 
     fn cmd_eval(&self, out: &mut impl Write) {
