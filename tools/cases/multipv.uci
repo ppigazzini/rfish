@@ -1,0 +1,4 @@
+setoption name MultiPV value 3
+setoption name UCI_ShowWDL value true
+position fen r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR b KQkq - 0 1
+go depth 6

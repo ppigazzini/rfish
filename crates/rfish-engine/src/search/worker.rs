@@ -127,6 +127,13 @@ pub trait InfoSink {
     /// A `currmove` update. The default does nothing: it is optional in the protocol and
     /// most callers do not want it.
     fn current_move(&mut self, _mv: &str, _number: usize, _depth: i32) {}
+    /// The report for a root with NO legal moves.
+    ///
+    /// Its own hook rather than a [`DepthReport`], because upstream prints a shorter line
+    /// here -- a depth and a score, with no seldepth, nodes or PV -- and a GUI told that a
+    /// mated position was searched to depth 0 with an empty PV would be told something
+    /// different from what upstream tells it.
+    fn no_moves(&mut self, _depth: i32, _score: &Score) {}
 }
 
 /// A no-op sink, for a search whose output nobody reads.
@@ -691,11 +698,16 @@ impl SearchWorker {
 
         if self.root_moves.is_empty() {
             // Checkmate or stalemate at the root: there is nothing to search, and the
-            // protocol still expects a `bestmove`.
+            // protocol still expects a `bestmove` -- preceded by upstream's one-line report,
+            // which says whether the position is lost or drawn.
+            let score = if self.pos.in_check() { -VALUE_MATE } else { VALUE_DRAW };
+            if self.id == 0 {
+                sink.no_moves(0, &Score::new(score, &self.pos));
+            }
             return SearchResult {
                 best_move: Move::NONE,
                 ponder_move: None,
-                score: if self.pos.in_check() { -VALUE_MATE } else { VALUE_DRAW },
+                score,
                 depth: 0,
                 nodes: 0,
             };
@@ -1131,9 +1143,11 @@ impl SearchWorker {
                 skill.best()
             };
             if let Some(i) = self.root_moves.iter().position(|rm| rm.mv == chosen) {
+                // Swap ONLY. Upstream does not mark the PV unsent here, so the last line the
+                // GUI saw describes the strongest move while `bestmove` names the
+                // handicapped one -- marking it unsent re-sent a line identical to the one
+                // already published, which is a duplicate rather than a correction.
                 self.root_moves.swap(0, i);
-                // The handicapped move was never the one reported.
-                uci_pv_sent = false;
             }
         }
 
@@ -2840,7 +2854,12 @@ impl SearchWorker {
         // EVERY multipv line, not just the one that finished. Upstream re-prints the whole
         // set each time it reports, so a GUI in MultiPV mode sees all of them at every
         // depth; reporting only `pv_index` published the last line and nothing else.
-        let lines = self.multi_pv.min(self.root_moves.len());
+        //
+        // The OPTION's value, not the searched count. `Skill Level` raises the searched
+        // count to four so it has candidates to choose among, and upstream still reports the
+        // one line the GUI asked for -- reporting the inflated number publishes three lines
+        // nobody requested, at a strength the engine is not playing at.
+        let lines = self.opts.multi_pv.min(self.root_moves.len());
         let elapsed = self.budget.elapsed_time().max(1) as u64;
         let nodes = self.shared.node_count().max(self.nodes);
         let tb_hits = self.tb_hits + if self.root_in_tb { self.root_moves.len() as u64 } else { 0 };

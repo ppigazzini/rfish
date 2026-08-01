@@ -1,0 +1,7 @@
+rfish 0.1.0 by the Stockfish developers (see AUTHORS)
+info string Network replica 1: Local memory.
+info depth 0 score cp 0
+bestmove (none)
+info string Network replica 1: Local memory.
+info depth 0 score mate 0
+bestmove (none)
