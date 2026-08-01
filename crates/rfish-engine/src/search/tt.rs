@@ -117,7 +117,7 @@ impl TranspositionTable {
     #[must_use]
     pub fn new(mb: usize) -> TranspositionTable {
         let mut tt = TranspositionTable { clusters: Vec::new(), generation: AtomicU64::new(0) };
-        tt.resize(mb);
+        assert!(tt.resize(mb), "the default table must fit");
         tt
     }
 
@@ -126,11 +126,24 @@ impl TranspositionTable {
     /// The cluster count is `mb * 1024 * 1024 / 32` — upstream's arithmetic, using
     /// upstream's cluster size rather than this type's own, because the count is what
     /// decides the collision pattern and therefore the node count.
-    pub fn resize(&mut self, mb: usize) {
+    /// Returns false when the table could not be allocated, having changed nothing.
+    ///
+    /// **Fallible on purpose.** `Hash` is an option value that becomes an allocation, and a
+    /// legal value can still be more memory than the machine has. Growing the `Vec` directly
+    /// makes the allocator's failure an ABORT -- SIGABRT and a core dump -- where upstream
+    /// prints one line and exits 1. `try_reserve` is what turns that back into a result the
+    /// caller can report, and it needs no `unsafe` to do it.
+    #[must_use]
+    pub fn resize(&mut self, mb: usize) -> bool {
         let count = (mb.max(1) * 1024 * 1024) / CLUSTER_BYTES;
         self.clusters = Vec::new();
+        if self.clusters.try_reserve_exact(count).is_err() {
+            return false;
+        }
+        // Cannot allocate again: the capacity above is already reserved.
         self.clusters.resize_with(count, Cluster::default);
         self.generation.store(0, Ordering::Relaxed);
+        true
     }
 
     /// Forget everything. Called on `ucinewgame`.

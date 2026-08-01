@@ -300,7 +300,7 @@ impl Engine {
     /// acts on is worse than one it does not declare.
     fn apply_option(&mut self, name: &str, out: &mut impl Write) {
         match name.to_ascii_lowercase().as_str() {
-            "hash" => self.tt.resize(self.options.spin("Hash") as usize),
+            "hash" => self.resize_table(self.options.spin("Hash") as usize),
             "clear hash" => {
                 self.tt.clear();
                 self.pool.clear();
@@ -646,6 +646,18 @@ impl Engine {
         Ok(l)
     }
 
+    /// Resize the transposition table, failing the way upstream fails.
+    ///
+    /// A `Hash` the machine cannot provide is not a bug in the value -- it is inside the
+    /// option's declared range -- so upstream reports it on standard error and exits 1
+    /// rather than dying. rfish aborted with a core dump before this existed.
+    fn resize_table(&mut self, mb: usize) {
+        if !self.tt.resize(mb) {
+            eprintln!("Failed to allocate {mb}MB for transposition table.");
+            std::process::exit(1);
+        }
+    }
+
     /// Upstream's `compiler` block: four aligned fields between two blank lines.
     ///
     /// The CONTENT is necessarily this port's -- rustc built it, not g++ -- but the shape is
@@ -772,7 +784,7 @@ impl Engine {
 
         // A SINGLE `ucinewgame` before the whole run, not one per position: the table and
         // the histories carry across positions, and that is part of what the number means.
-        self.tt.resize(spec.hash_mb);
+        self.resize_table(spec.hash_mb);
         self.pool.resize(spec.threads);
         self.pool.clear();
         self.tt.clear();
