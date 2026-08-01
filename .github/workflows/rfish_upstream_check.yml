@@ -1,0 +1,89 @@
+name: upstream check
+
+# Scheduled upstream-drift detection, which both sibling ports carry and this one did not.
+#
+# DETECTION ONLY, and judgement-free: fetch official-stockfish/master and print how many
+# commits the port is behind the SHA in `tools/upstream/UPSTREAM_BASE`, plus the subjects of
+# what is missing. Porting stays a deliberate, human-gated session -- this never attempts one.
+#
+# It exists because the gap is otherwise invisible between sessions. rfish sat five commits
+# behind, through a search retune and an NNUE change, until someone happened to compare by
+# hand; two of those five moved the bench signature. Weekly detection is cheap insurance
+# against the next one, and the rule this serves is upstream's own: sync at least at every
+# net bump.
+#
+# Every action is pinned BY COMMIT SHA with the tag in a trailing comment, the same pins the
+# sibling ports carry, so a bump is decided once and applied across all of them.
+
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC. Upstream master moves a few commits a week.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+# Least privilege: detection reads this repository and upstream's history, nothing else.
+permissions:
+  contents: read
+
+jobs:
+  upstream-check:
+    name: Detect upstream drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Full history: `git rev-list <pin>..<master>` needs the pinned commit to be present,
+      # and a shallow checkout may not carry it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Beside the workspace, which is where every differential gate already looks for it.
+      - name: Clone the golden beside the workspace
+        run: git clone --filter=blob:none https://github.com/official-stockfish/Stockfish.git ../Stockfish
+
+      - name: Report the drift and what is missing
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin="$(tr -d '[:space:]' < tools/upstream/UPSTREAM_BASE)"
+          test -n "$pin" || { echo "tools/upstream/UPSTREAM_BASE is empty"; exit 1; }
+
+          # A pin the golden does not contain is a broken pin, not a drift of zero -- fail
+          # loudly rather than reporting "up to date" for a SHA nobody can resolve.
+          if ! git -C ../Stockfish cat-file -e "${pin}^{commit}" 2>/dev/null; then
+            echo "UPSTREAM_BASE $pin is not a commit in upstream's history"
+            exit 1
+          fi
+
+          master="$(git -C ../Stockfish rev-parse origin/master)"
+          behind="$(git -C ../Stockfish rev-list --count "$pin..$master")"
+          echo "pin $pin is $behind commits behind upstream master $master"
+
+          {
+            echo "## Upstream drift"
+            echo ""
+            echo "Pinned at \`$pin\`, **$behind commits behind** \`$master\`."
+            echo ""
+            if [ "$behind" -gt 0 ]; then
+              echo "Missing commits, oldest first:"
+              echo ""
+              echo '```'
+              git -C ../Stockfish log --reverse --oneline "$pin..$master"
+              echo '```'
+              echo ""
+              echo "Porting is human-gated. Land ONE upstream commit per commit and check"
+              echo "each against upstream built at THAT commit -- see docs/09-tooling-ci.md."
+            else
+              echo "Up to date."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Informational, never a gate: a red merge button for upstream having moved would
+      # block work that has nothing to do with the port being behind.
+      - name: Note that this lane does not gate
+        run: echo "Detection only -- this workflow never fails for drift."

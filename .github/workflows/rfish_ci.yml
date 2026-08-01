@@ -135,6 +135,15 @@ jobs:
           path: resources/*.nnue
           key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
       - run: cargo xtask net
+      # The 3-man Syzygy set, ~26 KiB, cached the way both sibling ports cache theirs and
+      # keyed on the fetcher so a source or set change re-downloads. Without it the
+      # tablebase-dependent golden case SKIPS, and a case that can only skip in CI is a case
+      # nobody notices breaking.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: resources/syzygy
+          key: syzygy-3man-${{ hashFiles('crates/xtask/src/net.rs') }}
+      - run: cargo xtask tb-fetch
       # perft counts are facts about chess; golden pins the UCI surface byte for byte;
       # signature is the anchor. Each exits 2 if it could not run, which fails the step --
       # a skipped gate must never read as a pass.
