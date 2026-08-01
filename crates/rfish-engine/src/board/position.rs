@@ -139,31 +139,103 @@ impl StateInfo {
 /// Why a FEN record was rejected, in upstream's words.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FenError {
-    /// The board field is missing, malformed, or does not describe 64 squares.
-    Board,
-    /// The side-to-move field is neither `w` nor `b`.
-    SideToMove,
-    /// A castling letter names no rook.
-    Castling,
-    /// The en-passant field is not a square or `-`.
-    EnPassant,
+    /// A field ended before it had said enough.
+    UnexpectedEnd,
+    /// A digit outside `1..=8` in the board field.
+    SkipCount,
+    /// The board field walked past file h.
+    FileReached,
+    /// A `/` arrived before the rank was full.
+    RankEndEarly,
+    /// The board field walked past rank 1.
+    RankReached,
+    /// A character in the board field names no piece.
+    InvalidPiece(char),
+    /// More than 32 pieces on the board.
+    TooManyPieces,
+    /// The board field ended without describing 64 squares.
+    CursorNotAtEnd,
+    /// A pawn on rank 1 or rank 8, which no legal game reaches.
+    PawnsOnBackRank,
     /// A colour has no king, or more than one.
     Kings,
+    /// A colour has more than eight pawns.
+    TooManyPawns(Color),
+    /// A colour has more promoted pieces than its missing pawns can account for.
+    TooManyPiecesFor(Color),
+    /// The side-to-move field is neither `w` nor `b`.
+    SideToMove(char),
+    /// The side-to-move field is not followed by a space.
+    ExpectedSpaceAfterSideToMove,
+    /// More than four castling letters.
+    TooManyCastlingRights,
+    /// A castling letter names no rook.
+    Castling(char),
+    /// The en-passant field is not a square or `-`.
+    EnPassant,
+    /// The halfmove clock is negative or absurd.
+    Rule50OutOfRange,
+    /// The fullmove number is negative or absurd.
+    GamePlyOutOfRange,
     /// The side not to move is already in check.
     OppositeCheck,
 }
 
 impl fmt::Display for FenError {
+    /// **Upstream's text, verbatim.** These strings reach a GUI through the shell's critical
+    /// error report, so a paraphrase is a divergence like any other. `PositionSetError` in
+    /// `Stockfish/src/position.cpp` is the golden.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            FenError::Board => "malformed board field",
-            FenError::SideToMove => "side to move must be 'w' or 'b'",
-            FenError::Castling => "castling field names no rook",
-            FenError::EnPassant => "malformed en passant field",
-            FenError::Kings => "each side must have exactly one king",
-            FenError::OppositeCheck => "the side not to move is in check",
-        })
+        match self {
+            FenError::UnexpectedEnd => f.write_str("Invalid FEN. Unexpected end of stream."),
+            FenError::SkipCount => f.write_str("Invalid FEN. Invalid number of squares to skip."),
+            FenError::FileReached => f.write_str("Invalid FEN. Invalid file reached."),
+            FenError::RankEndEarly => {
+                f.write_str("Invalid FEN. Trying to end rank when not at the end of it.")
+            }
+            FenError::RankReached => f.write_str("Invalid FEN. Invalid rank reached."),
+            FenError::InvalidPiece(c) => write!(f, "Invalid FEN. Invalid piece: {c}"),
+            FenError::TooManyPieces => {
+                f.write_str("Invalid FEN. More than 32 pieces on the board.")
+            }
+            FenError::CursorNotAtEnd => {
+                f.write_str("Invalid FEN. Board state encoding ended but cursor not at end.")
+            }
+            FenError::PawnsOnBackRank => {
+                f.write_str("Unsupported position. Pawns on the first or eighth rank.")
+            }
+            FenError::Kings => f.write_str("Unsupported position. Incorrect number of kings."),
+            FenError::TooManyPawns(c) => {
+                write!(f, "Unsupported position. {} has more than 8 pawns.", upper(*c))
+            }
+            FenError::TooManyPiecesFor(c) => {
+                write!(f, "Unsupported position. Too many pieces for {}.", upper(*c))
+            }
+            FenError::SideToMove(c) => write!(f, "Invalid FEN. Invalid side to move: {c}"),
+            FenError::ExpectedSpaceAfterSideToMove => {
+                f.write_str("Invalid FEN. Expected whitespace after side to move.")
+            }
+            FenError::TooManyCastlingRights => {
+                f.write_str("Invalid FEN. Maximum of 4 castling rights can be specified.")
+            }
+            FenError::Castling(c) => {
+                write!(f, "Invalid FEN. Expected castling rights. Got: {c}")
+            }
+            FenError::EnPassant => f.write_str("Invalid FEN. Invalid en-passant square."),
+            FenError::Rule50OutOfRange => {
+                f.write_str("Unsupported position. Rule50 counter out of range.")
+            }
+            FenError::GamePlyOutOfRange => {
+                f.write_str("Unsupported position. Game ply out of range.")
+            }
+            FenError::OppositeCheck => f.write_str("Unsupported position. King can be captured."),
+        }
     }
+}
+
+/// `WHITE` or `BLACK`, as upstream spells a colour inside an error message.
+fn upper(c: Color) -> &'static str {
+    if c == Color::White { "WHITE" } else { "BLACK" }
 }
 
 /// A chess position, plus the state chain reaching it.
@@ -535,24 +607,41 @@ impl Position {
         self.chess960 = chess960;
 
         let mut fields = fen.split_ascii_whitespace();
-        let board = fields.next().ok_or(FenError::Board)?;
+        let board = fields.next().ok_or(FenError::UnexpectedEnd)?;
 
+        // Upstream walks the board field one character at a time and distinguishes every way
+        // it can be wrong. Each arm below reports what upstream reports for the same input;
+        // a shared "malformed" would be a divergence the moment a GUI showed the reason.
+        let mut pieces = 0i32;
         let mut file = 0usize;
         let mut rank = 7usize;
         for ch in board.bytes() {
             match ch {
-                b'1'..=b'8' => file += (ch - b'0') as usize,
+                b'1'..=b'8' => {
+                    file += (ch - b'0') as usize;
+                    if file > 8 {
+                        return Err(FenError::FileReached);
+                    }
+                }
+                b'0' | b'9' => return Err(FenError::SkipCount),
                 b'/' => {
-                    if file != 8 || rank == 0 {
-                        return Err(FenError::Board);
+                    if file != 8 {
+                        return Err(FenError::RankEndEarly);
+                    }
+                    if rank == 0 {
+                        return Err(FenError::RankReached);
                     }
                     file = 0;
                     rank -= 1;
                 }
                 _ => {
-                    let pc = Piece::from_char(ch).ok_or(FenError::Board)?;
                     if file >= 8 {
-                        return Err(FenError::Board);
+                        return Err(FenError::FileReached);
+                    }
+                    let pc = Piece::from_char(ch).ok_or(FenError::InvalidPiece(char::from(ch)))?;
+                    pieces += 1;
+                    if pieces > 32 {
+                        return Err(FenError::TooManyPieces);
                     }
                     self.put_piece(pc, Square::make(file, rank));
                     file += 1;
@@ -560,24 +649,56 @@ impl Position {
             }
         }
         if file != 8 || rank != 0 {
-            return Err(FenError::Board);
+            return Err(FenError::CursorNotAtEnd);
         }
 
-        self.side_to_move = match fields.next() {
-            Some("w") => Color::White,
-            Some("b") => Color::Black,
-            _ => return Err(FenError::SideToMove),
-        };
-
-        // Both kings must exist before castling rights can name a rook relative to one.
+        // The checks upstream calls "Unsupported position": placements no legal game
+        // reaches, which it refuses rather than searches. rfish accepted all of them.
+        if (self.pieces(PieceType::Pawn)
+            & (relative_rank_bb(Color::White, 0) | relative_rank_bb(Color::Black, 0)))
+        .any()
+        {
+            return Err(FenError::PawnsOnBackRank);
+        }
         for c in Color::ALL {
             if self.count(c, PieceType::King) != 1 {
                 return Err(FenError::Kings);
             }
         }
+        for c in Color::ALL {
+            let pawns = self.count(c, PieceType::Pawn);
+            if pawns > 8 {
+                return Err(FenError::TooManyPawns(c));
+            }
+            // Every piece beyond the starting complement had to be promoted, and each
+            // promotion costs a pawn.
+            let extra = (self.count(c, PieceType::Knight) - 2).max(0)
+                + (self.count(c, PieceType::Bishop) - 2).max(0)
+                + (self.count(c, PieceType::Rook) - 2).max(0)
+                + (self.count(c, PieceType::Queen) - 1).max(0);
+            if extra > 8 - pawns {
+                return Err(FenError::TooManyPiecesFor(c));
+            }
+        }
+
+        let stm = fields.next().ok_or(FenError::UnexpectedEnd)?;
+        self.side_to_move = match stm.as_bytes() {
+            b"w" => Color::White,
+            b"b" => Color::Black,
+            // Upstream reads ONE character and then requires a space, so a longer token is
+            // "expected whitespace" rather than an invalid side.
+            [c, ..] if *c == b'w' || *c == b'b' => {
+                return Err(FenError::ExpectedSpaceAfterSideToMove);
+            }
+            [c, ..] => return Err(FenError::SideToMove(char::from(*c))),
+            [] => return Err(FenError::UnexpectedEnd),
+        };
 
         let castling = fields.next().unwrap_or("-");
         if castling != "-" {
+            if castling.len() > 4 {
+                return Err(FenError::TooManyCastlingRights);
+            }
             for ch in castling.bytes() {
                 let color = if ch.is_ascii_uppercase() { Color::White } else { Color::Black };
                 let back_rank = relative_rank_bb(color, 0);
@@ -590,19 +711,19 @@ impl Position {
                     b'K' => (rooks.bits() != 0)
                         .then(|| rooks.msb())
                         .filter(|&r| r > ksq)
-                        .ok_or(FenError::Castling)?,
+                        .ok_or(FenError::Castling(char::from(ch)))?,
                     b'Q' => (rooks.bits() != 0)
                         .then(|| rooks.lsb())
                         .filter(|&r| r < ksq)
-                        .ok_or(FenError::Castling)?,
+                        .ok_or(FenError::Castling(char::from(ch)))?,
                     f @ b'A'..=b'H' => {
                         let sq = Square::make((f - b'A') as usize, ksq.rank());
                         if self.piece_on(sq) != Piece::new(color, PieceType::Rook) {
-                            return Err(FenError::Castling);
+                            return Err(FenError::Castling(char::from(ch)));
                         }
                         sq
                     }
-                    _ => return Err(FenError::Castling),
+                    _ => return Err(FenError::Castling(char::from(ch))),
                 };
                 self.set_castling_right(color, rook_sq);
             }
@@ -612,6 +733,14 @@ impl Position {
 
         let rule50: i32 = fields.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         let fullmove: i32 = fields.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+        // Upstream bounds both, because rule50 is used multiplicatively against the
+        // evaluation and a wild ply count would run the stack off its end.
+        if !(0..=32767).contains(&rule50) {
+            return Err(FenError::Rule50OutOfRange);
+        }
+        if !(0..=100_000).contains(&fullmove) {
+            return Err(FenError::GamePlyOutOfRange);
+        }
         // Upstream converts to a ply count from move 1, then subtracts one for Black.
         self.game_ply = (fullmove.max(1) - 1) * 2 + i32::from(self.side_to_move == Color::Black);
 
@@ -1830,14 +1959,37 @@ mod tests {
 
     #[test]
     fn malformed_fens_are_rejected_with_a_reason() {
-        assert_eq!(Position::from_fen("", false).unwrap_err(), FenError::Board);
+        // Each reason is upstream's, word for word: the string reaches a GUI through the
+        // shell's critical-error report, so a paraphrase would be a divergence.
+        assert_eq!(Position::from_fen("", false).unwrap_err(), FenError::UnexpectedEnd);
         assert_eq!(
             Position::from_fen("8/8/8/8/8/8/8/8 w - - 0 1", false).unwrap_err(),
             FenError::Kings
         );
         assert_eq!(
             Position::from_fen("4k3/8/8/8/8/8/8/4K2R x KQ - 0 1", false).unwrap_err(),
-            FenError::SideToMove
+            FenError::SideToMove('x')
+        );
+        assert_eq!(
+            Position::from_fen("this is not a fen at all", false).unwrap_err().to_string(),
+            "Invalid FEN. Invalid piece: t"
+        );
+        // The placements upstream calls unsupported, which rfish used to accept.
+        assert_eq!(
+            Position::from_fen("4k3/8/8/8/8/8/8/P3K3 w - - 0 1", false).unwrap_err(),
+            FenError::PawnsOnBackRank
+        );
+        assert_eq!(
+            Position::from_fen("4k3/pppppppp/p7/8/8/8/8/4K3 w - - 0 1", false).unwrap_err(),
+            FenError::TooManyPawns(Color::Black)
+        );
+        assert_eq!(
+            Position::from_fen("4k3/8/8/8/8/8/PPPPPPPP/QQQQKQQQ w - - 0 1", false).unwrap_err(),
+            FenError::TooManyPiecesFor(Color::White)
+        );
+        assert_eq!(
+            Position::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 40000 1", false).unwrap_err(),
+            FenError::Rule50OutOfRange
         );
         // Black to move with White already attacked cannot arise.
         assert!(Position::from_fen("4k3/8/8/8/8/8/8/4K1R1 b - - 0 1", false).is_ok());

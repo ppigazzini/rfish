@@ -2,29 +2,5 @@ rfish 0.1.0 by the Stockfish developers (see AUTHORS)
 info string Network replica 1: Local memory.
 Unknown command: 'notacommand'. Type help for more information.
 No such option: NoSuchOption
-info string Invalid FEN: malformed board field
+info string CRITICAL ERROR: Command `position fen this is not a fen at all` failed. Reason: Invalid FEN. Invalid piece: t
 
- +---+---+---+---+---+---+---+---+
- | r | n | b | q | k | b | n | r | 8
- +---+---+---+---+---+---+---+---+
- | p | p | p | p | p | p | p | p | 7
- +---+---+---+---+---+---+---+---+
- |   |   |   |   |   |   |   |   | 6
- +---+---+---+---+---+---+---+---+
- |   |   |   |   |   |   |   |   | 5
- +---+---+---+---+---+---+---+---+
- |   |   |   |   |   |   |   |   | 4
- +---+---+---+---+---+---+---+---+
- |   |   |   |   |   |   |   |   | 3
- +---+---+---+---+---+---+---+---+
- | P | P | P | P | P | P | P | P | 2
- +---+---+---+---+---+---+---+---+
- | R | N | B | Q | K | B | N | R | 1
- +---+---+---+---+---+---+---+---+
-   a   b   c   d   e   f   g   h
-
-Fen: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
-Key: 8F8F01D4562F59FB
-Checkers: 
-info string Illegal move: e2e5
-bestmove d2d4

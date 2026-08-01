@@ -35,6 +35,10 @@ fn main() {
         debug_log::record_input(&line);
         engine.handle(&line, &mut out);
         let _ = out.flush();
+        // A command that failed fatally leaves with upstream's status, not with success.
+        if engine.is_fatal() {
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -43,5 +47,7 @@ fn main() {
 
     // NOT `stdin.lock()`: the reader is moved to its own thread, and a lock guard is not
     // `Send`. Nothing else in this process reads stdin, so there is no lock to hold.
-    uci::run(io::BufReader::new(io::stdin()), out);
+    if uci::run(io::BufReader::new(io::stdin()), out) {
+        std::process::exit(1);
+    }
 }

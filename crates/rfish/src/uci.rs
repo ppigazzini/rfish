@@ -84,6 +84,17 @@ impl<W: Write> InfoSink for UciSink<W> {
 
 /// The engine session: everything that survives between commands.
 pub(crate) struct Engine {
+    /// The command line being handled, as upstream's `currentCmd`.
+    ///
+    /// Only the critical-error report reads it, and that report quotes the WHOLE line.
+    current_cmd: String,
+    /// Set when a command failed in a way upstream treats as FATAL.
+    ///
+    /// Upstream calls `terminate_on_critical_error`, which prints and then `std::exit(1)`.
+    /// rfish records it and lets the driver leave, so the shell stays drivable from a test
+    /// and from the golden harness -- both of which call `handle` in this process and would
+    /// take the exit with it. `main` turns the flag into the exit code.
+    fatal: bool,
     pos: Position,
     options: Options,
     tt: TranspositionTable,
@@ -124,6 +135,8 @@ impl Engine {
         let pool = ThreadPool::new(options.spin("Threads") as usize);
         let numa = NumaConfig::from_system(numa::DEFAULT_AUTO_POLICY, true);
         Engine {
+            fatal: false,
+            current_cmd: String::new(),
             pos: Position::startpos(),
             options,
             tt,
@@ -135,11 +148,32 @@ impl Engine {
         }
     }
 
+    /// Report a command that failed fatally, exactly as upstream reports it.
+    ///
+    /// Upstream's text, its backticks and its TRAILING BLANK LINE -- `sync_endl` after an
+    /// explicit newline -- because this string reaches a GUI and a paraphrase is a
+    /// divergence like any other.
+    fn critical(&mut self, reason: &impl std::fmt::Display, out: &mut impl Write) {
+        let line = self.current_cmd.clone();
+        let _ = writeln!(
+            out,
+            "info string CRITICAL ERROR: Command `{line}` failed. Reason: {reason}\n"
+        );
+        let _ = out.flush();
+        self.fatal = true;
+    }
+
+    /// Whether a command failed in a way that must end the process.
+    pub(crate) fn is_fatal(&self) -> bool {
+        self.fatal
+    }
+
     /// Handle one command line. Returns `false` on `quit`.
     ///
     /// Unknown commands are reported and ignored, never fatal: a GUI sends what it likes,
     /// and an engine that exits on an unrecognised word is unusable.
     pub(crate) fn handle(&mut self, line: &str, out: &mut impl Write) -> bool {
+        self.current_cmd = line.to_string();
         let mut tokens = line.split_ascii_whitespace();
         let Some(cmd) = tokens.next() else { return true };
         let rest: Vec<&str> = tokens.collect();
@@ -483,7 +517,9 @@ impl Engine {
         match Position::from_fen(&fen, chess960) {
             Ok(p) => self.pos = p,
             Err(e) => {
-                let _ = writeln!(out, "info string Invalid FEN: {e}");
+                // Upstream terminates here: a position it cannot set is a CRITICAL ERROR and
+                // exit 1, not a message the GUI can ignore.
+                self.critical(&e, out);
                 return;
             }
         }
@@ -524,15 +560,11 @@ impl Engine {
         let limits = match self.parse_limits(args) {
             Ok(l) => l,
             Err(reason) => {
-                // Upstream reports the failure and does NOT search. Echoing the whole
-                // command back is upstream's format and is the useful part: a GUI log shows
-                // what was sent, not just which key was wrong.
-                let _ = writeln!(
-                    out,
-                    "info string CRITICAL ERROR: Command `go{}{}` failed. Reason: {reason}",
-                    if args.is_empty() { "" } else { " " },
-                    args.join(" ")
-                );
+                // Upstream does not merely decline to search: `terminate_on_critical_error`
+                // prints and exits 1. Route it through the same reporter as every other
+                // fatal command, which quotes the whole line the way upstream's `currentCmd`
+                // does.
+                self.critical(&reason, out);
                 return;
             }
         };
@@ -767,7 +799,7 @@ fn emit_bestmove(out: &mut impl Write, pos: &Position, result: &SearchResult) {
 /// `quit` is how every gate and every measurement harness drives this binary, and aborting
 /// there would turn a node count into a number that depends on scheduling. A `go infinite`
 /// has no such answer to wait for, so that one is stopped.
-pub(crate) fn run(input: impl BufRead + Send + 'static, output: impl Write) {
+pub(crate) fn run(input: impl BufRead + Send + 'static, output: impl Write) -> bool {
     // Every byte the engine writes passes through the transcript wrapper. It costs a
     // newline scan per write when logging is off, and nothing else.
     let mut output = crate::debug_log::TeeWriter::new(output);
@@ -816,7 +848,13 @@ pub(crate) fn run(input: impl BufRead + Send + 'static, output: impl Write) {
         if !engine.handle(&line, &mut output) {
             break;
         }
+        // Upstream exits the PROCESS from inside the failing command. rfish leaves the loop
+        // and lets `main` set the code, so the same shell stays drivable from a test.
+        if engine.is_fatal() {
+            break;
+        }
     }
+    engine.is_fatal()
 }
 
 #[cfg(test)]

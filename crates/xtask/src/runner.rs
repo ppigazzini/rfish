@@ -112,7 +112,11 @@ pub(crate) fn drive_at(
     }
 
     let out = child.wait_with_output().map_err(|e| format!("waiting for the engine: {e}"))?;
-    if !out.status.success() {
+    // Exit 1 is upstream's CRITICAL ERROR status, and rfish now uses it for the same
+    // commands. The engine reporting a reason and leaving is valid output to capture, not a
+    // failure to run -- but anything else (a signal, a panic under `panic = "abort"`) still
+    // is, so the code is checked rather than ignored.
+    if !out.status.success() && out.status.code() != Some(1) {
         return Err(format!("the engine exited with {}", out.status));
     }
     // Strip CR so a Windows checkout compares byte-for-byte against an LF golden.
