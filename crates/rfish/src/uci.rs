@@ -911,11 +911,14 @@ fn emit_bestmove(out: &mut impl Write, pos: &Position, result: &SearchResult) {
     };
     match result.ponder_move {
         Some(p) => {
-            // The ponder move is named in the position AFTER the best move, which is the
-            // only place its castling notation is well defined.
-            let mut after = pos.clone();
-            after.do_move(result.best_move);
-            let _ = writeln!(out, "bestmove {best} ponder {}", move_to_uci(&after, p));
+            // Named against the ROOT, as upstream names it: `UCIEngine::move(pv[1],
+            // rootPos.is_chess960())`. This cloned the position and played the best move
+            // first, on the belief that the ponder move's castling notation is only defined
+            // after it -- but `move_to_uci` reads exactly one thing off the position, whether
+            // the game is Chess960, and that is a property of the GAME. The clone and the
+            // `do_move` bought nothing and cost 49 of each over one `bench 16 1 8`, which is
+            // what `cargo xtask fingerprint` measured against upstream's zero.
+            let _ = writeln!(out, "bestmove {best} ponder {}", move_to_uci(pos, p));
         }
         None => {
             let _ = writeln!(out, "bestmove {best}");
