@@ -100,8 +100,11 @@ struct Side {
     /// The placement that produced the above. The king-piece features are diffed straight
     /// off this rather than recomputed and merged, so the set itself is never materialised.
     board: [Piece; SQUARE_NB],
-    /// The active threat and pawn-pair set, SORTED so the next diff is a merge walk. These
-    /// have no equivalent board diff: one square changing moves many threats at once.
+    /// The active threat and pawn-pair set, in whatever order it was generated. These have
+    /// no equivalent board diff: one square changing moves many threats at once.
+    ///
+    /// **Unordered on purpose.** The diff is a membership test against a bitmap rather than
+    /// a merge walk, so nothing downstream reads an order and sorting would buy nothing.
     threats: Vec<u32>,
 }
 
@@ -140,7 +143,16 @@ pub struct EvalScratch {
     /// The features one diff adds and removes, collected before either is applied.
     adds: Vec<u32>,
     subs: Vec<u32>,
+    /// One bit per threat-and-pawn-pair feature, used to diff two sets by MEMBERSHIP.
+    ///
+    /// Every pass leaves it all-zero, so it never has to be cleared in bulk: the walk that
+    /// reads a bit is the walk that clears it. Grown on first use, like the refresh cache,
+    /// so a worker that never evaluates does not pay for it.
+    mark: Vec<u64>,
 }
+
+/// How many `u64` words cover the threat-and-pawn-pair feature space.
+const MARK_WORDS: usize = THREAT_AND_PP_DIMENSIONS.div_ceil(64);
 
 /// The key of a slot no evaluation has filled yet. No real position hashes to it.
 const EMPTY_KEY: Key = Key::MAX;
@@ -154,6 +166,7 @@ impl Default for EvalScratch {
             next_threats: [Vec::new(), Vec::new()],
             adds: Vec::new(),
             subs: Vec::new(),
+            mark: Vec::new(),
         }
     }
 }
@@ -265,11 +278,21 @@ impl FeatureTransformer {
         Ok(())
     }
 
-    /// Walk two sorted sets, applying only what differs.
+    /// Diff two sets by MEMBERSHIP, applying only what differs.
     ///
-    /// Both sets are strictly increasing and hold no duplicates — a feature index encodes
-    /// exactly one (piece, square) or (attacker, from, to, attacked) tuple — so a merge walk
-    /// is a complete and exact diff.
+    /// Neither set is ordered. A feature index encodes exactly one (attacker, from, to,
+    /// attacked) or pawn-pair tuple, so a set holds no duplicates, and for duplicate-free
+    /// sets "is this index in the other one" is a complete and exact diff — which a bitmap
+    /// answers in constant time per feature and a merge walk answers only after both sides
+    /// have been SORTED.
+    ///
+    /// Sorting was what the old merge walk cost: the sets run to a few dozen features and
+    /// the comparison sort over them was among the largest single symbols in the profile,
+    /// against an upstream that sorts nothing at all. Three linear passes replace it —
+    /// mark the old set, walk the new set clearing what both hold and collecting what only
+    /// the new one has, then walk the old set again collecting what is still marked. The
+    /// third pass is what returns the bitmap to all-zero, so there is no clearing sweep
+    /// over the whole feature space and the next call inherits a clean one.
     ///
     /// The walk only COLLECTS what changed; [`FeatureTransformer::fold_rows_i16`] and its
     /// byte-wide twin then apply the whole collection in one sweep of the accumulator. Doing
@@ -289,30 +312,36 @@ impl FeatureTransformer {
         psqt: &mut [i32; PSQT_BUCKETS],
         adds: &mut Vec<u32>,
         subs: &mut Vec<u32>,
+        mark: &mut [u64],
     ) {
         adds.clear();
         subs.clear();
-        let (mut i, mut j) = (0usize, 0usize);
-        while i < old.len() && j < new.len() {
-            match old[i].cmp(&new[j]) {
-                core::cmp::Ordering::Equal => {
-                    // Present in both: the accumulator already holds it.
-                    i += 1;
-                    j += 1;
-                }
-                core::cmp::Ordering::Less => {
-                    subs.push(old[i]);
-                    i += 1;
-                }
-                core::cmp::Ordering::Greater => {
-                    adds.push(new[j]);
-                    j += 1;
-                }
+
+        // Every index is bounded by the feature space it is drawn from, so the bitmap needs
+        // no bounds arithmetic beyond the word split.
+        debug_assert!(old.iter().chain(new).all(|&f| (f as usize) < THREAT_AND_PP_DIMENSIONS));
+
+        for &f in old {
+            let (w, b) = (f as usize / 64, 1u64 << (f % 64));
+            mark[w] |= b;
+        }
+        // A hit means both sets hold it and the accumulator already has it; clearing the bit
+        // as it is read leaves exactly the old-only features standing for the pass below.
+        for &f in new {
+            let (w, b) = (f as usize / 64, 1u64 << (f % 64));
+            if mark[w] & b == 0 {
+                adds.push(f);
+            } else {
+                mark[w] &= !b;
             }
         }
-        // Whatever is left in one list has no counterpart in the other.
-        subs.extend_from_slice(&old[i..]);
-        adds.extend_from_slice(&new[j..]);
+        for &f in old {
+            let (w, b) = (f as usize / 64, 1u64 << (f % 64));
+            if mark[w] & b != 0 {
+                subs.push(f);
+                mark[w] &= !b;
+            }
+        }
 
         self.fold_changed(halfka, adds, subs, acc, psqt);
     }
@@ -408,16 +437,17 @@ impl FeatureTransformer {
         }
     }
 
-    /// The active feature sets for one perspective, sorted.
+    /// The active feature sets, one per perspective, in generation order.
+    ///
+    /// Deliberately NOT sorted: [`FeatureTransformer::diff_apply`] tests membership rather
+    /// than merging, so an order would cost a comparison sort per evaluation and buy
+    /// nothing. Upstream sorts nothing here either.
     fn active_sets(pos: &Position, threats: &mut [Vec<u32>; COLOR_NB]) {
         for t in threats.iter_mut() {
             t.clear();
         }
         threat_active(pos, threats);
         pawn_pair_active(pos, threats);
-        for t in threats.iter_mut() {
-            t.sort_unstable();
-        }
     }
 
     /// Fill `output` with the transformed features and return the PSQT score.
@@ -443,6 +473,9 @@ impl FeatureTransformer {
         // evaluation, say -- needs no work at all.
         if scratch.key != key {
             Self::active_sets(pos, &mut scratch.next_threats);
+            if scratch.mark.is_empty() {
+                scratch.mark = vec![0; MARK_WORDS];
+            }
 
             for p in Color::ALL {
                 let i = p.index();
@@ -506,8 +539,13 @@ impl FeatureTransformer {
                     &mut live.psqt,
                     &mut scratch.adds,
                     &mut scratch.subs,
+                    &mut scratch.mark,
                 );
-                live.threats.clone_from(&scratch.next_threats[i]);
+                // SWAP rather than copy: the freshly computed set becomes the live one, and
+                // the set it replaces goes back to the scratch slot, whose first act next
+                // evaluation is to clear it. A copy here would move the same bytes for the
+                // same result and keep a buffer nobody reads.
+                core::mem::swap(&mut live.threats, &mut scratch.next_threats[i]);
 
                 // Refresh this king square's slot only when the refresh path was taken.
                 // Writing it on every evaluation costs a copy per evaluation to make a rare
