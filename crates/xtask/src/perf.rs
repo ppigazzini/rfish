@@ -555,3 +555,108 @@ fn timed_bench(bin: &Path, cwd: &Path) -> Result<(u64, u64), String> {
         .map_err(|e| format!("the time does not parse: {e}"))?;
     Ok((ms, node_total(&out)?))
 }
+
+/// A node-for-node differential against the oracle, on RANDOM positions.
+///
+/// The strongest fidelity probe available, and the one thing the other gates cannot be:
+/// `signature` pins one fixed list, the goldens pin fixed scripts and `nnue-check` pins a
+/// fixed FEN file. A position reached by random legal play appears in none of them, so a
+/// divergence that misses every fixed list still has to survive this. ../mcfish carries the
+/// same probe and records that until its lane existed it only ran when someone remembered.
+///
+/// Positions are reached by asking the ENGINE for its legal moves and picking one with a
+/// seeded generator, so the walk needs no chess knowledge here and replays from the seed.
+pub(crate) fn upstream_nodes(args: &[&str]) -> Result<Outcome, String> {
+    let Some(oracle) = crate::gates::find_oracle() else {
+        return Ok(Outcome::Skipped("no upstream build at the pin to compare against".to_string()));
+    };
+    let ours = crate::runner::build_engine(crate::runner::GATE_PROFILE)?;
+    let their_dir = oracle.parent().map(Path::to_path_buf).unwrap_or_default();
+    let positions: usize = arg_value(args, "--positions").unwrap_or("20").parse().unwrap_or(20);
+    let depth = arg_value(args, "--depth").unwrap_or("8").to_string();
+    let mut rng: u64 =
+        arg_value(args, "--seed").and_then(|s| s.parse().ok()).unwrap_or(0x5DEE_CE66_D1CE_B00D);
+    let seed = rng;
+
+    println!("upstream-nodes: {positions} positions at depth {depth}, seed {seed}");
+    let mut mismatches = 0usize;
+    for i in 0..positions {
+        let plies = 6 + (next_rand(&mut rng) % 16) as usize;
+        let mut moves: Vec<String> = Vec::new();
+        for _ in 0..plies {
+            let pos_cmd = position_command(&moves);
+            let out = crate::runner::drive_at(&ours, &resources_dir(), &[&pos_cmd, "go perft 1"])?;
+            let legal: Vec<String> = out
+                .lines()
+                .filter_map(|l| l.split_once(':'))
+                .map(|(m, _)| m.trim().to_string())
+                // A UCI move and nothing else: the perft block also ends with a
+                // `Nodes searched:` line, which splits on the same colon and would be
+                // fed back as a move.
+                .filter(|m| is_uci_move(m))
+                .collect();
+            if legal.is_empty() {
+                break;
+            }
+            let pick = (next_rand(&mut rng) % legal.len() as u64) as usize;
+            moves.push(legal[pick].clone());
+        }
+
+        let pos_cmd = position_command(&moves);
+        let go = format!("go depth {depth}");
+        let mine =
+            searched_nodes(&crate::runner::drive_at(&ours, &resources_dir(), &[&pos_cmd, &go])?)?;
+        let theirs =
+            searched_nodes(&crate::gates::drive_oracle(&oracle, &their_dir, &[&pos_cmd, &go])?)?;
+        if mine == theirs {
+            continue;
+        }
+        mismatches += 1;
+        eprintln!("  MISMATCH {i}: {pos_cmd}");
+        eprintln!("    rfish {mine} nodes, upstream {theirs} nodes");
+    }
+
+    println!("upstream-nodes: {} of {positions} match node for node", positions - mismatches);
+    Ok(Outcome::check(mismatches == 0, format!("{mismatches} positions differ from upstream")))
+}
+
+/// Whether `s` is a UCI move: two squares, optionally a promotion piece.
+fn is_uci_move(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 4 && b.len() != 5 {
+        return false;
+    }
+    let sq = |f: u8, r: u8| (b'a'..=b'h').contains(&f) && (b'1'..=b'8').contains(&r);
+    sq(b[0], b[1]) && sq(b[2], b[3]) && (b.len() == 4 || matches!(b[4], b'q' | b'r' | b'b' | b'n'))
+}
+
+/// The node count a `go` reported, read from its LAST info line.
+///
+/// Not `node_total`, which parses `bench`'s summary: a `go` never prints one, and the count
+/// that matters is the final iteration's rather than any earlier one.
+fn searched_nodes(out: &str) -> Result<u64, String> {
+    out.lines()
+        .filter(|l| l.starts_with("info depth"))
+        .filter_map(|l| l.split_once(" nodes ")?.1.split_whitespace().next())
+        .next_back()
+        .ok_or_else(|| "the search reported no info line with a node count".to_string())?
+        .parse()
+        .map_err(|e| format!("the node count does not parse: {e}"))
+}
+
+/// `position startpos` plus the moves walked so far.
+fn position_command(moves: &[String]) -> String {
+    if moves.is_empty() {
+        "position startpos".to_string()
+    } else {
+        format!("position startpos moves {}", moves.join(" "))
+    }
+}
+
+/// xorshift64, so a run replays exactly from its seed and needs no dependency.
+fn next_rand(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}

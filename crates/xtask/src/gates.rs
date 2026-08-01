@@ -149,6 +149,60 @@ pub(crate) fn signature(update: bool) -> Result<Outcome, String> {
     Ok(Outcome::check(nodes == expected, format!("bench {nodes} != golden {expected}")))
 }
 
+/// A multi-threaded search under `ThreadSanitizer`.
+///
+/// The one gate that can see a DATA RACE. `forbid(unsafe_code)` rules out the pointer
+/// mistakes a C++ port has to fear, and it rules out nothing about atomics: the shared
+/// table, the stop flag and the node counters are `Relaxed` loads and stores by design, and
+/// an ordering that is too weak is a logic bug the type system is happy with. Both sibling
+/// ports gate on the same thing.
+///
+/// `-Zbuild-std=std,panic_abort` is not optional. This toolchain refuses to link an
+/// instrumented crate against an uninstrumented `std`, and `panic_abort` has to be named
+/// because the release profile sets `panic = "abort"` -- without it the build fails on a
+/// duplicate lang item rather than on anything to do with sanitizers.
+pub(crate) fn tsan() -> Result<Outcome, String> {
+    if !have("rustup") {
+        return Ok(Outcome::Skipped("rustup is needed to add rust-src".to_string()));
+    }
+    let _ = Command::new("rustup").args(["component", "add", "rust-src"]).status();
+
+    let target_dir = workspace_root().join("target/tsan");
+    run(Command::new(cargo())
+        .current_dir(workspace_root())
+        .env("RUSTFLAGS", "-Zsanitizer=thread")
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .args([
+            "build",
+            "--release",
+            "-Zbuild-std=std,panic_abort",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--package",
+            "rfish",
+            "--bin",
+            "stockfish",
+        ]))?;
+
+    let engine = target_dir.join("x86_64-unknown-linux-gnu/release/stockfish");
+    // Several threads over one table and one stop flag is the shape a race would live in;
+    // one thread would instrument the same code and observe nothing.
+    let out = Command::new(&engine)
+        .current_dir(resources_dir())
+        .args(["bench", "16", "4", "7"])
+        .env("TSAN_OPTIONS", "halt_on_error=0")
+        .output()
+        .map_err(|e| format!("{}: {e}", engine.display()))?;
+    let text =
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let races = text.matches("WARNING: ThreadSanitizer").count();
+    if races > 0 {
+        eprint!("{text}");
+    }
+    println!("tsan: {races} race reports over a 4-thread search");
+    Ok(Outcome::check(races == 0, format!("ThreadSanitizer reported {races} races")))
+}
+
 /// The reference perft counts.
 ///
 /// `tools/perft.table` is deliberately NOT a `.golden` and no step regenerates it. Those
@@ -429,7 +483,7 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
 ///
 /// Standard error is merged in through a shell, because upstream writes part of its output
 /// there and a stdout-only capture would silently drop it.
-fn drive_oracle(
+pub(crate) fn drive_oracle(
     oracle: &std::path::Path,
     cwd: &std::path::Path,
     lines: &[&str],
@@ -879,7 +933,7 @@ fn internal_units_all(out: &str) -> Vec<i64> {
 /// name sorted first, `nnue-check`, `tb` and the golden audit all adjudicated against the
 /// wrong commit while passing. `docs/09-tooling-ci.md` had recorded the trap one commit
 /// earlier and it still bit, because the stale binary was under a name nobody was looking at.
-fn find_oracle() -> Option<std::path::PathBuf> {
+pub(crate) fn find_oracle() -> Option<std::path::PathBuf> {
     let src = workspace_root().parent()?.join("Stockfish/src");
     let base = std::fs::read_to_string(workspace_root().join("tools/upstream/UPSTREAM_BASE"))
         .ok()?

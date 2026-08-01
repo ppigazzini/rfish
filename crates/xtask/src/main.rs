@@ -64,6 +64,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "signature" => gates::signature(false),
         "signature-update" => gates::signature(true),
         "perft" => gates::perft(),
+        "tsan" => gates::tsan(),
         "golden" => gates::golden(false),
         "golden-audit" => gates::golden_audit(),
         "golden-update" => gates::golden(true),
@@ -76,6 +77,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "pgo" => perf::pgo(args),
         "oracle" => perf::oracle(args),
         "perf" => perf::perf(args),
+        "upstream-nodes" => perf::upstream_nodes(args),
         "fuzz" => fuzz::fuzz(args),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
@@ -99,11 +101,13 @@ cargo xtask <step> — the rfish build driver
     perft                 the reference counts in tools/perft.table match
     golden                the UCI case outputs match tools/*.golden
     golden-audit          every golden is what UPSTREAM produces, not just what we do
+    upstream-nodes        node-for-node vs the oracle on RANDOM positions
     test                  the unit and property suite
     fmt / fmt-fix         cargo fmt --check / cargo fmt
     clippy                cargo clippy -D warnings
     docs-lint             no dead doc links, no named paths that do not exist
     unsafe-lint           no `unsafe` and no allow(unsafe_code) anywhere
+    tsan                  a 4-thread search under ThreadSanitizer, Linux only
     nnue-check            the network's output equals upstream's, position by position
     tb                    Syzygy discovery, and that an empty path changes nothing
 

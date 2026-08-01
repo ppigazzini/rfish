@@ -277,6 +277,21 @@ Without it the tablebase-dependent golden case skips in CI, and a case that can 
 there is a case nobody notices breaking. `tb` itself stays out of CI, because it needs a
 pristine upstream BUILD as well as the data — that half has not changed.
 
+The push lanes also carry `tsan` and `valgrind`, which both sibling ports gate on and this
+one did not. **`forbid(unsafe_code)` is not an answer to either.** It rules out the pointer
+mistakes a C++ port has to fear and rules out nothing about ATOMICS: the shared table, the
+stop flag and the node counters are `Relaxed` by design, and an ordering that is too weak is
+a logic bug the type system is happy with. `cargo xtask tsan` runs a four-thread search under
+ThreadSanitizer — one thread would instrument the same code and observe nothing.
+
+`-Zbuild-std=std,panic_abort` is not optional there. This toolchain refuses to link an
+instrumented crate against an uninstrumented `std`, and `panic_abort` has to be named because
+the release profile sets `panic = "abort"` — without it the build fails on a duplicate lang
+item rather than on anything to do with sanitizers.
+
+`rfish_perft.yml` is a nightly gate: the merge lane's perft table stops at depths that keep a
+push fast, and a movegen bug past those depths would sail through every one.
+
 `rfish_upstream_check.yml` is a third workflow, weekly rather than on push. It fetches
 upstream's master and reports how many commits the pin in `tools/upstream/UPSTREAM_BASE` is
 behind, with the subjects of what is missing. It is DETECTION only and never gates: a red
@@ -289,6 +304,18 @@ added after that lesson rather than before it.
 
 A pin upstream's history does not contain fails the lane loudly, because "0 commits behind"
 and "that SHA does not exist" are indistinguishable in the count alone.
+
+Its second job asks a DIFFERENT question — not "has upstream moved" but "is rfish still
+faithful to the pin it already claims to match" — and runs the four gates that need an
+upstream BUILD and therefore cannot live in a push lane: `nnue-check`, `tb`, `golden-audit`
+and `upstream-nodes`. The last is the strongest fidelity probe here, because `signature` pins
+one fixed list, the goldens pin fixed scripts and `nnue-check` pins a fixed FEN file, while a
+position reached by random legal play appears in none of them. Until this job existed all four
+ran only when someone remembered to run them.
+
+The oracle for that job is built AT THE PIN, in `../Stockfish/src`, because that is where the
+gates look and because `find_oracle` checks the SHA — a build of master is rejected rather
+than silently compared against.
 
 `rfish_fuzz.yml` is a second workflow, on a nightly schedule rather than on push. It runs
 `cargo xtask fuzz`, which spends half its budget throwing mutated UCI text at the shipped
