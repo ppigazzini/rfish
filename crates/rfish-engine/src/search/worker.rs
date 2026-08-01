@@ -189,6 +189,14 @@ pub struct SearchWorker {
     budget: TimeBudget,
     nodes: u64,
     tb_hits: u64,
+    /// How much of `nodes`/`tb_hits` this worker has already contributed to the pool.
+    ///
+    /// The counters a GUI is shown, and the ones a `nodes` limit is enforced against, are
+    /// upstream's POOL totals: `ThreadPool::nodes_searched` sums every worker's own atomic.
+    /// Keeping the hot counter a plain field and publishing the DELTA periodically gets the
+    /// same number without an atomic per node.
+    published_nodes: u64,
+    published_tb_hits: u64,
     sel_depth: i32,
     root_depth: i32,
     completed_depth: i32,
@@ -288,6 +296,8 @@ impl SearchWorker {
                 .map(|_| MoveBuf::with_capacity(crate::board::types::MAX_MOVES))
                 .collect(),
             calls_cnt: 0,
+            published_nodes: 0,
+            published_tb_hits: 0,
             thread_count: 1,
             optimism: [0; 2],
             previous_time_reduction: 0.85,
@@ -387,6 +397,14 @@ impl SearchWorker {
         let moved = self.pos.moved_piece(mv);
         let in_check = self.stack[si].in_check;
         self.nodes += 1;
+        // Every 1024 nodes, and on every worker rather than only the one that reports:
+        // a helper that never publishes leaves the pool total reading as if it had searched
+        // nothing. The cadence is the same order as the countdown `check_time` already runs
+        // on, so the total is as fresh as upstream's -- which is also read while the other
+        // threads are still incrementing.
+        if self.nodes.is_multiple_of(1024) {
+            self.publish_counters();
+        }
         self.pos.do_move_checked(mv, gives_check);
         self.stack[si].current_move = mv;
         self.stack[si].continuation = cont_plane_index(in_check, capture, moved, mv.to());
@@ -680,6 +698,10 @@ impl SearchWorker {
         self.budget = budget;
         self.nodes = 0;
         self.tb_hits = 0;
+        // The pool totals are zeroed once per `go` by `SharedState::reset`, so what this
+        // worker has already contributed to them goes back to zero with them.
+        self.published_nodes = 0;
+        self.published_tb_hits = 0;
         self.sel_depth = 0;
         self.root_depth = 0;
         self.completed_depth = 0;
@@ -1064,7 +1086,7 @@ impl SearchWorker {
                 && !self.shared.stopped()
                 && !self.shared.stop_on_ponderhit()
             {
-                let nodes = self.shared.node_count().max(self.nodes);
+                let nodes = self.pool_nodes();
                 let nodes_effort = self.root_moves[0].effort * 100_000 / nodes.max(1);
 
                 // A score that is falling relative to the last move, or to recent
@@ -2689,6 +2711,32 @@ impl SearchWorker {
         }
     }
 
+    /// Hand this worker's new nodes and tablebase hits to the pool totals.
+    fn publish_counters(&mut self) {
+        let nodes = self.nodes - self.published_nodes;
+        if nodes != 0 {
+            self.shared.add_nodes(nodes);
+            self.published_nodes = self.nodes;
+        }
+        let hits = self.tb_hits - self.published_tb_hits;
+        if hits != 0 {
+            self.shared.add_tb_hits(hits);
+            self.published_tb_hits = self.tb_hits;
+        }
+    }
+
+    /// The POOL's node count, with this worker's own contribution brought fully up to date.
+    ///
+    /// Upstream reads `threads.nodes_searched()`, a sum over every worker, for the number it
+    /// reports, the number a `nodes` limit is checked against and the number `nodestime`
+    /// converts a clock into. Reading only the reporting worker's own count made all three
+    /// wrong by a factor of the thread count: `go nodes 1000` with four threads searched
+    /// four thousand.
+    fn pool_nodes(&mut self) -> u64 {
+        self.publish_counters();
+        self.shared.node_count().max(self.nodes)
+    }
+
     /// Stop the search when a limit has been reached.
     ///
     /// Checked on a countdown rather than every node: reading a clock is a syscall on some
@@ -2711,7 +2759,7 @@ impl SearchWorker {
             return;
         }
 
-        let nodes = self.shared.node_count().max(self.nodes);
+        let nodes = self.pool_nodes();
         let elapsed = self.budget.elapsed(nodes);
 
         let out_of_time = self.limits.uses_time_management()
@@ -2873,8 +2921,9 @@ impl SearchWorker {
         // nobody requested, at a strength the engine is not playing at.
         let lines = self.opts.multi_pv.min(self.root_moves.len());
         let elapsed = self.budget.elapsed_time().max(1) as u64;
-        let nodes = self.shared.node_count().max(self.nodes);
-        let tb_hits = self.tb_hits + if self.root_in_tb { self.root_moves.len() as u64 } else { 0 };
+        let nodes = self.pool_nodes();
+        let tb_hits = self.shared.tb_hit_count().max(self.tb_hits)
+            + if self.root_in_tb { self.root_moves.len() as u64 } else { 0 };
         let hashfull = tt.hashfull(GENERATION_MAX_AGE);
 
         for i in 0..lines {
