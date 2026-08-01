@@ -264,6 +264,39 @@ impl Network {
             positional: (i64::from(positional) / OUTPUT_SCALE) as Value,
         }
     }
+
+    /// Every bucket's output, and which one this position actually uses.
+    ///
+    /// What `eval` prints. Upstream runs the whole network once per bucket rather than
+    /// reading the chosen one, so the table shows what each head WOULD have said — that is
+    /// the diagnostic, and evaluating only the live bucket would leave seven rows blank.
+    #[must_use]
+    pub fn trace_evaluate(&self, pos: &Position, scratch: &mut EvalScratch) -> NetworkTrace {
+        let mut trace = NetworkTrace {
+            psqt: [0; LAYER_STACKS],
+            positional: [0; LAYER_STACKS],
+            correct_bucket: (pos.piece_total() as usize - 1) / 4,
+        };
+        let mut transformed = vec![0u8; L1];
+        for bucket in 0..LAYER_STACKS {
+            let psqt = self.transformer.transform(pos, bucket, scratch, &mut transformed);
+            let positional = self.stacks[bucket].propagate(&transformed);
+            trace.psqt[bucket] = (i64::from(psqt) / OUTPUT_SCALE) as Value;
+            trace.positional[bucket] = (i64::from(positional) / OUTPUT_SCALE) as Value;
+        }
+        trace
+    }
+}
+
+/// Every output head's answer for one position.
+#[derive(Clone, Copy, Debug)]
+pub struct NetworkTrace {
+    /// The material head, per bucket.
+    pub psqt: [Value; LAYER_STACKS],
+    /// The positional head, per bucket.
+    pub positional: [Value; LAYER_STACKS],
+    /// The bucket the piece count selects.
+    pub correct_bucket: usize,
 }
 
 /// The structural hashes embedded in the file.

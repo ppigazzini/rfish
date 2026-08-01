@@ -721,7 +721,11 @@ impl SearchWorker {
         // moves, and which every GUI flags.
         if self.id == 0 && !uci_pv_sent {
             let score = self.root_moves[0].uci_score;
-            self.report(self.completed_depth.max(1), score, tt, sink);
+            // `root_depth`, not `completed_depth`: upstream reports the depth it was WORKING
+            // on, which is one deeper than the last finished iteration whenever the search
+            // was cut off mid-iteration -- and being cut off mid-iteration is exactly when
+            // this line is sent.
+            self.report(self.root_depth, score, tt, sink);
         }
 
         let best = &self.root_moves[0];

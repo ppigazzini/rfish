@@ -19,6 +19,7 @@ use rfish_engine::eval::nnue;
 use rfish_engine::platform::numa::{self, NumaConfig};
 use rfish_engine::platform::syzygy::TableRegistry;
 use rfish_engine::platform::threads::ThreadPool;
+use rfish_engine::search::score;
 use rfish_engine::search::tt::TranspositionTable;
 use rfish_engine::search::worker::{DepthReport, InfoSink, SearchResult};
 use rfish_engine::state::{Limits, SearchOptions};
@@ -55,7 +56,10 @@ impl<W: Write> InfoSink for UciSink<W> {
         let mut line = format!(
             "info depth {} seldepth {} multipv {} score {}",
             r.depth,
-            r.sel_depth.max(r.depth),
+            // NOT `max(depth)`: upstream prints the selective depth as recorded, and a
+            // search that never went past ply 1 reports 2 however deep the iteration was.
+            // Clamping it up made every iteration report its own depth instead.
+            r.sel_depth,
             r.multi_pv,
             r.score.to_uci()
         );
@@ -632,35 +636,77 @@ impl Engine {
     }
 
     fn cmd_eval(&self, out: &mut impl Write) {
-        let _ = writeln!(out, "\n{}", self.pos);
+        // Upstream's `Eval::trace`, line for line. It prints NO board -- `d` is the command
+        // for that -- and a position in check is not evaluated at all, because the network
+        // is trained on quiet positions and upstream asserts rather than answering.
+        if self.pos.in_check() {
+            let _ = writeln!(out, "Final evaluation: none (in check)");
+            return;
+        }
+        let Some(net) = self.network.as_deref() else {
+            let _ = writeln!(out, "Final evaluation: none (no network)");
+            return;
+        };
         let mut scratch = nnue::Scratch::default();
 
-        // The raw network output, in the internal units upstream's `eval` prints. This is
-        // the number the differential gate compares: it is the network alone, with no
-        // optimism blend and no fifty-move damping on top, so a mismatch localises to the
-        // forward pass rather than to the terms around it.
-        //
-        // A position IN CHECK is not evaluated at all, matching upstream, which asserts on
-        // one. The network is trained on quiet positions and its answer there means nothing;
-        // printing one anyway would also make this line unusable as a differential, since
-        // the two engines would emit a different number of them.
-        if let Some(net) = self.network.as_deref().filter(|_| !self.pos.in_check()) {
-            let raw = net.evaluate(&self.pos, &mut scratch);
-            let _ = writeln!(
-                out,
-                "\nNNUE evaluation  {:+} (side to move, internal units)",
-                raw.psqt + raw.positional
-            );
+        // The bucket table: what every output head would have said, and a marker on the one
+        // the piece count selects.
+        let t = net.trace_evaluate(&self.pos, &mut scratch);
+        let side = if self.pos.side_to_move() == Color::White { "White" } else { "Black" };
+        let rule = "+------------+------------+------------+------------+";
+        let _ = writeln!(out, "\n\nNNUE network contributions (Normalized, {side} to move)");
+        let _ = writeln!(out, "{rule}");
+        let _ = writeln!(out, "|   Bucket   |  Material  | Positional |   Total    |");
+        let _ = writeln!(out, "|            |   (PSQT)   |  (Layers)  |            |");
+        let _ = writeln!(out, "{rule}");
+        for b in 0..t.psqt.len() {
+            let (psqt, positional) = (t.psqt[b], t.positional[b]);
+            let mut row = format!("|  {b}         |  ");
+            row.push_str(&self.aligned_dot(psqt));
+            row.push_str("   |  ");
+            row.push_str(&self.aligned_dot(positional));
+            row.push_str("   |  ");
+            row.push_str(&self.aligned_dot(psqt + positional));
+            row.push_str("   |");
+            if b == t.correct_bucket {
+                row.push_str(" <-- this bucket is used");
+            }
+            let _ = writeln!(out, "{row}");
         }
+        let _ = writeln!(out, "{rule}\n");
 
-        let v = rfish_engine::eval::evaluate(&self.pos, self.network.as_deref(), &mut scratch, 0);
-        let source = if self.network.is_some() { "NNUE" } else { "classical" };
+        let raw = net.evaluate(&self.pos, &mut scratch);
+        let v = raw.psqt + raw.positional;
+        let _ = writeln!(out, "NNUE evaluation          {v:+} (side to move, internal units)");
         let white = if self.pos.side_to_move() == Color::White { v } else { -v };
         let _ = writeln!(
             out,
-            "Final evaluation  {:+.2} ({source}, white side)",
-            f64::from(white) / 208.0
+            "NNUE evaluation        {:+.2} (white side)",
+            0.01 * f64::from(score::to_cp(white, &self.pos))
         );
+
+        let full = rfish_engine::eval::evaluate(&self.pos, Some(net), &mut scratch, 0);
+        let white = if self.pos.side_to_move() == Color::White { full } else { -full };
+        let _ = writeln!(
+            out,
+            "Final evaluation      {:+.2} (white side) [with scaled NNUE, ...]\n",
+            0.01 * f64::from(score::to_cp(white, &self.pos))
+        );
+    }
+
+    /// One cell of the bucket table: upstream's sign character, then six columns of pawns.
+    ///
+    /// The sign is written separately from the magnitude because upstream prints the sign of
+    /// the raw value and the ABSOLUTE value beside it, so a zero shows as a space rather
+    /// than as `+0.00`.
+    fn aligned_dot(&self, v: rfish_engine::board::types::Value) -> String {
+        let sign = match v {
+            v if v < 0 => '-',
+            v if v > 0 => '+',
+            _ => ' ',
+        };
+        let pawns = (0.01 * f64::from(score::to_cp(v, &self.pos))).abs();
+        format!("{sign}{pawns:6.2}")
     }
 
     fn cmd_bench(&mut self, args: &[&str], out: &mut impl Write) {
@@ -980,13 +1026,23 @@ mod tests {
         assert!(!engine.handle("quit", &mut out));
     }
 
-    /// The `eval` output names WHICH evaluation produced the number. A run without a net
-    /// is not a failure, but it is a different engine, and the output has to say so.
+    /// `eval` is upstream's `Eval::trace`, and it needs the network to say anything.
+    ///
+    /// A run without a net is not a failure, but it is a different engine and the output
+    /// has to say so rather than printing a number from the fallback as though the network
+    /// had produced it. Upstream never reaches this case -- its net is embedded -- so there
+    /// is no upstream text to match, only a refusal to invent one.
     #[test]
-    fn eval_prints_a_number_and_names_its_source() {
+    fn eval_without_a_network_says_so_rather_than_inventing_a_number() {
         let out = drive(&["position startpos", "eval"]);
-        assert!(out.contains("Final evaluation"), "{out}");
-        assert!(out.contains("classical") || out.contains("NNUE"), "{out}");
+        assert!(out.contains("Final evaluation: none (no network)"), "{out}");
+    }
+
+    /// In check, upstream declines to evaluate at all, and says which.
+    #[test]
+    fn eval_in_check_is_declined_the_way_upstream_declines_it() {
+        let out = drive(&["position fen 4k3/8/8/8/8/8/8/4R1K1 b - - 0 1", "eval"]);
+        assert!(out.contains("Final evaluation: none (in check)"), "{out}");
     }
 
     #[test]
