@@ -694,42 +694,95 @@ impl Position {
             [] => return Err(FenError::UnexpectedEnd),
         };
 
+        // Castling rights, SANITISED rather than validated -- which is upstream's own word
+        // for it: "Due to the prevalence of incorrect (or missing) castling rights the
+        // validation is less strict. However, incorrect castling rights are still sanitized."
+        //
+        // A right that names a square with no rook on it, or a side with no king to castle,
+        // is DROPPED and the rest of the FEN is accepted. rfish rejected the whole position
+        // instead, and rejection here is a `CRITICAL ERROR` that terminates the engine -- so
+        // a FEN with a stale castling field, which is common enough that upstream relaxed the
+        // rule for it, took the engine down where upstream just plays the position.
+        //
+        // Only a token that is neither `-` nor one of KQkq/A-H/a-h is still an error.
         let castling = fields.next().unwrap_or("-");
-        if castling != "-" {
-            if castling.len() > 4 {
+        // What a leading `-` leaves BEHIND. Upstream reads the FEN as a character stream, not
+        // as whitespace-separated fields, so a `-` ends the castling field where it stands and
+        // whatever follows it is read as the start of the EN-PASSANT field: `w -K - 0 1` fails
+        // there with "Invalid en-passant square". Splitting on whitespace swallowed the `K`
+        // and accepted the position.
+        let mut ep_from_castling = "";
+        let mut rights_seen = 0;
+        for (i, ch) in castling.bytes().enumerate() {
+            // `-` ends the field, but only as the FIRST token, exactly as upstream reads it.
+            if rights_seen == 0 && ch == b'-' {
+                ep_from_castling = &castling[i + 1..];
+                break;
+            }
+            rights_seen += 1;
+            if rights_seen > 4 {
                 return Err(FenError::TooManyCastlingRights);
             }
-            for ch in castling.bytes() {
-                let color = if ch.is_ascii_uppercase() { Color::White } else { Color::Black };
-                let back_rank = relative_rank_bb(color, 0);
-                let rooks = self.pieces_of(color, PieceType::Rook) & back_rank;
-                let ksq = self.king_square(color);
+            let color = if ch.is_ascii_uppercase() { Color::White } else { Color::Black };
+            let rook = Piece::new(color, PieceType::Rook);
+            let king = Piece::new(color, PieceType::King);
+            let back_rank = if color == Color::White { 0 } else { 7 };
+            let mut rook_sq = Square::NONE;
+            let mut king_sq = Square::NONE;
 
-                // Standard notation names the side; Shredder-FEN names the rook's file
-                // directly. Resolve both to a rook square before setting the right.
-                let rook_sq = match ch.to_ascii_uppercase() {
-                    b'K' => (rooks.bits() != 0)
-                        .then(|| rooks.msb())
-                        .filter(|&r| r > ksq)
-                        .ok_or(FenError::Castling(char::from(ch)))?,
-                    b'Q' => (rooks.bits() != 0)
-                        .then(|| rooks.lsb())
-                        .filter(|&r| r < ksq)
-                        .ok_or(FenError::Castling(char::from(ch)))?,
-                    f @ b'A'..=b'H' => {
-                        let sq = Square::make((f - b'A') as usize, ksq.rank());
-                        if self.piece_on(sq) != Piece::new(color, PieceType::Rook) {
-                            return Err(FenError::Castling(char::from(ch)));
+            match ch.to_ascii_uppercase() {
+                token @ (b'K' | b'Q') => {
+                    // Walk in from the edge toward the king and stop AT the king: the right
+                    // belongs to the outermost rook on that side of it, and a rook beyond the
+                    // king is on the other side and is not a candidate.
+                    let kingside = token == b'K';
+                    let mut file = if kingside { 7i32 } else { 0i32 };
+                    let step = if kingside { -1 } else { 1 };
+                    for _ in 0..7 {
+                        let sq = Square::make(file as usize, back_rank);
+                        let pc = self.piece_on(sq);
+                        if pc == king {
+                            king_sq = sq;
+                            break;
                         }
-                        sq
+                        if pc == rook && rook_sq.is_none() {
+                            rook_sq = sq;
+                        }
+                        file += step;
                     }
-                    _ => return Err(FenError::Castling(char::from(ch))),
-                };
+                }
+                file @ b'A'..=b'H' => {
+                    // The BACK rank, not the king's rank: a king that has left the back rank
+                    // cannot castle, and looking for the rook beside it found a square the
+                    // FEN never named.
+                    let candidate = Square::make((file - b'A') as usize, back_rank);
+                    if self.piece_on(candidate) == rook {
+                        rook_sq = candidate;
+                    }
+                    // A king on the a- or h-file has no room to castle, so upstream only
+                    // looks for it between the b- and g-files.
+                    for f in 1..7 {
+                        let sq = Square::make(f, back_rank);
+                        if self.piece_on(sq) == king {
+                            king_sq = sq;
+                        }
+                    }
+                }
+                _ => return Err(FenError::Castling(char::from(ch))),
+            }
+
+            // Both halves of the right must exist for it to mean anything.
+            if king_sq.is_ok() && rook_sq.is_ok() {
                 self.set_castling_right(color, rook_sq);
             }
         }
 
-        self.set_ep_square(fields.next().unwrap_or("-"))?;
+        let ep_field = if ep_from_castling.is_empty() {
+            fields.next().unwrap_or("-")
+        } else {
+            ep_from_castling
+        };
+        self.set_ep_square(ep_field)?;
 
         let rule50: i32 = fields.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         let fullmove: i32 = fields.next().and_then(|s| s.parse().ok()).unwrap_or(1);
