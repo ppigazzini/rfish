@@ -1,0 +1,19 @@
+rfish 0.1.0 by the Stockfish developers (see AUTHORS)
+info string Network replica 1: Local memory.
+info depth 1 seldepth 2 multipv 1 score cp 1 nodes 2 tbhits 0 pv d2d4
+info depth 2 seldepth 3 multipv 1 score cp 18 nodes 11 tbhits 0 pv d2d4
+info depth 3 seldepth 4 multipv 1 score cp 28 nodes 32 tbhits 0 pv d2d4
+info depth 4 seldepth 7 multipv 1 score cp 21 nodes 547 tbhits 0 pv e2e4 e7e5 g1e2
+bestmove e2e4 ponder e7e5
+info string Network replica 1: Local memory.
+info depth 1 seldepth 5 multipv 1 score cp 21 nodes 7 tbhits 0 pv e2e4
+info depth 2 seldepth 3 multipv 1 score cp 21 nodes 38 tbhits 0 pv e2e4 e7e5
+info depth 3 seldepth 4 multipv 1 score cp 27 nodes 77 tbhits 0 pv e2e4
+info depth 4 seldepth 5 multipv 1 score cp 26 nodes 610 tbhits 0 pv e2e4 g8f6
+bestmove e2e4 ponder g8f6
+info string Network replica 1: Local memory.
+info depth 1 seldepth 3 multipv 1 score cp 26 nodes 4 tbhits 0 pv e2e4 g8f6
+info depth 2 seldepth 3 multipv 1 score cp 25 nodes 10 tbhits 0 pv e2e4 g8f6
+info depth 3 seldepth 4 multipv 1 score cp 28 nodes 71 tbhits 0 pv e2e4 g8f6
+info depth 4 seldepth 6 multipv 1 score cp 26 nodes 178 tbhits 0 pv e2e4 e7e5 g1f3 b8c6 f1c4
+bestmove e2e4 ponder e7e5

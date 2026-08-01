@@ -689,12 +689,18 @@ impl SearchWorker {
         self.optimism = [0; 2];
 
         // Build the root move list, honouring `searchmoves` when the caller gave one.
-        self.root_moves = generate_legal(&self.pos)
-            .iter()
-            .copied()
-            .filter(|m| limits.search_moves.is_empty() || limits.search_moves.contains(m))
-            .map(RootMove::new)
-            .collect();
+        //
+        // In the ORDER THE CALLER GAVE, not in generation order. Upstream builds the list
+        // straight from `limits.searchmoves` and only falls back to the generator when that
+        // is empty, so `searchmoves e2e4 d2d4` searches e2e4 first. Filtering the generator
+        // instead reorders the pair, and the root order decides which move is searched first
+        // at depth one and breaks ties in the stable sort between iterations -- so the
+        // restricted search took a different path and a different node count.
+        self.root_moves = if limits.search_moves.is_empty() {
+            generate_legal(&self.pos).iter().copied().map(RootMove::new).collect()
+        } else {
+            limits.search_moves.iter().copied().map(RootMove::new).collect()
+        };
 
         if self.root_moves.is_empty() {
             // Checkmate or stalemate at the root: there is nothing to search, and the
