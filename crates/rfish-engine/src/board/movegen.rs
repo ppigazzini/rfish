@@ -393,7 +393,20 @@ const fn opposite(d: Direction) -> Direction {
 pub fn generate_legal(pos: &Position) -> MoveList {
     let gt = if pos.in_check() { GenType::Evasions } else { GenType::NonEvasions };
     let mut list = generate(pos, gt);
-    list.retain(|m| !needs_legality_test(pos, m) || pos.legal(m));
+    // Upstream filters IN PLACE by moving the LAST element over the rejected one, which does
+    // not preserve order, and the order is observable: `syzygy_extend_pv` picks the first of
+    // several moves the tables rank equally, so a stable compaction here shows a different
+    // winning line from upstream's for the same position. Reproduce the swap, not the intent.
+    let mut cur = 0;
+    while cur < list.len {
+        let m = list.moves[cur];
+        if needs_legality_test(pos, m) && !pos.legal(m) {
+            list.len -= 1;
+            list.moves[cur] = list.moves[list.len];
+        } else {
+            cur += 1;
+        }
+    }
     list
 }
 

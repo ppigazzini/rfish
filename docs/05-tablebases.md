@@ -95,36 +95,37 @@ demand. For the 3-to-5 man sets that is megabytes and nobody notices. For a 7-ma
 would be gigabytes, and a block cache over positioned reads would be needed before that is
 usable. That work is not done.
 
-## OPEN: the extended PV picks a different line from upstream's
+## The extended PV, and the generation order it turned out to depend on
 
-`syzygy_extend_pv` walks a won PV out to mate, and rfish's walk reaches mate by a DIFFERENT
-route than upstream's. Same position, same score, same node count, same `tbhits`:
+`syzygy_extend_pv` walks a won PV out to mate by repeatedly taking the top-ranked move. When
+several moves are ranked EQUALLY -- which is the normal case in a simple win -- the one taken
+is whichever the legal generator emitted first, so the displayed line is decided by
+generation order.
+
+That is how a real defect surfaced. Dumping the ranks for the first extension step of
+`8/8/8/8/8/4k3/8/4K2R w` after `h1h4` showed both black replies fully tied:
 
 ```text
-rfish     pv h1h4 e3d3 e1f2 d3d2 h4h3 ...
-upstream  pv h1h4 e3f3 e1d2 f3g3 h4a4 ...
+TBRANK ply=1 mv=e3d3 pen=-17 rank=-262126
+TBRANK ply=1 mv=e3f3 pen=-17 rank=-262126
 ```
 
-Both lines win and both end in mate, so nothing about the VERDICT differs — `cargo xtask tb`
-still matches upstream on all 264 WDL and DTZ probes. What differs is which of several
-DTZ-equal moves is shown.
+so neither the DTZ rank nor the mobility tie-break chose between them, and rfish and upstream
+still showed different lines. The cause was `generate_legal`: upstream filters IN PLACE by
+moving the LAST element over a rejected one, which does NOT preserve order, and rfish used a
+stable compaction. See `board/movegen.rs` -- the swap is the behaviour, not an implementation
+detail of it.
 
-Three candidates were checked and are NOT the cause:
+**What remains open.** With the order fixed, the extension agrees with upstream at depth 1 and
+2 and still diverges from depth 3 on, at the third ply of the line, on identical node counts
+and identical scores. That is inside the SEARCH's own PV rather than the extension, and it
+only appears with the root in the tables -- where the tables score many moves equally and the
+PV again records whichever tie the ordering happened to pick. Whoever takes it up should dump
+the root move list and its tbRanks before and after `rank_root_moves`, the way the ranks above
+were dumped, rather than reading the two functions side by side.
 
-- the mobility tie-break, which is upstream's arithmetic — a reply that captures counts 100
-  against the move and any other reply counts 1, and both engines sort ascending on that;
-- the stability of the two sorts, which both rely on and both have;
-- legal-move generation ORDER, which decides fully-tied moves and which `perft` already
-  pins — 10 of 10 positions, and a spot check on the position in question agrees.
-
-That leaves the DTZ ranks themselves: `rank_for_extension` here against upstream's
-`TB::rank_root_moves` with `rankDTZ` set. Whoever picks this up should start by dumping both
-rank vectors for the position above rather than reading the two functions side by side.
-
-**Until it is closed there is no tablebase case in `tools/cases/`**, because
-`cargo xtask golden-audit` adjudicates every case against upstream and would be red on this
-one. A green audit over a known difference is the failure this repository has already had
-once.
+Until it is closed there is no tablebase case in `tools/cases/`, because
+`cargo xtask golden-audit` adjudicates every case against upstream and would be red on it.
 
 ## How the search uses it
 
