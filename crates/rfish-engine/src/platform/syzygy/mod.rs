@@ -105,6 +105,18 @@ impl TableRegistry {
         self.tables.len()
     }
 
+    /// How many WDL and how many DTZ files were found, which upstream reports separately.
+    ///
+    /// A material configuration can have one without the other -- a `.rtbw` with no `.rtbz`
+    /// is usable for the verdict and not for the distance -- so one count cannot stand for
+    /// both, and upstream prints them apart.
+    #[must_use]
+    pub fn file_counts(&self) -> (usize, usize) {
+        let wdl = self.tables.iter().filter(|(w, _)| w.is_some()).count();
+        let dtz = self.tables.iter().filter(|(_, d)| d.is_some()).count();
+        (wdl, dtz)
+    }
+
     /// True when nothing was found.
     #[must_use]
     pub fn is_empty(&self) -> bool {

@@ -95,6 +95,37 @@ demand. For the 3-to-5 man sets that is megabytes and nobody notices. For a 7-ma
 would be gigabytes, and a block cache over positioned reads would be needed before that is
 usable. That work is not done.
 
+## OPEN: the extended PV picks a different line from upstream's
+
+`syzygy_extend_pv` walks a won PV out to mate, and rfish's walk reaches mate by a DIFFERENT
+route than upstream's. Same position, same score, same node count, same `tbhits`:
+
+```text
+rfish     pv h1h4 e3d3 e1f2 d3d2 h4h3 ...
+upstream  pv h1h4 e3f3 e1d2 f3g3 h4a4 ...
+```
+
+Both lines win and both end in mate, so nothing about the VERDICT differs — `cargo xtask tb`
+still matches upstream on all 264 WDL and DTZ probes. What differs is which of several
+DTZ-equal moves is shown.
+
+Three candidates were checked and are NOT the cause:
+
+- the mobility tie-break, which is upstream's arithmetic — a reply that captures counts 100
+  against the move and any other reply counts 1, and both engines sort ascending on that;
+- the stability of the two sorts, which both rely on and both have;
+- legal-move generation ORDER, which decides fully-tied moves and which `perft` already
+  pins — 10 of 10 positions, and a spot check on the position in question agrees.
+
+That leaves the DTZ ranks themselves: `rank_for_extension` here against upstream's
+`TB::rank_root_moves` with `rankDTZ` set. Whoever picks this up should start by dumping both
+rank vectors for the position above rather than reading the two functions side by side.
+
+**Until it is closed there is no tablebase case in `tools/cases/`**, because
+`cargo xtask golden-audit` adjudicates every case against upstream and would be red on this
+one. A green audit over a known difference is the failure this repository has already had
+once.
+
 ## How the search uses it
 
 At a node below the piece limit and with a **zeroed halfmove clock**, the verdict replaces

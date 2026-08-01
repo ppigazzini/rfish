@@ -644,7 +644,7 @@ pub(crate) fn tb() -> Result<Outcome, String> {
     // effect on the search, so the bench signature cannot move.
     let set = format!("setoption name SyzygyPath value {}", dir.display());
     let found = drive(&engine, &[&set, "isready"])?;
-    if !found.contains("Found 5 tablebases up to 3 pieces") {
+    if !found.contains("Found 5 WDL and 5 DTZ tablebase files (up to 3-man).") {
         return Ok(Outcome::Fail(format!("discovery failed in {}", dir.display())));
     }
     let empty = drive(&engine, &["setoption name SyzygyPath value <empty>", "isready"])?;

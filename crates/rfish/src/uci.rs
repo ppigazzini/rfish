@@ -337,10 +337,11 @@ impl Engine {
                     if reg.is_empty() {
                         self.tablebases = None;
                     } else {
+                        let (wdl, dtz) = reg.file_counts();
                         let _ = writeln!(
                             out,
-                            "info string Found {} tablebases up to {} pieces",
-                            reg.len(),
+                            "info string Found {wdl} WDL and {dtz} DTZ tablebase files (up to \
+                             {}-man).",
                             reg.max_cardinality()
                         );
                         self.tablebases = Some(Arc::new(reg));
