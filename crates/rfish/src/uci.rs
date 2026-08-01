@@ -333,10 +333,15 @@ impl Engine {
             }
             "syzygypath" | "syzygyprobedepth" | "syzygyprobelimit" | "syzygy50moverule" => {
                 if name.eq_ignore_ascii_case("SyzygyPath") {
-                    let reg = TableRegistry::discover(self.options.text("SyzygyPath"));
-                    if reg.is_empty() {
-                        self.tablebases = None;
-                    } else {
+                    let path = self.options.text("SyzygyPath");
+                    let reg = TableRegistry::discover(path);
+                    // Reported whenever a PATH was given, found or not. Upstream's
+                    // `Tablebases::init` ends in an unconditional `TBTables.info()`, and only
+                    // an EMPTY path returns before reaching it -- so a path with no tables
+                    // behind it prints `Found 0 WDL and 0 DTZ tablebase files (up to 0-man).`
+                    // Printing only on success left a GUI that had mistyped the path with no
+                    // reply at all, where upstream answers with the count that says why.
+                    if !path.is_empty() {
                         let (wdl, dtz) = reg.file_counts();
                         let _ = writeln!(
                             out,
@@ -344,8 +349,8 @@ impl Engine {
                              {}-man).",
                             reg.max_cardinality()
                         );
-                        self.tablebases = Some(Arc::new(reg));
                     }
+                    self.tablebases = (!reg.is_empty()).then(|| Arc::new(reg));
                 }
                 self.apply_tb_options();
             }
