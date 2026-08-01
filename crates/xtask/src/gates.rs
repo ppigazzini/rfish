@@ -215,10 +215,16 @@ pub(crate) fn golden(update: bool) -> Result<Outcome, String> {
     cases.sort();
 
     let mut failures = Vec::new();
+    let mut skipped = 0usize;
     for case in &cases {
         let stem = case.file_stem().and_then(|s| s.to_str()).ok_or("a case has no name")?;
         let script =
             std::fs::read_to_string(case).map_err(|e| format!("{}: {e}", case.display()))?;
+        if let Some(why) = missing_case_resource(&script) {
+            println!("  {stem}: SKIPPED, {why}");
+            skipped += 1;
+            continue;
+        }
         let lines: Vec<&str> = script.lines().filter(|l| !l.trim().is_empty()).collect();
         let out = drive(&engine, &lines)?;
         // Drop the lines that legitimately differ run to run, or every golden would be a
@@ -252,7 +258,12 @@ pub(crate) fn golden(update: bool) -> Result<Outcome, String> {
     if update {
         return Ok(Outcome::Pass);
     }
-    println!("golden: {} of {} cases match", cases.len() - failures.len(), cases.len());
+    println!(
+        "golden: {} of {} cases match{}",
+        cases.len() - failures.len() - skipped,
+        cases.len() - skipped,
+        if skipped == 0 { String::new() } else { format!(" ({skipped} skipped)") }
+    );
     Ok(Outcome::check(failures.is_empty(), format!("golden mismatches: {}", failures.join(", "))))
 }
 
@@ -288,6 +299,32 @@ fn filter_volatile(out: &str) -> String {
         kept.push('\n');
     }
     kept
+}
+
+/// The resource a case needs and this checkout does not have, if any.
+///
+/// A case that sets `SyzygyPath` is meaningless without the tables: the engine reports
+/// finding none and every line after it describes a different run. CI deliberately does not
+/// fetch them -- `nnue-check` and `tb` are left out of the workflow for the same reason -- so
+/// the case is SKIPPED and named, never silently passed and never failed for a file the
+/// checkout was never going to have.
+fn missing_case_resource(script: &str) -> Option<String> {
+    const KEY: &str = "setoption name SyzygyPath value ";
+    for line in script.lines() {
+        let Some(value) = line.trim().strip_prefix(KEY) else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let path = std::path::Path::new(value);
+        let full = if path.is_absolute() { path.to_path_buf() } else { resources_dir().join(path) };
+        if !full.is_dir() {
+            return Some(format!("no tablebases at {}", full.display()));
+        }
+    }
+    None
 }
 
 /// Every golden is what UPSTREAM produces for the same input, not merely what rfish does.
@@ -330,7 +367,7 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
     cases.sort();
 
     let (mut agree, mut differ) = (0usize, Vec::new());
-    let skipped: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
     for case in &cases {
         let stem = case.file_stem().and_then(|s| s.to_str()).ok_or("a case has no name")?;
         let golden_path = workspace_root().join(format!("tools/{stem}.golden"));
@@ -339,6 +376,10 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
         };
         let script =
             std::fs::read_to_string(case).map_err(|e| format!("{}: {e}", case.display()))?;
+        if let Some(why) = missing_case_resource(&script) {
+            skipped.push(format!("{stem} ({why})"));
+            continue;
+        }
         let lines: Vec<&str> = script.lines().filter(|l| !l.trim().is_empty()).collect();
 
         let theirs = drive_oracle(&oracle, &oracle_dir, &lines)?;
