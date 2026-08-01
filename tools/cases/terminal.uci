@@ -1,0 +1,4 @@
+position fen 8/8/8/8/8/6k1/6p1/6K1 w - - 0 1
+go depth 10
+position fen 7k/6Q1/6K1/8/8/8/8/8 b - - 0 1
+go depth 3

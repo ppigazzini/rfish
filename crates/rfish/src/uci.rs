@@ -52,6 +52,10 @@ struct UciSink<W: Write> {
 }
 
 impl<W: Write> InfoSink for UciSink<W> {
+    fn no_moves(&mut self, depth: i32, score: &score::Score) {
+        let _ = writeln!(self.out, "info depth {depth} score {}", score.to_uci());
+    }
+
     fn depth_finished(&mut self, r: &DepthReport<'_>) {
         let mut line = format!(
             "info depth {} seldepth {} multipv {} score {}",
