@@ -277,15 +277,20 @@ impl Engine {
     }
 
     fn cmd_setoption(&mut self, args: &[&str], out: &mut impl Write) {
-        // `setoption name <words...> value <words...>`. Both halves can contain spaces, so
-        // split on the keywords rather than on position.
-        let name_start = args.iter().position(|&t| t == "name").map_or(0, |i| i + 1);
-        let value_pos = args.iter().position(|&t| t == "value");
+        // `setoption name <words...> value <words...>`. Both halves can contain spaces.
+        //
+        // Upstream CONSUMES THE FIRST TOKEN UNCONDITIONALLY -- `is >> token; // Consume the
+        // "name" token` -- and never checks that it was the word `name`. Everything up to a
+        // `value` token is then the name. Searching for the literal `name` instead made
+        // `setoption value 64` report an empty option name, where upstream swallows `value`
+        // as the keyword and reports `No such option: 64`.
+        let rest = args.split_first().map_or(&[][..], |(_, rest)| rest);
+        let value_pos = rest.iter().position(|&t| t == "value");
         let (name_end, value) = match value_pos {
-            Some(i) => (i, args[i + 1..].join(" ")),
-            None => (args.len(), String::new()),
+            Some(i) => (i, rest[i + 1..].join(" ")),
+            None => (rest.len(), String::new()),
         };
-        let name = args[name_start.min(name_end)..name_end].join(" ");
+        let name = rest[..name_end].join(" ");
 
         // Upstream reports only an unknown NAME. A value a known option cannot take is
         // ignored in silence -- its `operator=` validates, returns unchanged, and runs no
@@ -530,13 +535,26 @@ impl Engine {
 
     fn cmd_position(&mut self, args: &[&str], out: &mut impl Write) {
         let chess960 = self.options.check("UCI_Chess960");
-        let moves_at = args.iter().position(|&t| t == "moves");
-        let head = &args[..moves_at.unwrap_or(args.len())];
 
-        let fen = match head.first().copied() {
-            Some("startpos") | None => START_FEN.to_string(),
-            Some("fen") => head[1..].join(" "),
-            Some(other) => other.to_string(),
+        // Upstream's own reading, token by token: `startpos` takes the start position and
+        // then swallows ONE more token -- the `moves` keyword, if there is one -- while `fen`
+        // accumulates until it meets `moves`. Anything else, INCLUDING no argument at all,
+        // returns without touching the position.
+        //
+        // That last branch is the one this got wrong. `position moves e2e4` played the move
+        // against the current position and `position` alone reset to the start position,
+        // where upstream does nothing in both cases; and `position startpos fen <FEN>` fed
+        // the FEN's words to the move parser, which upstream reports as `Illegal move: 8/8/…`
+        // rather than quietly setting the position.
+        let (fen, move_tokens) = match args.first().copied() {
+            Some("startpos") => (START_FEN.to_string(), args.get(2..).unwrap_or(&[])),
+            Some("fen") => {
+                let tail = &args[1..];
+                let end = tail.iter().position(|&t| t == "moves");
+                let fen = tail[..end.unwrap_or(tail.len())].join(" ");
+                (fen, end.map_or(&[][..], |i| &tail[i + 1..]))
+            }
+            _ => return,
         };
 
         match Position::from_fen(&fen, chess960) {
@@ -549,8 +567,8 @@ impl Engine {
             }
         }
 
-        if let Some(i) = moves_at {
-            for token in &args[i + 1..] {
+        {
+            for token in move_tokens {
                 if let Some(m) = parse_uci_move(&self.pos, token) {
                     self.pos.do_move(m);
                 } else {
