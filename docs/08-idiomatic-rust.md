@@ -296,12 +296,27 @@ no verdict gets re-read from scratch every session.
 | [How to avoid bounds checks in Rust without `unsafe`](https://shnatsel.medium.com/how-to-avoid-bounds-checks-in-rust-without-unsafe-f65e618b4c1e) | The four safe techniques, in the order to try them: bind a subslice and index by *its* `len()`; iterate instead of indexing; `assert!` the length in front of the hot loop so the optimiser can use it; `#[inline(always)]` so the length fact crosses the function boundary. This is the playbook for the "restructure so the bound is provable" rule in §10. |
 
 **The measured claim worth remembering:** removing bounds checks is worth **1–3% typically
-and 15% at the very best**, and only in number-crunching code. That is the published
-figure, and it matches this port's own evidence — rfish retires 1.7–1.9x more branches than
-upstream while *missing fewer* of them, which is what a wall of perfectly-predicted checks
-looks like, and the spine gap is nonetheless dominated by structural defects like the
-allocator rather than by the checks. Chase the structure first; the checks are the last few
-per cent, not the first twenty.
+and 15% at the very best**, and only in number-crunching code. Chase the structure first;
+the checks are the last few per cent, not the first twenty.
+
+**What this port's own counters say has changed, and the old reading was wrong.** This
+paragraph used to claim rfish retires 1.7–1.9x more branches than upstream while *missing
+fewer* of them — a wall of perfectly-predicted checks. Re-measured with both sides on one
+toolchain (clang/LLVM at rustc's major, PGO on top of LTO, avx2, startup subtracted), the
+branch picture is the opposite of that:
+
+| | conditional branches | mispredicted | L1 icache misses |
+|---|---|---|---|
+| NNUE axis | 1.34x | **2.57x** | 2.10x |
+| spine axis | 0.98x | **1.41x** | 2.00x |
+
+rfish retires roughly as many branches as upstream and misses **1.4–2.6x** as many, and
+takes twice the instruction-cache misses on both axes. Indirect branches are worse again
+(2.3x on the spine, and 2.2x of them mispredicted). So the surviving gap is NOT a wall of
+cheap predicted bounds checks; it is prediction and instruction-fetch behaviour, which is
+where a reader arriving here for "why is safe Rust slower" should look first. The
+bounds-check figure above stands as published guidance; it is simply not what this port's
+remaining gap is made of.
 
 ### Vectorisation: what actually governs it here
 
