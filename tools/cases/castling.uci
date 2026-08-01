@@ -1,0 +1,15 @@
+position fen 4k3/8/8/8/8/8/8/4K3 w KQkq - 0 1
+d
+position fen r3k2r/8/8/8/8/8/8/4K2R w KQkq - 0 1
+d
+position fen r3k2r/8/8/8/4K3/8/8/R6R w KQkq - 0 1
+d
+position fen r3k2r/8/8/8/8/8/8/R3K2R w HAha - 0 1
+d
+setoption name UCI_Chess960 value true
+position fen 1nbbnrkr/p1p1qppp/3p4/1p2p3/3PP3/2N5/PPP1QPPP/1NBBR1KR w HEhe - 4 9
+d
+go perft 3
+position fen krr5/8/8/8/8/8/8/KRR5 w CBcb - 0 1
+d
+position fen r3k2r/8/8/8/8/8/8/R3K2R w KQZq - 0 1
