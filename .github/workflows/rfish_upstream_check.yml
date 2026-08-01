@@ -85,5 +85,62 @@ jobs:
 
       # Informational, never a gate: a red merge button for upstream having moved would
       # block work that has nothing to do with the port being behind.
-      - name: Note that this lane does not gate
-        run: echo "Detection only -- this workflow never fails for drift."
+      - name: Note that drift detection does not gate
+        run: echo "Drift detection only -- this workflow never fails for being behind."
+
+  # A DIFFERENT question from drift: not "has upstream moved" but "is rfish still faithful to
+  # the pin it already claims to match". Both need an upstream BUILD, which is why neither can
+  # live in the push lanes and why this workflow -- which already clones the golden -- is
+  # where they belong. Until this job existed both only ran when someone remembered.
+  fidelity:
+    name: Fidelity against the pinned oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read the pinned toolchain
+        id: rt
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
+          test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ steps.rt.outputs.channel }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: resources/*.nnue
+          key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: resources/syzygy
+          key: syzygy-3man-${{ hashFiles('crates/xtask/src/net.rs') }}
+      - run: cargo xtask net
+      - run: cargo xtask tb-fetch
+
+      # The oracle must be built AT THE PIN, in ../Stockfish/src, because that is where every
+      # differential gate looks for it -- and `find_oracle` checks the SHA upstream stamps
+      # into `id name`, so a build of master would be REJECTED rather than silently compared
+      # against. Checking out the pin is therefore load-bearing, not tidiness.
+      - name: Build the oracle at the pin
+        run: |
+          set -euo pipefail
+          git clone https://github.com/official-stockfish/Stockfish.git ../Stockfish
+          git -C ../Stockfish checkout --detach "$(tr -d '[:space:]' < tools/upstream/UPSTREAM_BASE)"
+          # Upstream embeds the net at build time; it is the same file `cargo xtask net`
+          # already fetched, so copy rather than download it twice.
+          cp resources/*.nnue ../Stockfish/src/
+          make -C ../Stockfish/src -j"$(nproc)" build ARCH=x86-64-avx2
+          ../Stockfish/src/stockfish uci < /dev/null | head -n 1
+
+      # The evaluation, the tablebase probes, the UCI surface and the search, in that order:
+      # each answers a question the others cannot.
+      - run: cargo xtask nnue-check
+      - run: cargo xtask tb
+      - run: cargo xtask golden-audit
+      - run: cargo xtask upstream-nodes --positions 25 --depth 8

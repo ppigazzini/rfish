@@ -1,0 +1,78 @@
+name: perft (nightly)
+
+# Deep perft on a schedule, which ../mcfish carries and this port did not.
+#
+# `cargo xtask perft` in the merge lane is the SHALLOW table: it has to finish in seconds, so
+# it stops at depths that keep the push lane fast. The counts it checks are facts about chess,
+# and the deeper ones are the same facts -- but a movegen bug that only shows past the shallow
+# depths would sail through every push. This lane spends the time the merge lane cannot.
+#
+# It is a GATE, unlike upstream drift: a perft mismatch is always a movegen bug, never a
+# difference of opinion, so a red run here means the tree is wrong.
+#
+# Every action is pinned BY COMMIT SHA with the tag in a trailing comment, the same pins the
+# sibling ports carry.
+
+on:
+  schedule:
+    # Nightly, offset from the fuzz lane so the two do not contend for runners.
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  deep-perft:
+    name: Deep perft against the reference counts
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the pinned toolchain
+        id: rt
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
+          test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ steps.rt.outputs.channel }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # The whole table, including the rows the merge lane is too short to reach.
+      - run: cargo xtask perft
+
+      # Perft needs no network and no tablebases: it counts moves, and the evaluation never
+      # runs. A `cargo xtask net` here would only make the lane slower and able to fail for a
+      # reason that has nothing to do with movegen.
+      - name: Deeper counts from the start position and Kiwipete
+        working-directory: resources
+        run: |
+          set -euo pipefail
+          cargo build --release --package rfish --bin stockfish --manifest-path ../Cargo.toml
+          check() { # check <fen> <depth> <expected>
+            got=$(printf 'position fen %s\ngo perft %s\n' "$1" "$2" \
+                  | ../target/release/stockfish | sed -n 's/^Nodes searched: //p' | tr -d '[:space:]')
+            if [ "$got" != "$3" ]; then
+              echo "perft($2) on $1: got $got, want $3"
+              exit 1
+            fi
+            echo "perft($2) ok on $1"
+          }
+          # Reference counts, from the same published table `tools/perft.table` draws on.
+          check "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" 6 119060324
+          check "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1" 5 193690690
