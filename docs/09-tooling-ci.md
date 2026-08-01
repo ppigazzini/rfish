@@ -265,7 +265,30 @@ The lanes:
 |---|---|
 | `lint` | `fmt`, `clippy`, `unsafe-lint`, `docs-lint` |
 | `test` | `cargo xtask test` on three platforms |
-| `gates` | `net`, `perft`, `golden`, `signature` on Linux |
+| `gates` | `net`, `tb-fetch`, `perft`, `golden`, `signature` on Linux |
+
+`cargo xtask tb-fetch` downloads the 3-man Syzygy set — ~26 KiB, ten files — and CI caches
+it keyed on the fetcher, which is how both sibling ports carry theirs. It verifies each
+file's MAGIC NUMBER rather than the HTTP status alone: a mirror that answers a missing file
+with a 200 and an HTML error page would otherwise be stored as a table and fail much later
+inside the decoder, reported as a corrupt file rather than as a bad download.
+
+Without it the tablebase-dependent golden case skips in CI, and a case that can only skip
+there is a case nobody notices breaking. `tb` itself stays out of CI, because it needs a
+pristine upstream BUILD as well as the data — that half has not changed.
+
+`rfish_upstream_check.yml` is a third workflow, weekly rather than on push. It fetches
+upstream's master and reports how many commits the pin in `tools/upstream/UPSTREAM_BASE` is
+behind, with the subjects of what is missing. It is DETECTION only and never gates: a red
+merge button for upstream having moved would block work that has nothing to do with it.
+
+It exists because the gap is invisible between sessions. This port sat five commits behind,
+across a search retune and an NNUE change, until someone compared by hand -- and two of the
+five moved the bench signature. Both sibling ports carry the same workflow; this one was
+added after that lesson rather than before it.
+
+A pin upstream's history does not contain fails the lane loudly, because "0 commits behind"
+and "that SHA does not exist" are indistinguishable in the count alone.
 
 `rfish_fuzz.yml` is a second workflow, on a nightly schedule rather than on push. It runs
 `cargo xtask fuzz`, which spends half its budget throwing mutated UCI text at the shipped

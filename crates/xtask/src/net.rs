@@ -76,6 +76,60 @@ fn rfish_default_net() -> &'static str {
         .unwrap_or(FALLBACK)
 }
 
+/// Where the 3-man Syzygy set is mirrored.
+const TB_BASE_URL: &str = "https://tablebase.lichess.ovh/tables/standard";
+
+/// The 3-man material configurations, and the two files each has.
+const TB_STEMS: [&str; 5] = ["KPvK", "KNvK", "KBvK", "KRvK", "KQvK"];
+
+/// Fetch the 3-man Syzygy set into `resources/syzygy/`.
+///
+/// The tablebase gates and the `tbpv` golden case need real tables; without them both skip,
+/// and a gate that can only skip teaches people to ignore a skip. The set is ~26 KiB, so it
+/// is cheap enough for CI to carry — the sibling ports both fetch and cache it the same way.
+///
+/// **The magic number is checked, not just the HTTP status.** A mirror that answers a missing
+/// file with a 200 and an HTML error page would otherwise be stored as a table and fail much
+/// later inside the decoder, reported as a corrupt file rather than as a bad download.
+pub(crate) fn fetch_tb() -> Result<Outcome, String> {
+    let dir = resources_dir().join("syzygy");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !have("curl") && !have("wget") {
+        return Ok(Outcome::Skipped(
+            "neither curl nor wget is available to fetch the tablebases".to_string(),
+        ));
+    }
+
+    let mut fetched = 0usize;
+    for stem in TB_STEMS {
+        for (ext, sub, magic) in [
+            ("rtbw", "3-4-5-wdl", [0x71u8, 0xe8, 0x23, 0x5d]),
+            ("rtbz", "3-4-5-dtz", [0xd7u8, 0x66, 0x0c, 0xa5]),
+        ] {
+            let dest = dir.join(format!("{stem}.{ext}"));
+            if dest.metadata().is_ok_and(|m| m.len() > 0) {
+                continue;
+            }
+            let url = format!("{TB_BASE_URL}/{sub}/{stem}.{ext}");
+            if have("curl") {
+                run(Command::new("curl").args(["-fL", "--retry", "3", "-o"]).arg(&dest).arg(&url))?;
+            } else {
+                run(Command::new("wget").arg("-O").arg(&dest).arg(&url))?;
+            }
+            let head = std::fs::read(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+            if head.len() < 4 || head[..4] != magic {
+                let _ = std::fs::remove_file(&dest);
+                return Err(format!(
+                    "{stem}.{ext} is not a Syzygy table: it does not start with the {ext} magic"
+                ));
+            }
+            fetched += 1;
+        }
+    }
+    println!("tb-fetch: {fetched} downloaded, 3-man set present in {}", dir.display());
+    Ok(Outcome::Pass)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
