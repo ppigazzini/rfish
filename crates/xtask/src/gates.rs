@@ -282,6 +282,215 @@ fn filter_volatile(out: &str) -> String {
     kept
 }
 
+/// Every golden is what UPSTREAM produces for the same input, not merely what rfish does.
+///
+/// **A golden is a photograph of this engine, so it cannot see a divergence from upstream.**
+/// `golden-update` records whatever the binary currently does, including a bug, and the gate
+/// is green from then on. That is not hypothetical here: `search.golden` recorded a
+/// `bestmove` with no ponder move and passed every run for as long as it existed, while
+/// upstream printed one — `extract_ponder_from_tt` had never been ported, and the gate could
+/// not have told anyone. It surfaced only because a resync moved the tree and someone drove
+/// the oracle by hand.
+///
+/// Every case in `tools/cases/` is UCI-observable behaviour, so upstream's own binary
+/// answers all of them. This gate asks it, and adjudicates the golden against the answer.
+/// ../zfish reached the same conclusion and audits its goldens the same way.
+///
+/// The identity lines are excluded by design and by name: the two engines report different
+/// `id name` and a different banner, which is intended and is the only difference a byte
+/// comparison must forgive.
+pub(crate) fn golden_audit() -> Result<Outcome, String> {
+    let Some(oracle) = find_oracle() else {
+        return Ok(Outcome::Skipped("no upstream build to adjudicate against".to_string()));
+    };
+    // Probe the shell by RUNNING it: `sh --version` is a bashism and dash exits non-zero,
+    // so the usual `have` check would report no shell on a Debian-family box.
+    let shell = Command::new("sh").args(["-c", "exit 0"]).status().is_ok_and(|s| s.success());
+    if !shell {
+        return Ok(Outcome::Skipped("the oracle driver needs a shell".to_string()));
+    }
+    let oracle_dir = oracle.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    let cases_dir = workspace_root().join("tools/cases");
+    let Ok(entries) = std::fs::read_dir(&cases_dir) else {
+        return Ok(Outcome::Skipped(format!("{} does not exist", cases_dir.display())));
+    };
+    let mut cases: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "uci"))
+        .collect();
+    cases.sort();
+
+    let (mut agree, mut differ, mut skipped) = (0usize, Vec::new(), Vec::new());
+    for case in &cases {
+        let stem = case.file_stem().and_then(|s| s.to_str()).ok_or("a case has no name")?;
+        // Upstream TERMINATES on the first malformed command -- an invalid FEN is a
+        // "CRITICAL ERROR" and exit 1 -- so every later command in the error case has no
+        // upstream answer to adjudicate against. That difference is REAL and is not settled
+        // by skipping it here; docs/07-shell.md records it as open.
+        if stem == "errors" {
+            skipped.push(stem.to_string());
+            continue;
+        }
+        let golden_path = workspace_root().join(format!("tools/{stem}.golden"));
+        let Ok(want) = std::fs::read_to_string(&golden_path) else {
+            continue;
+        };
+        let script =
+            std::fs::read_to_string(case).map_err(|e| format!("{}: {e}", case.display()))?;
+        let lines: Vec<&str> = script.lines().filter(|l| !l.trim().is_empty()).collect();
+
+        let theirs = drive_oracle(&oracle, &oracle_dir, &lines)?;
+        let theirs = strip_identity(&filter_volatile(&theirs));
+        let ours = strip_identity(&want.replace('\r', ""));
+        if ours == theirs {
+            agree += 1;
+            continue;
+        }
+        differ.push(stem.to_string());
+        eprintln!("--- {stem}: the golden and upstream disagree ---");
+        for (i, (a, b)) in ours.lines().zip(theirs.lines()).enumerate() {
+            if a != b {
+                eprintln!("  line {}: golden   {a:?}", i + 1);
+                eprintln!("  line {}: upstream {b:?}", i + 1);
+                break;
+            }
+        }
+        if ours.lines().count() != theirs.lines().count() {
+            eprintln!(
+                "  golden has {} lines, upstream {}",
+                ours.lines().count(),
+                theirs.lines().count()
+            );
+        }
+    }
+
+    println!(
+        "golden-audit: {agree} agree, {} differ, {} not answerable ({})",
+        differ.len(),
+        skipped.len(),
+        skipped.join(", ")
+    );
+    Ok(Outcome::check(
+        differ.is_empty(),
+        format!("goldens upstream does not agree with: {}", differ.join(", ")),
+    ))
+}
+
+/// Drive the oracle, WAITING for each search to finish before sending the next command.
+///
+/// Upstream runs `go` on its own thread and treats end of input as `quit`, so writing every
+/// line at once and closing the pipe stops the search early and collects a `bestmove` from a
+/// search that never finished. That reads as a divergence and is not one — it cost real time
+/// in the `c5aef2bf1` resync before it was spotted. Everything else upstream does is
+/// synchronous, so only `go` needs the wait.
+///
+/// Standard error is merged in through a shell, because upstream writes part of its output
+/// there and a stdout-only capture would silently drop it.
+fn drive_oracle(
+    oracle: &std::path::Path,
+    cwd: &std::path::Path,
+    lines: &[&str],
+) -> Result<String, String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(format!("exec {} 2>&1", shell_quote(&oracle.to_string_lossy())))
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{}: {e}", oracle.display()))?;
+
+    let mut stdin = child.stdin.take().ok_or("the oracle has no standard input")?;
+    let stdout = child.stdout.take().ok_or("the oracle has no output")?;
+
+    // Read on a thread and hand lines over a channel, so every wait below can carry a
+    // DEADLINE. A command that never reports -- `go perft` prints no bestmove, and a
+    // malformed `go` in the error cases prints nothing at all -- would otherwise block the
+    // gate forever, which is how the first version of this hung.
+    let (tx, rx) = mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || {
+        let mut r = BufReader::new(stdout);
+        loop {
+            let mut got = String::new();
+            match r.read_line(&mut got) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if tx.send(got).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let mut out = String::new();
+    for line in lines {
+        // A case may end the oracle -- the error cases feed it `quit` among other things --
+        // and writing past that is a broken pipe, not a failure of the audit. Stop feeding
+        // it and keep whatever it said.
+        if writeln!(stdin, "{line}").and_then(|()| stdin.flush()).is_err() {
+            break;
+        }
+        if !line.trim_start().starts_with("go") {
+            continue;
+        }
+        // Wait for this search to report before sending the next command: upstream runs
+        // `go` on its own thread and treats end of input as `quit`, so writing everything at
+        // once truncates the search and collects a bestmove from one that never finished.
+        while let Ok(got) = rx.recv_timeout(Duration::from_secs(20)) {
+            let done = got.starts_with("bestmove") || got.starts_with("Nodes searched");
+            out.push_str(&got);
+            if done {
+                break;
+            }
+        }
+    }
+    let _ = writeln!(stdin, "quit");
+    drop(stdin);
+    while let Ok(got) = rx.recv_timeout(Duration::from_secs(10)) {
+        out.push_str(&got);
+    }
+    let _ = child.wait();
+    let _ = reader.join();
+    Ok(out.replace('\r', ""))
+}
+
+/// Quote a path for the shell that merges the oracle's two output streams.
+fn shell_quote(path: &str) -> String {
+    format!("'{}'", path.replace('\'', r"'\''"))
+}
+
+/// Drop the lines that name WHICH engine answered.
+///
+/// The banner and `id name` are the port's own, deliberately: everything else in a golden is
+/// behaviour the two engines are required to share.
+fn strip_identity(out: &str) -> String {
+    let mut kept = String::with_capacity(out.len());
+    for line in out.lines() {
+        if line.starts_with("id name ")
+            || line.starts_with("id author ")
+            || line.starts_with("Stockfish ")
+            || line.starts_with("rfish ")
+            // rfish cannot replicate the network: replication follows thread PINNING, which
+            // has no filesystem equivalent, so there is one shared copy. AGENTS.md records
+            // that as deliberate, and upstream's line now names the shared-memory
+            // implementation rfish equally cannot have. Filtered BY NAME, so the exemption
+            // stays visible instead of being absorbed into a wildcard.
+            || line.starts_with("info string Network replica")
+        {
+            continue;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    kept
+}
+
 /// Documentation rot: every link resolves, and every named repository path exists.
 ///
 /// This settles the mechanical half. It CANNOT tell you a sentence has become false —
@@ -577,10 +786,37 @@ fn internal_units_all(out: &str) -> Vec<i64> {
         .collect()
 }
 
-/// A pristine upstream binary, if one has been built.
+/// A pristine upstream binary **built at `UPSTREAM_BASE`**, if one exists.
+///
+/// The SHA check is the whole point, not a formality. Upstream stamps its own short SHA into
+/// `id name`, and a differential gate against a binary from a DIFFERENT commit compares the
+/// new engine against the old upstream and reports a clean pass — silently, because nothing
+/// in the output says which upstream answered.
+///
+/// That is not hypothetical. This directory held a `stockfish-new` from the previous pin
+/// benching 3,184,328 beside a current `stockfish` benching 2,508,687, and because the stale
+/// name sorted first, `nnue-check`, `tb` and the golden audit all adjudicated against the
+/// wrong commit while passing. `docs/09-tooling-ci.md` had recorded the trap one commit
+/// earlier and it still bit, because the stale binary was under a name nobody was looking at.
 fn find_oracle() -> Option<std::path::PathBuf> {
     let src = workspace_root().parent()?.join("Stockfish/src");
-    ["stockfish-new", "stockfish"].iter().map(|n| src.join(n)).find(|p| p.is_file())
+    let base = std::fs::read_to_string(workspace_root().join("tools/upstream/UPSTREAM_BASE"))
+        .ok()?
+        .trim()
+        .to_string();
+    let short = base.get(..8)?.to_string();
+    ["stockfish-new", "stockfish"]
+        .iter()
+        .map(|n| src.join(n))
+        .filter(|p| p.is_file())
+        .find(|p| oracle_stamp(p).is_some_and(|id| id.contains(&short)))
+}
+
+/// The `id name` an upstream binary announces, which carries the commit it was built from.
+fn oracle_stamp(oracle: &std::path::Path) -> Option<String> {
+    let dir = oracle.parent()?;
+    let out = drive_at(oracle, dir, &["uci"]).ok()?;
+    out.lines().find(|l| l.starts_with("id name ")).map(str::to_string)
 }
 
 /// The net name the engine looks for, read from its own constant.
@@ -682,6 +918,7 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         ("test", test),
         ("perft", perft),
         ("golden", || golden(false)),
+        ("golden-audit", golden_audit),
         ("nnue-check", nnue_check),
         ("tb", tb),
         ("signature", || signature(false)),
