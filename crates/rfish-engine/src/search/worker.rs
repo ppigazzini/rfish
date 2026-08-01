@@ -43,7 +43,9 @@ use crate::state::{
     StackEntry, TimeBudget,
 };
 
-use super::history::{Histories, LOW_PLY_HISTORY_SIZE, cont_plane_index, corr_plane_index};
+use super::history::{
+    CORRECTION_LIMIT, Histories, LOW_PLY_HISTORY_SIZE, cont_plane_index, corr_plane_index,
+};
 use super::movepick::{ContKeys, MoveBuf, MovePicker};
 use super::score::Score;
 use super::skill::{Prng, Skill};
@@ -1771,6 +1773,17 @@ impl SearchWorker {
                     // it excluded the node STILL fails high -- so more than one move does,
                     // and the whole subtree can be skipped.
                     self.histories.update_tt_move(-421 - 110 * depth);
+
+                    // The fail-high is evidence about the static evaluation too: the search
+                    // found more here than the evaluation said was available, so feed the
+                    // difference back the way a completed search would.
+                    if !self.stack[si].in_check && v > self.stack[si].static_eval {
+                        let bonus = ((v - self.stack[si].static_eval) * singular_depth * 177
+                            / 1024)
+                            .clamp(-CORRECTION_LIMIT / 4, CORRECTION_LIMIT / 4);
+                        self.update_correction_history(si, bonus);
+                    }
+
                     return v;
                 } else if tt_value >= beta {
                     // Neither singular nor multi-cut. The transposition move is expected to
