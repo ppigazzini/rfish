@@ -223,13 +223,23 @@ fn line(rng: &mut Rng) -> String {
     parts.join(" ")
 }
 
-/// `cargo xtask fuzz [seconds]` — the scheduled step.
+/// `cargo xtask fuzz [seconds] [harness]` — the scheduled step.
 ///
-/// Splits its budget between the two harnesses. `RFISH_FUZZ_SEED` pins the run for a replay;
-/// without it the seed comes from the clock, so a nightly job broadens coverage instead of
-/// re-walking the positions it walked yesterday.
+/// `harness` is `uci`, `search`, `tb` or `all` (the default). Naming ONE gives it the whole
+/// budget, which is how the nightly workflow runs them: three jobs in parallel, each with the
+/// full time, rather than one job dividing it — the shape ../mcfish's `mcfish_fuzz.yml` uses,
+/// and for its reason. The three harnesses run at throughputs orders of magnitude apart, so a
+/// single shared budget is really a budget for the fastest one, and a failure in the first
+/// costs the other two their run.
+///
+/// `RFISH_FUZZ_SEED` pins the run for a replay; without it the seed comes from the clock, so a
+/// nightly job broadens coverage instead of re-walking the positions it walked yesterday.
 pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
     let seconds: u64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(30);
+    let harness = args.get(1).copied().unwrap_or("all");
+    if !matches!(harness, "all" | "uci" | "search" | "tb") {
+        return Err(format!("unknown fuzz harness `{harness}`: expected uci, search, tb or all"));
+    }
     let seed = std::env::var("RFISH_FUZZ_SEED")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -238,51 +248,53 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(1, |d| d.as_nanos() as u64)
         });
-    // Three ways, because there are three harnesses and each answers a question the other two
-    // cannot: text at the shell, positions at the search, bytes at the decoder.
-    let share = (seconds / 3).max(1);
+    // Divided only when asked for everything at once, which is what a local run wants.
+    let share = if harness == "all" { (seconds / 3).max(1) } else { seconds.max(1) };
     println!("fuzz: seed {seed} -- replay this run with RFISH_FUZZ_SEED={seed}");
 
-    let engine = build_engine(GATE_PROFILE)?;
     let resources = crate::resources_dir();
     let mut rng = Rng(seed.max(1));
     let deadline = Instant::now() + Duration::from_secs(share);
     let mut scripts = 0usize;
 
-    while Instant::now() < deadline {
-        // A burst rather than one line at a time: state carries between commands, and the
-        // failures worth finding are the ones that need a `position` before a `go`.
-        let burst: Vec<String> = (0..6).map(|_| line(&mut rng)).collect();
-        let replay = burst.join("\n");
+    if matches!(harness, "all" | "uci") {
+        let engine = build_engine(GATE_PROFILE)?;
 
-        let out = drive_bounded(&engine, &resources, &burst)
-            .map_err(|e| format!("seed {seed}, script {scripts}: {e}\ninput was:\n{replay}"))?;
-        // Every burst ends by asking the engine to prove it is still answering. A process
-        // that survived by wedging, or by losing its parser state, fails here rather than
-        // passing silently.
-        match out {
-            Some(text) if text.contains("readyok") => {}
-            // A reported CRITICAL ERROR is the engine terminating ON PURPOSE, which is what
-            // upstream does for a command it cannot use. It answers no `isready` afterwards
-            // because it is gone, and that is the correct outcome rather than a wedge -- the
-            // burst is random text, so it reaches that path often.
-            Some(text) if text.contains("CRITICAL ERROR") => {}
-            Some(_) => {
-                return Ok(Outcome::Fail(format!(
-                    "seed {seed}, script {scripts}: the engine stopped answering isready\n\
+        while Instant::now() < deadline {
+            // A burst rather than one line at a time: state carries between commands, and the
+            // failures worth finding are the ones that need a `position` before a `go`.
+            let burst: Vec<String> = (0..6).map(|_| line(&mut rng)).collect();
+            let replay = burst.join("\n");
+
+            let out = drive_bounded(&engine, &resources, &burst)
+                .map_err(|e| format!("seed {seed}, script {scripts}: {e}\ninput was:\n{replay}"))?;
+            // Every burst ends by asking the engine to prove it is still answering. A process
+            // that survived by wedging, or by losing its parser state, fails here rather than
+            // passing silently.
+            match out {
+                Some(text) if text.contains("readyok") => {}
+                // A reported CRITICAL ERROR is the engine terminating ON PURPOSE, which is what
+                // upstream does for a command it cannot use. It answers no `isready` afterwards
+                // because it is gone, and that is the correct outcome rather than a wedge -- the
+                // burst is random text, so it reaches that path often.
+                Some(text) if text.contains("CRITICAL ERROR") => {}
+                Some(_) => {
+                    return Ok(Outcome::Fail(format!(
+                        "seed {seed}, script {scripts}: the engine stopped answering isready\n\
                      input was:\n{replay}"
-                )));
+                    )));
+                }
+                None => {
+                    return Ok(Outcome::Fail(format!(
+                        "seed {seed}, script {scripts}: no reply within {}s\ninput was:\n{replay}",
+                        SCRIPT_TIMEOUT.as_secs()
+                    )));
+                }
             }
-            None => {
-                return Ok(Outcome::Fail(format!(
-                    "seed {seed}, script {scripts}: no reply within {}s\ninput was:\n{replay}",
-                    SCRIPT_TIMEOUT.as_secs()
-                )));
-            }
+            scripts += 1;
         }
-        scripts += 1;
+        println!("fuzz: {scripts} UCI scripts survived, engine still answering");
     }
-    println!("fuzz: {scripts} UCI scripts survived, engine still answering");
 
     // The in-process halves, under the profile whose debug assertions and overflow checks are
     // what turn a silent wrong number into a failure. Both are `#[ignore]`d tests rather than
@@ -291,7 +303,11 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
     for (name, filter, what) in [
         ("search", "search::fuzz::tests::soak", "the search soak"),
         ("tablebase parse", "platform::syzygy::fuzz::tests::tb_parse_soak", "the tablebase soak"),
-    ] {
+    ]
+    .into_iter()
+    .filter(|(name, _, _)| {
+        harness == "all" || harness == if *name == "search" { "search" } else { "tb" }
+    }) {
         println!("fuzz: {name}, {share}s");
         let status = Command::new(cargo())
             .current_dir(crate::resources_dir())

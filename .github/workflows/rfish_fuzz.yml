@@ -6,6 +6,13 @@ name: fuzz
 # runs every night rather than when someone remembers -- the same reasoning ../mcfish gives
 # for `mcfish_fuzz.yml` and for moving its node differential onto a schedule in `6bc4db61`.
 #
+# THREE JOBS, one per harness, each with the WHOLE budget -- the shape ../mcfish's fuzz
+# workflow uses (`fuzz`, `fuzz-search`, `fuzz-tb`) and for its reason: the harnesses run at
+# throughputs orders of magnitude apart, so one shared budget is really a budget for the
+# fastest of them. Running them as separate jobs also means a failure in one still lets the
+# other two spend their time, and the job name says which harness went red without reading a
+# log. `cargo xtask fuzz <seconds> all` is the local single-process form.
+#
 # Actions are pinned BY COMMIT SHA with the tag in a trailing comment, as in rfish_ci.yml.
 
 on:
@@ -16,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: "Total budget, split between the UCI, search and tablebase harnesses"
+        description: "Budget per harness -- each of the three jobs gets this in full"
         required: false
         default: "600"
       seed:
@@ -37,9 +44,27 @@ env:
 
 jobs:
   fuzz:
-    name: fuzz
+    # One job per harness, from one matrix, because the three differ only in which harness
+    # they name and whether they need tables. `fail-fast: false` is load-bearing: a red UCI
+    # run must not cancel a tablebase run that had found nothing yet.
+    name: fuzz (${{ matrix.harness }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Mutated UCI text at the shipped binary: the surface a user types at.
+          - harness: uci
+            tables: false
+          # Random legal positions through the real search, in-process: movegen, the move
+          # picker, the transposition table, pruning, qsearch and the accumulator.
+          - harness: search
+            tables: false
+          # Mutated table bytes at the Syzygy decoder: the only input here that is a FILE, and
+          # the one no part of the process vouches for.
+          - harness: tb
+            tables: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,18 +90,25 @@ jobs:
           path: resources/*.nnue
           key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
       - run: cargo xtask net
-      # The 3-man Syzygy set, for the third harness. The tablebase soak SKIPS without tables
-      # rather than failing -- correct, but a lane that silently skips the harness it was
-      # extended for proves nothing, which is the same reasoning the gates lane fetches under.
+
+      # The 3-man set seeds the tablebase harness: it mutates tables that PARSE, because a
+      # random blob dies at the magic number and never reaches a decoder. `continue-on-error`
+      # for the same reason ../mcfish gives -- a mirror outage must not fail a fuzz job. The
+      # soak then SKIPS and says so, which is a visibly weaker run rather than a false green.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.tables
         with:
           path: resources/syzygy
           key: syzygy-3man-${{ hashFiles('crates/xtask/src/net.rs') }}
-      - run: cargo xtask tb-fetch
+      - name: Fetch the 3-man tables to seed the parse harness
+        if: matrix.tables
+        continue-on-error: true
+        run: cargo xtask tb-fetch
+
       # No seed pinned on the schedule: each night walks positions the last one did not,
       # which is the entire reason to run this repeatedly. The step PRINTS the seed it chose,
       # and a failure is replayed by dispatching this workflow with it.
       - name: Fuzz
         env:
           RFISH_FUZZ_SEED: ${{ github.event.inputs.seed }}
-        run: cargo xtask fuzz ${{ github.event.inputs.seconds || '600' }}
+        run: cargo xtask fuzz ${{ github.event.inputs.seconds || '600' }} ${{ matrix.harness }}
