@@ -690,7 +690,14 @@ impl SearchWorker {
         // choosing between moves that already preserve the result.
         self.rank_root_moves();
 
-        let uci_pv_sent = self.iterative_deepening(tt, sink);
+        let mut uci_pv_sent = self.iterative_deepening(tt, sink);
+
+        // A search stopped during a fail high at the root leaves a PV one move long, and a
+        // `bestmove` with no ponder move gives a pondering GUI nothing to think about. Look
+        // the reply up in the table instead, as upstream does.
+        if self.root_moves[0].pv.len() == 1 && self.extract_ponder_from_tt(tt) {
+            uci_pv_sent = false;
+        }
 
         // Send the final line if the last one no longer describes the move about to be
         // played. Without this the `bestmove` and the last `info ... pv` disagree whenever
@@ -709,6 +716,39 @@ impl SearchWorker {
             depth: self.completed_depth,
             nodes: self.nodes,
         }
+    }
+
+    /// Fill in a missing ponder move from the transposition table.
+    ///
+    /// Called only when the search left a PV one move long — a fail high at the root that
+    /// was stopped before the reply was searched. Playing the best move and reading the
+    /// table entry for the position it reaches recovers a reply that was already searched,
+    /// which is worth more to a pondering GUI than no reply at all.
+    ///
+    /// The draw test is upstream's and is load-bearing: a repetition or fifty-move draw
+    /// stores an entry whose move belongs to a different line, and pondering it would have
+    /// the engine thinking about a move the opponent cannot sensibly play.
+    ///
+    /// Returns whether a ponder move was appended.
+    fn extract_ponder_from_tt(&mut self, tt: &TranspositionTable) -> bool {
+        let best = self.root_moves[0].pv[0];
+        if !best.is_ok() {
+            return false;
+        }
+
+        self.pos.do_move(best);
+        if !self.pos.is_draw(1) {
+            let probe = tt.probe(self.pos.key());
+            if probe.hit
+                && probe.data.mv.is_ok()
+                && crate::board::movegen::generate_legal(&self.pos).contains(&probe.data.mv)
+            {
+                self.root_moves[0].pv.push(probe.data.mv);
+            }
+        }
+        self.pos.undo_move(best);
+
+        self.root_moves[0].pv.len() > 1
     }
 
     /// The iterative-deepening loop: search at depth one, then two, and so on, each

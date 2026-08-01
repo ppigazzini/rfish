@@ -1,5 +1,5 @@
 rfish 0.1.0 by the Stockfish developers (see AUTHORS)
 info string Network replica 1: Local memory.
-bestmove e2e4
+bestmove e2e4 ponder e7e5
 bestmove a1a8
 bestmove e4d5 ponder e8e7
