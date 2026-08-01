@@ -169,6 +169,7 @@ ports. Run it unpiped, or redirect to a log and test `$?`.
 | **Never exercise `Threads` near its declared maximum.** A worker is ~15.6 MB resident here (measured: 251 MB at `Threads 1`, 362 MB at `Threads 8`), so `Threads 1024` — the option's own max — is ~16 GB, and a harness running two engines is ~32 GB. That takes down a WSL2 VM and a CI runner, and it has: both sibling ports lost one. Cover the declared bounds with the `uci` listing diff, and keep every harness at 1, 2, 8 or 16. | this file |
 | **An option value that becomes an allocation must be bounded where it is parsed.** `Hash`, `Threads` and `NumaPolicy` are the three. `NumaPolicy` accepts a processor list, and upstream bounds each range but not their sum — 735 bytes of input reached 2.8 GB here before the allocator gave up. `numa.rs` bounds the total; keep it bounded. | `platform/numa.rs` |
 | A golden must pin the ENGINE, not the runner. `info string Available processors` is the host's core count, so `filter_volatile` drops it. Anything else host-dependent belongs there too. | [crates/xtask/src/gates.rs](crates/xtask/src/gates.rs) |
+| **An oracle built by a different compiler, or without PGO, is not a comparable oracle.** rfish is rustc/LLVM; a `g++` oracle measures GCC against LLVM, and a non-PGO oracle measures upstream's own shipped recipe against something nobody runs. Build both sides with `cargo xtask oracle` / `cargo xtask pgo`, which use clang at rustc's LLVM major and train both profiles on the same `bench`. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
 
 ## Performance work
 
@@ -178,8 +179,15 @@ blind spots) before proposing any optimisation. Four rules that outrank intuitio
 
 - **Measure whole-binary, at a named `--arch` tier.** Instruction arithmetic over a diff is
   a guess, never a measurement, and the tier changes the answer.
+- **Hold the TOOLCHAIN equal, not just the tier.** Both sides clang/LLVM at rustc's major,
+  both sides PGO on top of LTO — `cargo xtask pgo` and `cargo xtask oracle`. This is not a
+  detail: it is worth more than most rows in the eval ledger, and every ratio measured
+  before it was in place understated the gap.
 - **Subtract startup, by measurement.** A whole-process counter includes the net load and
   the magic-table build, and both are large next to a short bench.
+- **Time is only comparable INTERLEAVED.** Alternate which binary runs first each round and
+  report the median paired ratio with its spread; a batched best-of-N reads the thermal
+  state, not the binaries.
 - **Size an Elo run BEFORE starting it, at the RIGHT conversion.** 70 Elo per doubling is a
   long-time-control figure. Measured here against a PGO'd upstream, three cells
   (0.1+0.001 at two tiers, 1+0.01) all imply **138-152 Elo per doubling**. Use the figure

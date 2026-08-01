@@ -15,6 +15,7 @@ use std::process::{Command, ExitCode, Stdio};
 mod fuzz;
 mod gates;
 mod net;
+mod perf;
 mod runner;
 
 use runner::Outcome;
@@ -70,6 +71,9 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "nnue-check" => gates::nnue_check(),
         "tb" => gates::tb(),
         "net" => net::fetch(args),
+        "pgo" => perf::pgo(args),
+        "oracle" => perf::oracle(args),
+        "perf" => perf::perf(args),
         "fuzz" => fuzz::fuzz(args),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
@@ -98,6 +102,14 @@ cargo xtask <step> — the rfish build driver
     unsafe-lint           no `unsafe` and no allow(unsafe_code) anywhere
     nnue-check            the network's output equals upstream's, position by position
     tb                    Syzygy discovery, and that an empty path changes nothing
+
+  Measurement — a ratio is about the engines only when everything else is held equal
+    pgo [--tier T] [--spine]           PGO build: instrument, train on bench, rebuild
+    oracle [--tier T] [--spine]        upstream at UPSTREAM_BASE, built clang + PGO + LTO
+    perf [--tier T] [--spine] [--rounds N]
+                                       the differential: callgrind instructions, then a
+                                       paired interleaved A/B of search time
+                                       tiers: sse41, avx2 (default), native
 
   Scheduled — a wall-clock budget, so NOT part of parity
     fuzz [SECONDS]        random UCI text at the shell and random positions at the
