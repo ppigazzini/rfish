@@ -164,10 +164,18 @@ impl Options {
                 _ => return false,
             },
             OptionValue::Spin { value: v, min, max, .. } => match value.trim().parse::<i64>() {
-                // Clamp rather than reject: a GUI that sends a too-large Hash should get
-                // the largest table the engine allows, which is what upstream does.
-                Ok(n) => *v = n.clamp(*min, *max),
-                Err(_) => return false,
+                // REJECTED, not clamped. Upstream's `Option::operator=` tests
+                // `value_in_range` and returns the option UNCHANGED when the number falls
+                // outside `[min, max]`, exactly as it does for a value that is not a number
+                // at all -- the comment above the test says why it checks at all: the value
+                // may have come from a console rather than from a GUI that knows the limits.
+                //
+                // Clamping is not a gentler version of the same thing. `Threads 1025` clamps
+                // to 1024, and a worker is about 15.6 MB resident here, so a value the engine
+                // is supposed to ignore became a sixteen-gigabyte allocation. `Hash` is the
+                // same shape. Upstream keeps the previous value and says nothing.
+                Ok(n) if (*min..=*max).contains(&n) => *v = n,
+                _ => return false,
             },
             OptionValue::Text { value: v, .. } => {
                 *v = if value == "<empty>" { String::new() } else { value.to_string() };
@@ -257,12 +265,18 @@ mod tests {
     }
 
     #[test]
-    fn a_spin_out_of_range_is_clamped_rather_than_rejected() {
+    fn a_spin_out_of_range_is_rejected_and_leaves_the_value_alone() {
         let mut o = Options::default();
-        assert!(o.set("Hash", "99999999999"));
-        assert_eq!(o.spin("Hash"), 33_554_432);
-        assert!(o.set("Hash", "-5"));
-        assert_eq!(o.spin("Hash"), 1);
+        let before = o.spin("Hash");
+        // Both edges, and both leave the option exactly as it was -- upstream's
+        // `value_in_range` failing is the same outcome as the value not parsing.
+        assert!(!o.set("Hash", "99999999999"));
+        assert_eq!(o.spin("Hash"), before);
+        assert!(!o.set("Hash", "-5"));
+        assert_eq!(o.spin("Hash"), before);
+        // In range still applies, so the rejection is about the BOUND and not about spins.
+        assert!(o.set("Hash", "64"));
+        assert_eq!(o.spin("Hash"), 64);
     }
 
     #[test]
