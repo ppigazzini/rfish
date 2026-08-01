@@ -318,9 +318,9 @@ gates look and because `find_oracle` checks the SHA — a build of master is rej
 than silently compared against.
 
 `rfish_fuzz.yml` is a second workflow, on a nightly schedule rather than on push. It runs
-`cargo xtask fuzz`, which splits its budget three ways: mutated UCI text at the shipped
-binary, random legal positions through the real search in-process, and mutated table bytes at
-the Syzygy decoder. Three harnesses because they fail differently. Subprocess fuzzing spends
+`cargo xtask fuzz`, which drives three harnesses: mutated UCI text at the shipped binary,
+random legal positions through the real search in-process, and mutated table bytes at the
+Syzygy decoder. Three harnesses because they fail differently. Subprocess fuzzing spends
 a mutation's budget on the PARSER and never reaches the search behind it, which is the lesson
 ../mcfish records in `2b8eaad7` when it added its own in-process harness beside its UCI one;
 and neither of those two ever reaches a **file**, which is the only input here that no part of
@@ -330,9 +330,16 @@ shipped as verified. It found six panics on its first afternoon; the list, and t
 decided between refusing and clamping each one, are in
 [docs/05-tablebases.md](05-tablebases.md).
 
-The lane fetches the 3-man set with `cargo xtask tb-fetch`, cached. The soak SKIPS without
-tables rather than failing, which is right — and a scheduled lane that silently skips the
-harness it exists for proves nothing, which is why the fetch is not optional.
+The workflow runs them as **three jobs from a matrix, each with the whole budget**, which is
+the shape ../mcfish's fuzz workflow uses and for its reason: the three run at throughputs
+orders of magnitude apart, so one shared budget is really a budget for the fastest of them.
+Separate jobs also mean a red UCI run still lets the other two spend their time, and the job
+name says which harness failed without opening a log. `cargo xtask fuzz <seconds> all` is the
+local single-process form, and there the budget IS divided three ways.
+
+The tablebase job fetches the 3-man set with `cargo xtask tb-fetch`, cached, and
+`continue-on-error` — a mirror outage must not fail a fuzz job. Without tables the soak SKIPS
+and prints that it did, which is a visibly weaker run rather than a false green.
 
 It is NOT a merge gate. A clean run means "nothing failed inside that budget", never "there
 is nothing to find", and that is not a statement a merge should block on. The step prints the
