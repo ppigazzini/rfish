@@ -567,21 +567,6 @@ impl Engine {
         if !self.reader_owns_stop {
             self.pool.shared().clear_stop();
         }
-        // `go perft N` is a movegen command, not a search: answer it and return.
-        if let Some(i) = args.iter().position(|&t| t == "perft") {
-            let depth: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(1);
-            let (moves, total) = perft_divide(&mut self.pos, depth);
-            for (m, n) in moves {
-                let _ = writeln!(out, "{}: {n}", move_to_uci(&self.pos, m));
-            }
-            // Upstream's exact block: a blank line, the total, and a TRAILING blank line
-            // from its `sync_endl`. It prints no timing here, and neither does this -- an
-            // extra line is a divergence even when it is only informational, and the
-            // goldens could not see this one because the volatile filter drops any `Time:`.
-            let _ = writeln!(out, "\nNodes searched: {total}\n");
-            return;
-        }
-
         let limits = match self.parse_limits(args) {
             Ok(l) => l,
             Err(reason) => {
@@ -593,6 +578,23 @@ impl Engine {
                 return;
             }
         };
+        // `if (limits.perft)`, exactly as upstream dispatches it: a NON-ZERO perft is a
+        // movegen command answered here, and everything else -- including `go perft 0` -- is
+        // an ordinary search. Reading the token's mere presence as "this is a perft" made
+        // `go perft 0` print a depth-zero divide where upstream searches without a limit.
+        if limits.perft != 0 {
+            let (moves, total) = perft_divide(&mut self.pos, limits.perft);
+            for (m, n) in moves {
+                let _ = writeln!(out, "{}: {n}", move_to_uci(&self.pos, m));
+            }
+            // Upstream's exact block: a blank line, the total, and a TRAILING blank line
+            // from its `sync_endl`. It prints no timing here, and neither does this -- an
+            // extra line is a divergence even when it is only informational, and the
+            // goldens could not see this one because the volatile filter drops any `Time:`.
+            let _ = writeln!(out, "\nNodes searched: {total}\n");
+            return;
+        }
+
         let result = {
             let opts = self.search_options();
             let mut sink = UciSink { out: &mut *out, show_wdl: self.options.check("UCI_ShowWDL") };
@@ -621,21 +623,54 @@ impl Engine {
         while i < args.len() {
             // A key with no value, or one that does not parse, fails the command and names
             // itself. Unknown tokens are still ignored — upstream accepts `go value Hash`.
-            let need = |i: usize, key: &str| -> Result<i64, String> {
+            // AT UPSTREAM'S OWN WIDTH, key by key. `is >> x` sets failbit when the text does
+            // not fit the field's type, and upstream turns failbit into a critical error, so
+            // the width IS the accept/reject boundary and it is observable from a GUI:
+            //
+            //   go depth 3000000000    upstream: CRITICAL ERROR   (`int depth` overflows)
+            //   go nodes 18446744073709551615
+            //                          upstream: accepted         (`u64 nodes` holds it)
+            //
+            // Parsing everything at one width got both of those wrong, in opposite
+            // directions: too wide for the five `int` fields, too narrow for `nodes`.
+            let clock = |i: usize, key: &str| -> Result<i64, String> {
+                // `TimePoint` is a 64-bit signed count of milliseconds.
                 args.get(i + 1)
                     .and_then(|s| s.parse::<i64>().ok())
                     .ok_or_else(|| format!("Invalid argument for '{key}'"))
             };
+            let count = |i: usize, key: &str| -> Result<i32, String> {
+                // `int`, and negative values ARE accepted: `movestogo -5` searches there.
+                args.get(i + 1)
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .ok_or_else(|| format!("Invalid argument for '{key}'"))
+            };
+            let nodes = |i: usize, key: &str| -> Result<u64, String> {
+                // `u64`, read the way a C++ stream reads one: a leading minus is accepted and
+                // the magnitude WRAPS, so `go nodes -1` is a budget of u64::MAX on both sides.
+                let text =
+                    args.get(i + 1).ok_or_else(|| format!("Invalid argument for '{key}'"))?;
+                let parsed = match text.strip_prefix('-') {
+                    Some(magnitude) => magnitude.parse::<u64>().ok().map(u64::wrapping_neg),
+                    None => text.parse::<u64>().ok(),
+                };
+                parsed.ok_or_else(|| format!("Invalid argument for '{key}'"))
+            };
             match args[i] {
-                "wtime" => l.time[Color::White.index()] = Some(need(i, "wtime")? as u64),
-                "btime" => l.time[Color::Black.index()] = Some(need(i, "btime")? as u64),
-                "winc" => l.inc[Color::White.index()] = need(i, "winc")? as u64,
-                "binc" => l.inc[Color::Black.index()] = need(i, "binc")? as u64,
-                "movestogo" => l.moves_to_go = Some(need(i, "movestogo")? as u32),
-                "depth" => l.depth = Some(need(i, "depth")? as i32),
-                "nodes" => l.nodes = Some(need(i, "nodes")? as u64),
-                "movetime" => l.move_time = Some(need(i, "movetime")? as u64),
-                "mate" => l.mate = Some(need(i, "mate")? as i32),
+                "wtime" => l.time[Color::White.index()] = Some(clock(i, "wtime")? as u64),
+                "btime" => l.time[Color::Black.index()] = Some(clock(i, "btime")? as u64),
+                "winc" => l.inc[Color::White.index()] = clock(i, "winc")? as u64,
+                "binc" => l.inc[Color::Black.index()] = clock(i, "binc")? as u64,
+                "movestogo" => l.moves_to_go = Some(count(i, "movestogo")? as u32),
+                "depth" => l.depth = Some(count(i, "depth")?),
+                "nodes" => l.nodes = Some(nodes(i, "nodes")?),
+                "movetime" => l.move_time = Some(clock(i, "movetime")? as u64),
+                "mate" => l.mate = Some(count(i, "mate")?),
+                // `perft` takes a value like every other key, and upstream's `is >> perft`
+                // sets failbit on a missing or unusable one just as `depth` does. It is
+                // parsed HERE rather than where it is acted on so that it is rejected on the
+                // same terms.
+                "perft" => l.perft = count(i, "perft")?,
                 // `ponder` searches until told to stop, exactly as `infinite` does; the
                 // difference is what the shell does with the result, not what the search
                 // does.
@@ -731,12 +766,16 @@ impl Engine {
         // Upstream's `Eval::trace`, line for line. It prints NO board -- `d` is the command
         // for that -- and a position in check is not evaluated at all, because the network
         // is trained on quiet positions and upstream asserts rather than answering.
+        // The leading blank line belongs to the COMMAND, not to the trace: upstream is
+        // `sync_cout << "\n" << Eval::trace(...)`, so it is printed whether or not the trace
+        // itself has anything to say. The two early returns below omitted it, so `eval` on a
+        // position in check came out one line shorter here than upstream prints it.
         if self.pos.in_check() {
-            let _ = writeln!(out, "Final evaluation: none (in check)");
+            let _ = writeln!(out, "\nFinal evaluation: none (in check)");
             return;
         }
         let Some(net) = self.network.as_deref() else {
-            let _ = writeln!(out, "Final evaluation: none (no network)");
+            let _ = writeln!(out, "\nFinal evaluation: none (no network)");
             return;
         };
         let mut scratch = nnue::Scratch::default();
@@ -853,7 +892,13 @@ impl Engine {
                     }
 
                     searched += 1;
-                    let _ = writeln!(out, "\nPosition: {searched}/{total_positions} ({fen})");
+                    // The position AS IT WILL BE SEARCHED, which is upstream's `engine.fen()`
+                    // -- read after the entry's moves have been played, not the FEN the entry
+                    // was written with. Twelve of the fifty-one bench entries carry moves, and
+                    // for each of those this line named a position that is not the one the
+                    // node count below it belongs to.
+                    let _ =
+                        writeln!(out, "\nPosition: {searched}/{total_positions} ({})", pos.fen());
 
                     let mut limits = Limits {
                         start: Some(Instant::now()),

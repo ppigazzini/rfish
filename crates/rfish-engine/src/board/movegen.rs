@@ -464,12 +464,16 @@ pub fn perft(pos: &mut Position, depth: u32) -> u64 {
 
 /// Perft with the per-move breakdown UCI's `go perft` prints.
 #[must_use]
-pub fn perft_divide(pos: &mut Position, depth: u32) -> (Vec<(Move, u64)>, u64) {
+pub fn perft_divide(pos: &mut Position, depth: i32) -> (Vec<(Move, u64)>, u64) {
     let mut out = Vec::new();
     let mut total = 0;
     for m in generate_legal(pos).as_slice() {
         pos.do_move(*m);
-        let n = if depth <= 1 { 1 } else { perft(pos, depth - 1) };
+        // SIGNED, because upstream's `Depth` is `int` and its root test is `depth <= 1` --
+        // so `go perft -1` counts one node per legal move there. Taking the depth unsigned
+        // turned that into a perft four billion deep, which is a stack overflow rather than
+        // an answer.
+        let n = if depth <= 1 { 1 } else { perft(pos, (depth - 1) as u32) };
         pos.undo_move(*m);
         out.push((*m, n));
         total += n;

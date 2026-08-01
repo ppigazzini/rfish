@@ -39,6 +39,14 @@ pub struct Limits {
     pub start: Option<Instant>,
     /// Plies already played, for the time manager's move-number heuristics.
     pub ply: i32,
+    /// The depth of a `go perft`, or ZERO for "this `go` is not a perft".
+    ///
+    /// A plain signed `i32` and not an `Option`, because upstream's field is `int` and its
+    /// dispatch is literally
+    /// `if (limits.perft)` — `go perft 0` is therefore not a perft of depth zero but an
+    /// ordinary search with no limit at all, and reading this as an `Option` would quietly
+    /// turn that into a divide of every root move.
+    pub perft: i32,
     /// Nodes per millisecond, when `nodestime` converts the clock into a node budget.
     ///
     /// Zero means the clock is a real clock. The time manager writes this from the option,
