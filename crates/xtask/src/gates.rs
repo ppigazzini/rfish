@@ -28,10 +28,22 @@ pub(crate) fn build(args: &[&str]) -> Result<Outcome, String> {
     // autovectorise to. The DEFAULT build sets nothing, because the anchor has to be
     // reproducible on a machine nobody here owns.
     if let Some(tier) = arg_value(args, "--arch") {
+        // Through the SAME tier table `perf --tier` uses. This took its argument as a raw
+        // `-C target-cpu` before, so the tier vocabulary every doc and every measurement is
+        // quoted in -- sse41, avx2, native -- was the one vocabulary it did not accept:
+        // `--arch avx2` died in rustc with "unknown target-cpu", naming neither the flag nor
+        // the tier. A perf number is only meaningful with its tier attached, so the two
+        // commands have to mean the same thing by the same word.
+        let cpu = crate::perf::target_cpu_for(tier).ok_or_else(|| {
+            format!(
+                "unknown arch tier '{tier}'; want one of {}",
+                crate::perf::tier_names().join(", ")
+            )
+        })?;
         // SAFETY-FREE alternative to a global: pass it through the child's environment
         // rather than mutating this process's, which a later gate would inherit.
         let mut cmd = Command::new(cargo());
-        cmd.current_dir(workspace_root()).env("RUSTFLAGS", format!("-C target-cpu={tier}")).args([
+        cmd.current_dir(workspace_root()).env("RUSTFLAGS", format!("-C target-cpu={cpu}")).args([
             "build",
             "--package",
             "rfish",
