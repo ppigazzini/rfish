@@ -2600,6 +2600,19 @@ impl SearchWorker {
             return None;
         }
 
+        // Upstream forces the next node to check the clock, whether or not the probe
+        // succeeded: a probe READS A FILE, which is orders of magnitude slower than the node
+        // it replaces, so the countdown that normally paces the check has just become a bad
+        // estimate of elapsed time. `search.cpp` does this immediately after `probe_wdl`
+        // and before testing the result, and rfish did not do it at all -- so a search with
+        // tablebases could run well past its budget between two checks.
+        //
+        // BEFORE the probe here rather than after it, because upstream resets whatever the
+        // probe returned and the `?` below leaves on a failure: a failed probe has already
+        // paid the file read, which is the whole reason for the reset.
+        if self.id == 0 {
+            self.calls_cnt = 0;
+        }
         let wdl = tb.probe_wdl(&self.pos).ok()?;
         self.tb_hits += 1;
 
