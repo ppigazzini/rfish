@@ -509,14 +509,15 @@ impl Engine {
         // `go perft N` is a movegen command, not a search: answer it and return.
         if let Some(i) = args.iter().position(|&t| t == "perft") {
             let depth: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(1);
-            let start = Instant::now();
             let (moves, total) = perft_divide(&mut self.pos, depth);
             for (m, n) in moves {
                 let _ = writeln!(out, "{}: {n}", move_to_uci(&self.pos, m));
             }
-            let ms = start.elapsed().as_millis().max(1);
-            let _ = writeln!(out, "\nNodes searched: {total}");
-            let _ = writeln!(out, "Time: {ms} ms  ({} nps)", total as u128 * 1000 / ms);
+            // Upstream's exact block: a blank line, the total, and a TRAILING blank line
+            // from its `sync_endl`. It prints no timing here, and neither does this -- an
+            // extra line is a divergence even when it is only informational, and the
+            // goldens could not see this one because the volatile filter drops any `Time:`.
+            let _ = writeln!(out, "\nNodes searched: {total}\n");
             return;
         }
 
