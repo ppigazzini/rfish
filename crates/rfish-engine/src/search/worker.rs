@@ -2922,19 +2922,21 @@ impl SearchWorker {
                 self.syzygy_extend_pv(&mut score);
             }
 
-            // Render the PV against a copy: Chess960 castling notation depends on the
-            // position each move is played in.
+            // Rendered against the ROOT, because that is all the notation needs. Upstream is
+            // `pv += UCIEngine::move(m, pos.is_chess960())` over the stored line, and
+            // `move_to_uci` reads exactly one thing off the position it is given: whether the
+            // game is Chess960. That is a property of the GAME and cannot change along a PV.
+            //
+            // This walked a CLONE instead, playing each move to render the next -- which cost
+            // a position clone and a `do_move` per PV move (1443 of each over one `bench 16 1
+            // 8`, found by `cargo xtask fingerprint`), and, worse, broke out of the loop at
+            // the first move that failed a legality check. Upstream prints the stored line
+            // WHOLE and validates nothing, so a PV that `syzygy_extend_pv` or the previous
+            // iteration left with a move unplayable in the walked line came out SHORTER here
+            // than upstream prints it.
             let rm = &self.root_moves[i];
             let source = if use_previous { &rm.previous_pv } else { &rm.pv };
-            let mut walk = self.pos.clone();
-            let mut pv = Vec::with_capacity(source.len());
-            for &m in source {
-                if !walk.pseudo_legal(m) || !walk.legal(m) {
-                    break;
-                }
-                pv.push(move_to_uci(&walk, m));
-                walk.do_move(m);
-            }
+            let pv: Vec<String> = source.iter().map(|&m| move_to_uci(&self.pos, m)).collect();
 
             let report = DepthReport {
                 depth: d,
