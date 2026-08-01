@@ -72,6 +72,21 @@ const DIFF_BENCH: [&str; 3] = ["16", "1", "8"];
 /// cleanly at depth 13. Instructions are deterministic and need no such headroom.
 const TIME_BENCH: [&str; 3] = ["16", "1", "13"];
 
+/// The `-C target-cpu` a tier NAME means, for a caller outside this module.
+///
+/// `build --arch` and `perf --tier` name the same three tiers, and every measurement in the
+/// docs is quoted by tier name. They must therefore resolve through one table: `--arch avx2`
+/// passing `avx2` straight to rustc is not a tier at all -- rustc has no such CPU, and the
+/// build fails with a rustc error that names neither the flag nor the tier.
+pub(crate) fn target_cpu_for(tier: &str) -> Option<&'static str> {
+    TIERS.iter().find(|t| t.name == tier).map(|t| t.rustc)
+}
+
+/// Every tier name, for an error message that can list the alternatives.
+pub(crate) fn tier_names() -> Vec<&'static str> {
+    TIERS.iter().map(|t| t.name).collect()
+}
+
 /// Resolve `--tier`, defaulting to the matched-ISA tier both ports have always quoted.
 fn tier_of(args: &[&str]) -> Result<&'static Tier, String> {
     let want = arg_value(args, "--tier").unwrap_or("avx2");
@@ -254,8 +269,91 @@ pub(crate) fn oracle(args: &[&str]) -> Result<Outcome, String> {
         .args(["-j8", "profile-build", "COMP=clang"])
         .arg(format!("ARCH={}", tier.upstream)))?;
 
+    stamp_oracle(&dest, &base)?;
     println!("oracle: {}", dest.join("src/stockfish").display());
     Ok(Outcome::Pass)
+}
+
+/// The file naming the upstream commit an oracle directory was extracted at.
+fn oracle_stamp_path(dir: &Path) -> PathBuf {
+    dir.join(".rfish-oracle-base")
+}
+
+/// Record which commit this oracle IS, beside the tree it was built from.
+fn stamp_oracle(dir: &Path, base: &str) -> Result<(), String> {
+    let path = oracle_stamp_path(dir);
+    std::fs::write(&path, format!("{base}\n")).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Refuse an oracle that is not at the pin this port claims to be a translation of.
+///
+/// **This caught a real one.** The oracle directory is built once and reused, and it lives
+/// OUTSIDE the repository, so advancing `UPSTREAM_BASE` leaves it untouched and nothing about
+/// its filename changes. After the `c5aef2bf1` sync the avx2 oracle here was still the
+/// `23cf5d82` tree — it benched 3184328 where the pin benches 2508687 — and every measurement
+/// taken against it was a comparison with an upstream this port is not a translation of.
+///
+/// The instruction differential would eventually have caught it, because it compares node
+/// counts before quoting a ratio. Eventually is the problem: that check only runs when
+/// callgrind does, so at `--tier native`, or on a box without valgrind, the wall-clock A/B ran
+/// against the wrong binary and reported a ratio with no warning at all. `../zfish` stamps its
+/// oracle by SHA for the same reason (`b96f9f24`).
+fn verify_oracle(dir: &Path, tier: &Tier) -> Result<(), String> {
+    let want = upstream_base()?;
+    let path = oracle_stamp_path(dir);
+    let rebuild = format!("rebuild it with `cargo xtask oracle --tier {}`", tier.name);
+    let Ok(got) = std::fs::read_to_string(&path) else {
+        return Err(format!(
+            "the oracle at {} carries no {} stamp, so which upstream it is cannot be \
+             established; {rebuild}",
+            dir.display(),
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+    };
+    let got = got.trim();
+    if got != want {
+        return Err(format!(
+            "the oracle at {} was built at {got}, and the pin is {want}. Comparing against it \
+             measures this port against an upstream it is not a translation of; {rebuild}",
+            dir.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The net an engine actually loaded, from the line it prints before it searches.
+///
+/// A node comparison across two different nets is meaningless — the trees differ because the
+/// evaluations differ, not because either engine is wrong — and it fails in the direction that
+/// looks like a porting bug. Both sibling ports added this check after being misled by one
+/// (`../zfish` `a45bb2a0`, `../mcfish` `2abfce75`).
+fn engine_net(bin: &Path, cwd: &Path) -> Result<String, String> {
+    let out = capture_both(Command::new(bin).current_dir(cwd).args(["bench", "1", "1", "1"]))?;
+    out.lines()
+        .find_map(|l| l.split("NNUE evaluation using ").nth(1))
+        .map(|n| n.split_whitespace().next().unwrap_or(n).to_string())
+        .ok_or_else(|| {
+            format!(
+                "{} printed no `NNUE evaluation using` line, so it ran with NO net and is a \
+                 different engine from the one being measured",
+                bin.display()
+            )
+        })
+}
+
+/// Refuse a comparison between two engines that did not evaluate with the same net.
+fn same_net(ours: &Path, our_dir: &Path, theirs: &Path, their_dir: &Path) -> Result<(), String> {
+    let mine = engine_net(ours, our_dir)?;
+    let yours = engine_net(theirs, their_dir)?;
+    if mine != yours {
+        return Err(format!(
+            "the two engines loaded different nets (rfish {mine}, upstream {yours}); a node \
+             count is a property of the net as much as of the search, so nothing measured \
+             across the pair would mean anything"
+        ));
+    }
+    println!("net {mine} on both sides");
+    Ok(())
 }
 
 /// Where an oracle of this tier and kind lives: beside the repository, never inside it.
@@ -366,6 +464,15 @@ pub(crate) fn perf(args: &[&str]) -> Result<Outcome, String> {
         )));
     }
     let their_dir = theirs.parent().map(Path::to_path_buf).unwrap_or_default();
+    // BEFORE either instrument, and unconditionally: the node-count check inside the
+    // instruction differential is the only other thing that would notice, and it does not run
+    // at every tier.
+    verify_oracle(&oracle_dir(tier, spine), tier)?;
+    // The spine pair evaluates with a stubbed material eval on both sides, so neither loads a
+    // net and there is nothing to match.
+    if !spine {
+        same_net(&ours, &resources_dir(), &theirs, &their_dir)?;
+    }
 
     println!("tier {} ({} vs ARCH={})", tier.name, tier.rustc, tier.upstream);
 
@@ -572,6 +679,9 @@ pub(crate) fn upstream_nodes(args: &[&str]) -> Result<Outcome, String> {
     };
     let ours = crate::runner::build_engine(crate::runner::GATE_PROFILE)?;
     let their_dir = oracle.parent().map(Path::to_path_buf).unwrap_or_default();
+    // `find_oracle` has already established that this binary is the PIN. It says nothing
+    // about which net either side loads, and this whole command is a node comparison.
+    same_net(&ours, &resources_dir(), &oracle, &their_dir)?;
     let positions: usize = arg_value(args, "--positions").unwrap_or("20").parse().unwrap_or(20);
     let depth = arg_value(args, "--depth").unwrap_or("8").to_string();
     let mut rng: u64 =
