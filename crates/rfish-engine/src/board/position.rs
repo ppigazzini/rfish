@@ -1765,7 +1765,17 @@ impl fmt::Display for Position {
         }
         writeln!(f, "   a   b   c   d   e   f   g   h\n")?;
         writeln!(f, "Fen: {}", self.fen())?;
-        write!(f, "Key: {:016X}", self.key())
+        writeln!(f, "Key: {:016X}", self.key())?;
+        // Upstream ends the block with the checking pieces, each followed by a space, and
+        // prints the label even when the list is empty. `cargo xtask golden-audit` is what
+        // found this missing: rfish's own golden had recorded the output WITHOUT the line
+        // and passed every run, because a golden pins this engine and cannot see what
+        // upstream prints that we do not.
+        write!(f, "Checkers: ")?;
+        for sq in self.checkers() {
+            write!(f, "{sq} ")?;
+        }
+        Ok(())
     }
 }
 

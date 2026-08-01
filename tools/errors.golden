@@ -25,5 +25,6 @@ info string Invalid FEN: malformed board field
 
 Fen: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
 Key: 8F8F01D4562F59FB
+Checkers: 
 info string Illegal move: e2e5
 bestmove d2d4
