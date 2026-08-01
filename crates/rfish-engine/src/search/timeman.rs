@@ -96,7 +96,16 @@ impl TimeManagement {
         self.use_nodes_time = npmsec != 0;
 
         let side = us.index();
-        let Some(mut time) = limits.time[side].map(|t| t as i64).filter(|&t| t > 0) else {
+        // ZERO is the only clock that skips the rest, exactly as upstream's
+        // `if (limits.time[us] == 0) return;`. A NEGATIVE clock is a real state -- a GUI whose
+        // engine has overstepped sends one -- and upstream budgets from it, which produces a
+        // tiny allowance and a move played almost at once. Treating it as "no clock" instead
+        // took the unmanaged path and searched on: `go wtime -100 btime 100` went a full ply
+        // deeper here than upstream, every time.
+        //
+        // The value is signed on the way in for the same reason: `TimePoint` is `int64`, and
+        // the sign is the whole content of this case.
+        let Some(mut time) = limits.time[side].map(|t| t as i64).filter(|&t| t != 0) else {
             return;
         };
 

@@ -409,6 +409,19 @@ impl SharedState {
     pub fn node_count(&self) -> u64 {
         self.nodes.load(Ordering::Relaxed)
     }
+
+    /// Add `n` to the global tablebase-hit count.
+    #[inline(always)]
+    pub fn add_tb_hits(&self, n: u64) {
+        self.tb_hits.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// The global tablebase-hit count, which is what `info ... tbhits` reports.
+    #[inline(always)]
+    #[must_use]
+    pub fn tb_hit_count(&self) -> u64 {
+        self.tb_hits.load(Ordering::Relaxed)
+    }
 }
 
 /// The time budget for one move, in the unit the clock is being measured in.
