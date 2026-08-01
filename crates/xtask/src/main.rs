@@ -65,6 +65,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "signature-update" => gates::signature(true),
         "perft" => gates::perft(),
         "golden" => gates::golden(false),
+        "golden-audit" => gates::golden_audit(),
         "golden-update" => gates::golden(true),
         "docs-lint" => gates::docs_lint(),
         "unsafe-lint" => gates::unsafe_lint(),
@@ -95,6 +96,7 @@ cargo xtask <step> — the rfish build driver
     signature             bench reproduces tools/signature.golden
     perft                 the reference counts in tools/perft.table match
     golden                the UCI case outputs match tools/*.golden
+    golden-audit          every golden is what UPSTREAM produces, not just what we do
     test                  the unit and property suite
     fmt / fmt-fix         cargo fmt --check / cargo fmt
     clippy                cargo clippy -D warnings
