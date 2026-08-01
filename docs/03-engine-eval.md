@@ -177,38 +177,70 @@ arithmetic to *look* more like upstream's vector kernels makes it worse, because
 shapes upstream chose are the ones its instructions reward and not the ones the
 autovectoriser does.
 
-### The ratio is a property of the TIER, and the ledger above is one tier
+### The ratio is a property of the TIER, and of the TOOLCHAIN
 
-Everything in the table above was measured at `nehalem`, chosen because the oracle build on
-hand was `x86-64-sse41-popcnt` and a differential needs both sides on comparable ground. That
-choice quietly stopped being neutral the moment the sparse layer moved to `std::simd`:
-explicit vectors widen with the register file and an SSE-4.1 build cannot show it. Rebuilding
-BOTH sides at avx2, same bench, same 166,964 nodes, startup subtracted:
+Every row of the ledger above was measured at `nehalem`, against an oracle built by `g++`
+with no PGO. Two of those three choices were wrong, and the ledger's ratio column is
+therefore a record of PROGRESS — each row against the row above it — and not a statement of
+where the port stands. Read the standing from the table below instead.
 
-| tier | rfish | upstream | ratio |
+The tier was the first correction: `nehalem` stopped being neutral the moment the sparse
+layer moved to `std::simd`, because explicit vectors widen with the register file and an
+SSE-4.1 build cannot show it. The toolchain was the larger one. rfish is compiled by rustc,
+whose backend is LLVM, and upstream's own shipped recipe is `make profile-build` — PGO on
+top of LTO. Comparing a rustc build that never saw a profile against a `g++` build that
+never saw one either held NEITHER variable fixed.
+
+Rebuilt with everything held equal — both sides clang/LLVM at rustc's own major, both sides
+PGO on top of LTO, both trained on the same `bench`, same tier, same 166,964 nodes, startup
+subtracted by a `quit`-only profile:
+
+| both sides | rfish | upstream | ratio |
 |---|---|---|---|
-| `nehalem` / sse41-popcnt | 2,979,106,126 | 1,958,088,252 | 1.521 |
-| **`haswell` / avx2** | **2,228,532,345** | **1,733,345,669** | **1.286** |
+| `g++`, no PGO, `nehalem` (the ledger's own tier) | 2,979,106,126 | 1,958,088,252 | 1.521 |
+| `g++`, no PGO, avx2 | 2,170,601,764 | 1,460,813,993 | 1.486 |
+| **clang + PGO + LTO, avx2** | **2,171,591,691** | **1,246,593,188** | **1.742** |
 
-Wall clock at avx2, core-pinned, best of four: 513,506 nps against 759,867, a ratio of 1.48.
-At avx512icl it is 588,396 against 1,049,205, a ratio of 1.78 — upstream gains 38% from that
-tier and rfish 15%, because upstream has hand-written VNNI kernels there and this has
-`std::simd` widening as far as it goes.
+**The gap WIDENS when the comparison is made fair, and the reason is one-sided.** PGO is
+worth almost nothing to rustc here and 15% to clang, so the honest figure is the largest of
+the three, not the smallest. A number quoted from either of the first two rows understates
+where the port is; `docs/09-tooling-ci.md` records what has to be held equal, and
+`cargo xtask pgo` / `cargo xtask oracle` / `cargo xtask perf` are what hold it.
 
-**Quote a tier with every number here.** AGENTS.md has said so about `--arch` since before any
-of this work, and this section spent most of its life violating it: 1.52 and 1.29 are the same
-engine on the same day.
+`cargo xtask signature` against the PGO binary reproduces the golden exactly, which is the
+property that makes PGO admissible in a measurement at all: the profile steers block layout
+and inlining and cannot move the tree.
 
 ### Wall clock, and the honest ceiling
 
-`bench 16 1 12`, `target-cpu=native`, core-pinned, best of five, same box:
+Time is measured by a PAIRED A/B — interleaved, the order alternating each round, the median
+of the paired ratios reported with its spread — because a batched best-of-N reads the
+thermal state as much as the binaries. Default `bench` (depth 13), nine rounds, core-pinned,
+both sides clang + PGO + LTO:
 
-| | nps | vs upstream |
+| | median paired time vs upstream | spread |
 |---|---|---|
-| rfish, avx512icl | 588,396 | 1.78x |
-| rfish, avx2 vs avx2 oracle | 513,506 | 1.48x |
-| ../zfish | 1,019,707 | 1.08x |
-| upstream, avx512icl | 1,102,610 | 1.00 |
+| rfish, avx2 vs avx2 oracle | **1.63x** | 1.43..1.90 |
+| rfish, native vs native oracle | **1.77x** | 1.38..1.99 |
+
+Both spreads exclude 1.000, so the direction holds at this sample size; neither is tight
+enough to read a few per cent from. The instruction axis is the one that resolves small
+effects, and it has a tier ceiling — callgrind implements no AVX-512, so `native` has a time
+ratio and no instruction ratio.
+
+The sibling ports measured the same way, each against an oracle at ITS OWN upstream base —
+`../mcfish` is pinned to `f4bcd404` with a different net, so only the ratios compare, never
+the raw counts:
+
+| | instructions vs own upstream | time vs own upstream |
+|---|---|---|
+| rfish, avx2 | 1.742 | 1.63x |
+| ../mcfish, avx2 | **0.872** | 1.05x (spread straddles 1.000) |
+
+`../mcfish` retires FEWER instructions than the upstream it clones and still does not beat
+it on time. Before reading its lead over rfish as a verdict on safe Rust: its base predates
+the threat feature set entirely, and recomputing threats rather than delta-updating them is
+exactly the gap this page documents below.
 
 **36.5 features are applied per evaluation, over 61,341 evaluations** — measured with an
 instrumented build, not inferred, and upstream evaluates the same bench exactly 61,341 times
@@ -262,9 +294,32 @@ within about a third of upstream's incremental update. And recomputing the activ
 all, worth roughly 300M, which is the per-move delta this section declined to write and the
 only one of the three that a code change could still remove.
 
-The search spine is NOT part of this gap and has not been for some time: measured the same
-way with a material evaluation on both sides, rfish is at **1.022×** upstream's instructions
-and ahead of it on every cache axis. See `docs/09-tooling-ci.md` for the method.
+### The search spine is a SEPARATE gap, and it is not closed
+
+Swap both sides to a material evaluation — `eval-material` here, the same formula patched
+into the oracle by `cargo xtask oracle --spine` — and what is left is the spine: movegen,
+movepick, the histories, the TT, the pruning arithmetic. Same tier, same toolchain, same PGO,
+identical trees at 625,992 nodes:
+
+| oracle | rfish | upstream | ratio |
+|---|---|---|---|
+| as upstream ships it | 1,445,638,904 | 1,518,970,470 | 0.952 |
+| **with the NNUE threat scan compiled out** | **1,445,638,857** | **1,297,100,189** | **1.115** |
+
+**The first row is the trap, and this page published its ancestor for a long time.** Upstream
+maintains the threat feature set inside `do_move`, writing a `DirtyThreats` that
+`nnue/nnue_accumulator.cpp` reads and that NOTHING else reads. Under a material evaluation
+nobody reads it at all — so leaving it in charges upstream for NNUE bookkeeping while rfish,
+which recomputes threats inside its evaluation, is charged for none. Compiling it out leaves
+both sides doing the same work, and the node count is unchanged either way, which is what
+proves the scan was dead rather than load-bearing.
+
+So the spine is at **1.115x**, not at parity, and the earlier "1.022x and ahead on every
+cache axis" was an artefact of that asymmetry plus a `g++` oracle. Paired time at depth 13
+reads 1.34x, worse than the instruction ratio — the spine has an IPC deficit on top of its
+instruction deficit. `../mcfish` measures 1.074x on the same corrected harness against its
+own base, so roughly a tenth over upstream is what both ports currently pay for the spine,
+and neither port's constraint explains the other's number.
 
 ## The quantisation is the specification
 
