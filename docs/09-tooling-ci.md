@@ -214,6 +214,13 @@ the engine, not a property of the profile.
   measurement, and only on the instruction axis — on the cycles axis the subtraction removes
   a term whose error rivals the effect. Time the search directly instead: the bench's own
   total contains no startup by construction.
+- **The box these numbers came from is NOT quiet, and pairing does not fix that.** A laptop
+  part under WSL2, measured in sessions that were also compiling and profiling. The paired
+  protocol below removes the order bias and the drift between batches; it cannot remove the
+  variance within a round, and the published spreads — a median of 1.53 over a 1.33..1.65
+  range — are what remains. Quote a time ratio to one significant figure and no further. The
+  instruction axis carries no such caveat: callgrind counts are deterministic, so an Ir ratio
+  here is reproducible to the digit and is the axis any claim under ~10% must be argued on.
 - **A batched best-of-N wall-clock reading is thermally void.** Running A five times and then
   B five times measures the order as much as the binaries: the second batch runs on a hotter
   core. Time is only comparable INTERLEAVED, with the order alternating each round and the
