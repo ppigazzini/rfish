@@ -321,17 +321,10 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
         .collect();
     cases.sort();
 
-    let (mut agree, mut differ, mut skipped) = (0usize, Vec::new(), Vec::new());
+    let (mut agree, mut differ) = (0usize, Vec::new());
+    let skipped: Vec<String> = Vec::new();
     for case in &cases {
         let stem = case.file_stem().and_then(|s| s.to_str()).ok_or("a case has no name")?;
-        // Upstream TERMINATES on the first malformed command -- an invalid FEN is a
-        // "CRITICAL ERROR" and exit 1 -- so every later command in the error case has no
-        // upstream answer to adjudicate against. That difference is REAL and is not settled
-        // by skipping it here; docs/07-shell.md records it as open.
-        if stem == "errors" {
-            skipped.push(stem.to_string());
-            continue;
-        }
         let golden_path = workspace_root().join(format!("tools/{stem}.golden"));
         let Ok(want) = std::fs::read_to_string(&golden_path) else {
             continue;

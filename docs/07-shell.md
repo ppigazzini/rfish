@@ -86,28 +86,28 @@ rendered by walking a copy so each move is named in the position it is played in
 
 `go perft N` is answered here and never reaches the search: it is a movegen command.
 
-## OPEN: a malformed command does not end the process, and upstream's does
+## A malformed command ENDS the process, as upstream's does
 
-Upstream treats a command it cannot use as fatal. `position fen this is not a fen at all`
-prints
+Upstream treats a command it cannot use as fatal, and rfish now matches it exactly:
 
 ```text
-info string CRITICAL ERROR: Command `position fen …` failed. Reason: Invalid FEN. Invalid piece: t
+info string CRITICAL ERROR: Command `position fen this is not a fen at all` failed. Reason: Invalid FEN. Invalid piece: t
 ```
 
-and **exits 1**. rfish prints `info string Invalid FEN: malformed board field`, keeps the
-previous position, and carries on — different text, and a process that is still running.
+followed by a blank line and **exit 1**. The text is upstream's word for word, including
+the backticks and the trailing blank line, because the string reaches a GUI and a paraphrase
+is a divergence like any other. `FenError` carries upstream's twenty `PositionSetError`
+messages rather than a summary of them.
 
-This is unresolved, and it is recorded here rather than fixed because the decision is not
-local. Exiting on malformed input is what upstream does and the port's rule is that upstream
-wins; but `cargo xtask fuzz` exists to throw mutated UCI text at this shell, and an engine
-that exits on the first bad token changes what that harness measures. Whoever settles it has
-to settle both.
+Two things follow from it, and both had to move together:
 
-Until then `cargo xtask golden-audit` reports the `errors` case as **not answerable** — not
-as passing. Upstream terminates partway through, so its remaining commands have no answer to
-adjudicate against, and a green line there would be the same lie the goldens told before the
-audit existed.
+- **`cargo xtask fuzz` accepts a reported CRITICAL ERROR as a valid outcome.** Random UCI
+  text reaches the fatal path constantly, the engine is gone afterwards and answers no
+  `isready`, and that is termination on purpose rather than a wedge. The harness is looking
+  for hangs and crashes, and it still is: any OTHER non-zero status still fails it.
+- **The gate driver accepts exit 1 and keeps the output.** It is the status upstream uses
+  for this, so a run that ends in it produced real output to compare; a signal or an abort
+  still fails.
 
 ## What is not here
 

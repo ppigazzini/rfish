@@ -116,10 +116,28 @@ fn drive_bounded(engine: &Path, cwd: &Path, script: &[String]) -> Result<Option<
 
     {
         let mut stdin = child.stdin.take().ok_or("the engine has no standard input")?;
-        for l in script {
-            writeln!(stdin, "{l}").map_err(|e| format!("writing to the engine: {e}"))?;
+        // A write that fails is the engine having EXITED, not a harness fault. Upstream
+        // terminates on a command it cannot use -- a malformed FEN is a critical error and
+        // exit 1 -- and rfish now does the same, so random input reaches that path often.
+        // What this harness is looking for is a HANG or a crash, and an engine that reports
+        // the reason and leaves is neither: stop feeding it and read what it said.
+        macro_rules! feed {
+            ($($arg:tt)*) => {
+                if writeln!(stdin, $($arg)*).is_err() {
+                    None::<()>
+                } else {
+                    Some(())
+                }
+            };
         }
-        stdin.flush().map_err(|e| format!("writing to the engine: {e}"))?;
+        let mut alive = true;
+        for l in script {
+            if feed!("{l}").is_none() {
+                alive = false;
+                break;
+            }
+        }
+        let _ = stdin.flush();
 
         // One `stop` per line of the burst, each after a pause, because a burst can start
         // SEVERAL unbounded searches -- `go infinite`, `go mate 1`, or a bare `go` with no
@@ -135,13 +153,20 @@ fn drive_bounded(engine: &Path, cwd: &Path, script: &[String]) -> Result<Option<
         // GUI does. That is also why it cannot be tuned away: unpaced runs stay green for
         // fifty-odd scripts and then wedge, which is how this was missed the first time.
         for _ in 0..=script.len() {
+            if !alive {
+                break;
+            }
             std::thread::sleep(STOP_PAUSE);
-            writeln!(stdin, "stop").map_err(|e| format!("writing to the engine: {e}"))?;
-            stdin.flush().map_err(|e| format!("writing to the engine: {e}"))?;
+            if feed!("stop").is_none() {
+                alive = false;
+            }
+            let _ = stdin.flush();
         }
 
-        writeln!(stdin, "isready").map_err(|e| format!("writing to the engine: {e}"))?;
-        writeln!(stdin, "quit").map_err(|e| format!("writing to the engine: {e}"))?;
+        if alive {
+            let _ = feed!("isready");
+            let _ = feed!("quit");
+        }
     }
 
     // Drained on a thread: an engine that fills the pipe while nothing reads it would block
@@ -232,6 +257,11 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
         // passing silently.
         match out {
             Some(text) if text.contains("readyok") => {}
+            // A reported CRITICAL ERROR is the engine terminating ON PURPOSE, which is what
+            // upstream does for a command it cannot use. It answers no `isready` afterwards
+            // because it is gone, and that is the correct outcome rather than a wedge -- the
+            // burst is random text, so it reaches that path often.
+            Some(text) if text.contains("CRITICAL ERROR") => {}
             Some(_) => {
                 return Ok(Outcome::Fail(format!(
                     "seed {seed}, script {scripts}: the engine stopped answering isready\n\
