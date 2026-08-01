@@ -260,8 +260,16 @@ pub(crate) fn golden(update: bool) -> Result<Outcome, String> {
 fn filter_volatile(out: &str) -> String {
     let mut kept = String::with_capacity(out.len());
     for line in out.lines() {
-        if line.starts_with("info depth")
-            || line.starts_with("Total time")
+        // An `info` line is mostly DETERMINISTIC -- the depth, the score, the node count and
+        // the PV are all properties of the search, and two engines running the same tree
+        // must agree on them. Only the clock is not. Dropping the whole line, as this gate
+        // did, meant no golden ever compared a SCORE or a PV against anything.
+        if line.starts_with("info depth") {
+            kept.push_str(&strip_clock(line));
+            kept.push('\n');
+            continue;
+        }
+        if line.starts_with("Total time")
             || line.starts_with("Nodes/second")
             || line.starts_with("Time:")
             || line.starts_with("info string NNUE")
@@ -456,6 +464,24 @@ fn drive_oracle(
 /// Quote a path for the shell that merges the oracle's two output streams.
 fn shell_quote(path: &str) -> String {
     format!("'{}'", path.replace('\'', r"'\''"))
+}
+
+/// Remove the fields of an `info` line that a clock decides.
+///
+/// `time` and `nps` differ run to run on the same binary, and `hashfull` is a percentage of a
+/// table whose fill depends on them. Everything else -- depth, seldepth, multipv, score,
+/// nodes, tbhits, the PV -- is a fact about the search and is kept, so a golden pins it.
+fn strip_clock(line: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut it = line.split_whitespace();
+    while let Some(tok) = it.next() {
+        if matches!(tok, "time" | "nps" | "hashfull") {
+            it.next();
+            continue;
+        }
+        kept.push(tok);
+    }
+    kept.join(" ")
 }
 
 /// Drop the lines that name WHICH engine answered.
@@ -984,9 +1010,16 @@ mod tests {
     }
 
     #[test]
-    fn volatile_lines_are_dropped_from_a_golden() {
-        let out = "info depth 3 nodes 5\nreadyok\nTotal time (ms) : 7\nuciok\n";
-        assert_eq!(filter_volatile(out), "readyok\nuciok\n");
+    fn only_the_clock_is_dropped_from_an_info_line() {
+        // The depth, the score, the node count and the PV are facts about the search and
+        // must survive into the golden -- dropping the whole line, as this once did, meant
+        // no golden ever compared a score or a PV against anything.
+        let out = "info depth 3 seldepth 2 score cp 12 nodes 5 nps 900 hashfull 1 time 7 pv e2e4\n\
+                   readyok\nTotal time (ms) : 7\nuciok\n";
+        assert_eq!(
+            filter_volatile(out),
+            "info depth 3 seldepth 2 score cp 12 nodes 5 pv e2e4\nreadyok\nuciok\n"
+        );
     }
 
     #[test]

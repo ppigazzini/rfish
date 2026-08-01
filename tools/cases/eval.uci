@@ -1,0 +1,6 @@
+position startpos
+eval
+position fen 8/8/8/8/8/6k1/6p1/6K1 w - - 0 1
+eval
+position fen r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR b KQkq - 0 1
+eval
