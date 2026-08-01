@@ -200,7 +200,13 @@ subtracted by a `quit`-only profile:
 | `g++`, no PGO, `nehalem` (the ledger's own tier) | 2,979,106,126 | 1,958,088,252 | 1.521 |
 | `g++`, no PGO, avx2 | 2,170,601,764 | 1,460,813,993 | 1.486 |
 | clang + PGO + LTO, avx2 | 2,171,591,691 | 1,246,593,188 | 1.742 |
-| **the same, after the membership diff below** | **2,080,763,904** | **1,246,598,569** | **1.669** |
+| the same, after the membership diff below | 2,080,763,904 | 1,246,598,569 | 1.669 |
+| **the same, re-measured at the `c5aef2bf1` pin** | **2,108,359,414** | **1,240,674,464** | **1.699** |
+
+The last row is the current one. It is not a regression in this port: it is the same code
+measured against a moved target, and upstream gained slightly more from its own retune than
+rfish did — 1.7% on this axis. Re-measure BOTH sides when the pin moves; carrying an old
+ratio across a sync compares two different upstreams.
 
 **The gap WIDENS when the comparison is made fair, and the reason is one-sided.** PGO is
 worth almost nothing to rustc here and 15% to clang, so the honest figure is the largest of
@@ -221,8 +227,20 @@ both sides clang + PGO + LTO:
 
 | | median paired time vs upstream | spread |
 |---|---|---|
-| rfish, avx2 vs avx2 oracle | **1.52x** | 1.29..1.82 |
+| **rfish, avx2 vs avx2 oracle, at the `c5aef2bf1` pin** | **1.53x** | 1.33..1.65 |
+| rfish, avx2, before the sync | 1.52x | 1.29..1.82 |
 | rfish, native vs native oracle (before the membership diff) | 1.77x | 1.38..1.99 |
+| **spine, avx2, at the `c5aef2bf1` pin** | **1.31x** | 1.18..1.39 |
+
+**Every time figure on this page was taken on a BUSY box, and the spreads say so.** This is a
+laptop part under WSL2, measured in sessions that were also compiling and running callgrind,
+and a spread of 1.33..1.65 around a median of 1.53 is what that looks like. The pairing
+protocol removes the ORDER bias and the thermal drift between batches; it does not turn a
+noisy machine into a quiet one. Treat these as one significant figure — "about half again
+upstream's time" — and never read a few per cent off them. A number that has to be tighter
+than that needs a quiet box or the instruction axis, which is unaffected because callgrind
+counts are deterministic: the same binary re-profiled reproduces its instruction total
+exactly, and every Ir ratio on this page is repeatable in a way no time ratio here is.
 
 Both spreads exclude 1.000, so the direction holds at this sample size; neither is tight
 enough to read a few per cent from. The instruction axis is the one that resolves small
@@ -230,18 +248,19 @@ effects, and it has a tier ceiling — callgrind implements no AVX-512, so `nati
 ratio and no instruction ratio.
 
 The sibling ports measured the same way, each against an oracle at ITS OWN upstream base —
-`../mcfish` is pinned to `f4bcd404` with a different net, so only the ratios compare, never
-the raw counts:
+only the ratios compare, never the raw counts:
 
 | | instructions vs own upstream | time vs own upstream |
 |---|---|---|
-| rfish, avx2 | 1.669 | 1.52x |
-| ../mcfish, avx2 | **0.872** | 1.05x (spread straddles 1.000) |
+| rfish, avx2, at `c5aef2bf1` | 1.699 | 1.53x |
+| ../mcfish, avx2, as measured at `f4bcd404` | **0.872** | 1.05x (spread straddles 1.000) |
 
 `../mcfish` retires FEWER instructions than the upstream it clones and still does not beat
-it on time. Before reading its lead over rfish as a verdict on safe Rust: its base predates
-the threat feature set entirely, and recomputing threats rather than delta-updating them is
-exactly the gap this page documents below.
+it on time. Two caveats before reading its lead over rfish as a verdict on safe Rust. Its
+base at the time of that measurement predates the threat feature set entirely, and
+recomputing threats rather than delta-updating them is exactly the gap this page documents
+below. And its row has NOT been re-measured since both ports moved to `c5aef2bf1` — it is
+kept as the last figure actually taken, not as a current comparison.
 
 **36.5 features are applied per evaluation, over 61,341 evaluations** — measured with an
 instrumented build, not inferred, and upstream evaluates the same bench exactly 61,341 times
@@ -326,7 +345,12 @@ identical trees at 625,992 nodes:
 |---|---|---|---|
 | as upstream ships it | 1,445,638,904 | 1,518,970,470 | 0.952 |
 | with the NNUE threat scan compiled out | 1,445,638,857 | 1,297,100,189 | 1.115 |
-| **the same, after the two dispatch fixes below** | **1,405,589,511** | **1,297,103,102** | **1.084** |
+| the same, after the two dispatch fixes below | 1,405,589,511 | 1,297,103,102 | 1.084 |
+| **the same, re-measured at the `c5aef2bf1` pin** | **1,421,995,718** | **1,301,230,180** | **1.093** |
+
+The first three rows were measured at the previous pin, over 625,992 nodes; the last is the
+current one, over 657,500. Rows from different pins are different workloads and only their
+RATIOS are comparable.
 
 **The first row is the trap, and this page published its ancestor for a long time.** Upstream
 maintains the threat feature set inside `do_move`, writing a `DirtyThreats` that
@@ -337,7 +361,7 @@ both sides doing the same work, and the node count is unchanged either way, whic
 proves the scan was dead rather than load-bearing.
 
 So the spine is **not** at parity, and the earlier "1.022x and ahead on every cache axis" was
-an artefact of that asymmetry plus a `g++` oracle. Paired time at depth 13 reads 1.34x, worse
+an artefact of that asymmetry plus a `g++` oracle. Paired time at depth 13 reads 1.31x, worse
 than the instruction ratio — the spine has an IPC deficit on top of its instruction deficit.
 `../mcfish` measures 1.074x on the same corrected harness against its own base, so roughly a
 tenth over upstream is what both ports currently pay for the spine, and neither port's
@@ -350,12 +374,20 @@ identical. "was" is this branch's starting point, "now" is HEAD:
 
 | | NNUE was | NNUE now | spine was | spine now |
 |---|---|---|---|---|
-| instructions | 1.742 | **1.669** | 1.115 | **1.084** |
-| data reads | 1.449 | 1.451 | 1.223 | 1.216 |
-| L1 icache misses | 2.102 | **1.496** | 1.998 | **2.213** |
-| conditional mispredicts | 2.569 | **2.175** | 1.414 | **1.305** |
-| indirect branches | 1.479 | **0.863** | 2.265 | **1.133** |
-| indirect mispredicts | 1.490 | **0.770** | 2.248 | **1.009** |
+| instructions | 1.742 | **1.699** | 1.115 | **1.093** |
+| data reads | 1.449 | 1.475 | 1.223 | 1.228 |
+| data writes | 0.741 | **0.683** | 0.698 | **0.707** |
+| D1 read misses | 1.222 | 1.201 | 1.062 | 1.057 |
+| L1 icache misses | 2.102 | **1.269** | 1.998 | **1.931** |
+| conditional branches | 1.337 | 1.369 | 0.984 | **0.977** |
+| conditional mispredicts | 2.569 | **2.106** | 1.414 | **1.398** |
+| indirect branches | 1.479 | **0.872** | 2.265 | **1.125** |
+| indirect mispredicts | 1.490 | **0.779** | 2.248 | **1.005** |
+
+"was" is this branch's starting point, at the previous pin; "now" is HEAD at `c5aef2bf1`. The
+two columns are therefore different workloads as well as different code, which is why the
+instruction row moves the "wrong" way while every branch row improves — see the note under
+the toolchain table.
 
 Three things to read off it, and one of them is a cost rather than a win:
 
@@ -364,13 +396,14 @@ Three things to read off it, and one of them is a cost rather than a win:
   and left an indirect branch per attacker. Writing the types out at each site brought
   indirect mispredicts to 1.009 of upstream's on the spine and BELOW upstream's on the NNUE
   axis. Look for this shape before looking anywhere else.
-- **Instruction-cache pressure on the spine went UP**, 1.998 to 2.213, because unrolling
-  trades code size for branch behaviour. It is paid for several times over — spine
-  instructions fell 2.8% — but it is a real regression on that counter and the next unrolling
-  should be measured against it rather than assumed free.
-- **Read traffic did not move at all**, 1.449 to 1.451, across every change on this branch.
-  It is the accumulator diff touching two feature sets, and only the per-move delta above
-  will move it.
+- **Instruction-cache pressure on the spine is the worst counter here**, at 1.931. The
+  unrollings that closed the indirect-branch gap traded code size for branch behaviour, and
+  this is the bill: it peaked at 2.213 before the sync moved the tree. It is paid for several
+  times over — the spine now retires FEWER conditional branches than upstream — but the next
+  unrolling has to be measured against this counter rather than assumed free.
+- **Read traffic did not move**, 1.449 to 1.475 across every change on this branch, and the
+  drift is the workload rather than the code. It is the accumulator diff touching two feature
+  sets, and only the per-move delta above will move it.
 
 ## The quantisation is the specification
 
