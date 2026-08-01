@@ -1,5 +1,4 @@
 rfish 0.1.0 by the Stockfish developers (see AUTHORS)
-info string Network replica 1: Local memory.
 Unknown command: 'notacommand'. Type help for more information.
 No such option: NoSuchOption
 info string CRITICAL ERROR: Command `position fen this is not a fen at all` failed. Reason: Invalid FEN. Invalid piece: t
