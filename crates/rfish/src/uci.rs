@@ -81,10 +81,11 @@ impl<W: Write> InfoSink for UciSink<W> {
             " nodes {} nps {} hashfull {} tbhits {} time {}",
             r.nodes, r.nps, r.hashfull, r.tb_hits, r.time_ms
         );
-        if !r.pv.is_empty() {
-            line.push_str(" pv ");
-            line.push_str(&r.pv.join(" "));
-        }
+        // Unconditional, even when the PV is empty: upstream always writes the token and
+        // the separator, so a search that produced no line still ends `... pv ` with the
+        // trailing space. Omitting the field entirely is a different line.
+        line.push_str(" pv ");
+        line.push_str(&r.pv.join(" "));
         let _ = writeln!(self.out, "{line}");
         let _ = self.out.flush();
     }
@@ -286,11 +287,17 @@ impl Engine {
         };
         let name = args[name_start.min(name_end)..name_end].join(" ");
 
-        if !self.options.set(&name, &value) {
+        // Upstream reports only an unknown NAME. A value a known option cannot take is
+        // ignored in silence -- its `operator=` validates, returns unchanged, and runs no
+        // on-change -- so `setoption name Ponder` with no value prints nothing rather than
+        // claiming the option does not exist.
+        if !self.options.contains(&name) {
             let _ = writeln!(out, "No such option: {name}");
             return;
         }
-        self.apply_option(&name, out);
+        if self.options.set(&name, &value) {
+            self.apply_option(&name, out);
+        }
     }
 
     /// React to an option whose new value changes engine state.
@@ -542,7 +549,10 @@ impl Engine {
                 if let Some(m) = parse_uci_move(&self.pos, token) {
                     self.pos.do_move(m);
                 } else {
-                    let _ = writeln!(out, "info string Illegal move: {token}");
+                    // Upstream terminates here as it does for a bad FEN: a position it
+                    // cannot construct is a CRITICAL ERROR and exit 1, not a note the GUI
+                    // can ignore while the engine keeps the half-applied position.
+                    self.critical(&format!("Illegal move: {token}"), out);
                     return;
                 }
             }
@@ -642,6 +652,23 @@ impl Engine {
                 _ => {}
             }
             i += 1;
+        }
+        // A limit of ZERO means ABSENT, because upstream's fields are plain integers and
+        // every test of them is a C++ truthiness check: `if (limits.depth)`,
+        // `if (limits.nodes)`, `if (limits.movetime)`. `go nodes 0` therefore searches
+        // WITHOUT a node limit there, where an `Option` faithfully carrying `Some(0)` stops
+        // the search before it starts.
+        if l.depth == Some(0) {
+            l.depth = None;
+        }
+        if l.nodes == Some(0) {
+            l.nodes = None;
+        }
+        if l.move_time == Some(0) {
+            l.move_time = None;
+        }
+        if l.mate == Some(0) {
+            l.mate = None;
         }
         Ok(l)
     }

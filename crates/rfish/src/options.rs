@@ -138,9 +138,8 @@ impl Options {
     /// True when an option of that name exists. Names are matched case-insensitively,
     /// because GUIs are inconsistent about them and upstream accepts either.
     ///
-    /// Used by the tests to assert that an unknown name stays unknown; the engine itself
-    /// goes through `set`, which answers the same question and does the work.
-    #[cfg(test)]
+    /// The engine asks this BEFORE `set`, because the two questions differ: upstream
+    /// reports an unknown NAME and silently ignores a value a known option cannot take.
     #[must_use]
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.lookup(name).is_some()
