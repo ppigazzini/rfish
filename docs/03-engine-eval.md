@@ -445,10 +445,27 @@ Bit-exact — signature 2508687, `nnue-check` 109 of 109, perft clean — and **
 the rebuild**. The hit rate is fixed; the seeding is not. Rolling forward from the parent ply
 means copying that ply's accumulator AND its threat set into the working slot, ~7.4 KB per
 evaluation over 61,341 of them, and that copy costs more than the 158M rebuild it removes.
-What is left untried is folding directly from the parent's accumulator into the child's rather
-than copying first — the shape "One slot" tried second and lost by 278M, now with a delta
-under it. Anyone attempting it should expect to recover the copy and little else: the measured
-gap is 178.5M and the copy is most of it.
+That copy was then removed, ../zfish's way. `applyCombinedDelta` splits target from source and
+takes BOTH feature sets in one pass, so the fold reads the parent and writes the working slot
+in the sweep it was already making. Ported here as `fold_combined`: one walk of the 1024
+entries applying the king-piece and threat rows together, where `fold_changed` walks twice.
+
+| | search Ir | vs rebuild |
+|---|---|---|
+| rebuild, single slot (kept) | 2,067,660,319 | — |
+| single-slot delta, 11% hit | 2,152,866,131 | +85.2M |
+| stack + delta, copy-seeded | 2,246,124,890 | +178.5M |
+| **stack + delta, combined no-copy fold** | **2,214,297,204** | **+146.6M** |
+
+Removing the seeding copy recovered 31.8M and left the architecture 146.6M behind the rebuild,
+bit-exact throughout. One copy remains — the working slot is saved back into the ply after the
+fold, because the tail of `transform` reads the live slot — and on the 31.8M the first copy
+cost, removing it is worth roughly another 30M. That still lands near +115M.
+
+So the gap is not the copies. It is that the recording costs 85.7M on every `do_move` while
+the roll-forward is admissible only when the PARENT WAS ITSELF EVALUATED — pruning and qsearch
+skip most parents — and on top of that only when no pawn and neither king moved. The delta is
+cheap once it applies; what it cannot buy is the right to apply.
 
 **Raising that hit rate is the twice-lost stack.** The only way the parent's accumulator is
 always available is a slot per ply, which "One slot, not a stack" measured losing twice. A
