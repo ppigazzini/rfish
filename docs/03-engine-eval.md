@@ -299,20 +299,42 @@ enough to read a few per cent from. The instruction axis is the one that resolve
 effects, and it has a tier ceiling — callgrind implements no AVX-512, so `native` has a time
 ratio and no instruction ratio.
 
-The sibling ports measured the same way, each against an oracle at ITS OWN upstream base —
-only the ratios compare, never the raw counts:
+### The three-way, measured head to head
 
-| | instructions vs own upstream | time vs own upstream |
+All three ports are pinned at the SAME upstream commit, so this is not a comparison of
+ratios-against-different-baselines: it is four binaries on one box, one bench, one net
+(`nn-ab28990d4ea3`), startup subtracted from each by its own `quit`-only profile, and the
+**identical 163,081-node tree on all four**, which is what makes the raw counts comparable
+rather than only the ratios.
+
+| engine | search instructions | vs upstream |
 |---|---|---|
-| rfish, avx2, at `c5aef2bf1` | 1.699 | 1.53x |
-| ../mcfish, avx2, as measured at `f4bcd404` | **0.872** | 1.05x (spread straddles 1.000) |
+| ../mcfish, clang + PGO + LTO, avx2 | 1,088,367,365 | **0.877** |
+| upstream `c5aef2bf1`, clang + PGO + LTO, avx2 | 1,240,667,060 | 1.000 |
+| ../zfish, Zig 0.16 + LTO, **no PGO**, avx2 | 1,241,966,545 | **1.001** |
+| **rfish, clang-major LLVM + PGO + LTO, avx2** | **2,067,660,319** | **1.667** |
 
-`../mcfish` retires FEWER instructions than the upstream it clones and still does not beat
-it on time. Two caveats before reading its lead over rfish as a verdict on safe Rust. Its
-base at the time of that measurement predates the threat feature set entirely, and
-recomputing threats rather than delta-updating them is exactly the gap this page documents
-below. And its row has NOT been re-measured since both ports moved to `c5aef2bf1` — it is
-kept as the last figure actually taken, not as a current comparison.
+**rfish retires 1.90x ../mcfish's instructions and 1.67x ../zfish's.** Both siblings are at or
+below the engine they clone. This port is 67% above it, and it is the only one of the three
+that is. ../zfish reaches parity with NO profile-guided build at all, so the gap to it is
+understated here rather than flattered.
+
+**This kills the explanation this page used to offer.** The gap was attributed to the
+`unsafe` ban, on the grounds that upstream's first affine layer is a `vpdpbusd` no safe Rust
+can reach. ../zfish is a safe-SIMD port — Zig's `@Vector`, no unsafe blocks needed — and it
+sits at 1.001. The constraint is not what costs 827M instructions.
+
+**What costs them is the accumulator design, and the siblings say so in their source.**
+../zfish implements `update_accumulator_incremental_both` and `update_accumulator_hybrid`
+against a `DirtyPiece`; ../mcfish carries a seven-byte packed `NnueDirtyPiece`. Both do
+upstream's per-move delta. rfish rebuilds both feature sets every evaluation and diffs them,
+and it is the only port of the three that does.
+
+That reframes the row below. This page has called the per-move delta "a redesign, not an
+edit" and priced it at "the ~158M row, not the whole evaluation gap". Against a measured 827M
+excess, and two sibling ports that took the delta and landed at 0.877 and 1.001, that price
+is the floor of the estimate and not the ceiling. Anyone costing this work should start from
+the three-way above, not from the per-symbol split.
 
 **36.5 features are applied per evaluation, over 61,341 evaluations** — measured with an
 instrumented build, not inferred, and upstream evaluates the same bench exactly 61,341 times

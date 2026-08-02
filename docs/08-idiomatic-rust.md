@@ -397,8 +397,15 @@ upstream's kernels directly — 173 `@Vector` uses across ten NNUE files, plus p
 like `nnue_affine_vnni.zig` — because Zig has portable SIMD vectors in the *safe, stable*
 language. Rust's equivalent needs no `unsafe` either and is now in use here; what it costs is
 the nightly channel rather than the constraint. What remains out of reach is `vpdpbusd`
-specifically, which `std::simd` has no operation for — so the affine layer, and not the
-toolchain, is where the evaluation's ratio is decided.
+specifically, which `std::simd` has no operation for.
+
+**Do not read that as the reason this port is slow.** Measured head to head at the same pin,
+same box, same net and an identical 163,081-node tree, ../zfish retires 1.001 of upstream's
+instructions and ../mcfish 0.877, against rfish's 1.667 — and ../zfish is a SAFE-SIMD port
+with no PGO. A constraint both ports also satisfy cannot be what costs this one 827M
+instructions. What separates them is that both siblings implement upstream's per-move
+accumulator delta and rfish recomputes the feature sets every evaluation. See
+[03-engine-eval.md](03-engine-eval.md) for the four-way table and the source evidence.
 
 **Explicit `std::simd` in the feature transformer is NOT an open lead.** It is the largest
 search-time block in the engine — `fold_changed` at 190M and `transform` at 148M over
