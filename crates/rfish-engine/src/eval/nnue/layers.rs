@@ -110,17 +110,22 @@ impl AffineLayer {
     ///
     /// `N` is the output width, static for the same reason as in
     /// [`AffineLayer::propagate_sparse`].
+    /// Walked by COLUMN, over the transposed copy, rather than a row at a time. A row walk
+    /// ends every output in a horizontal reduction — log2(N) shuffle-and-add pairs whose
+    /// only product is one lane — and repeats that N times. A column walk holds the whole
+    /// output row in one accumulator and never reduces at all; the products land in the lane
+    /// they belong to. The sum is the same integers in a different order, which for integers
+    /// is the same sum.
     pub fn propagate<const N: usize>(&self, input: &[u8], output: &mut [i32; N]) {
         debug_assert!(input.len() >= self.input_dims);
         debug_assert_eq!(N, self.output_dims);
-        let rows = self.weights.chunks_exact(self.padded_dims);
-        for ((out, bias), row) in output.iter_mut().zip(self.biases.iter()).zip(rows) {
-            let mut sum = *bias;
-            for (w, &x) in row[..self.input_dims].iter().zip(input[..self.input_dims].iter()) {
-                sum += i32::from(*w) * i32::from(x);
-            }
-            *out = sum;
+        let mut acc = Simd::<i32, N>::from_slice(&self.biases);
+        let blocks = self.sparse.as_chunks::<N>().0;
+        for (block, &x) in blocks.iter().zip(input[..self.input_dims].iter()) {
+            let w: Simd<i8, N> = Simd::from_array(*block);
+            acc += w.cast::<i32>() * Simd::splat(i32::from(x));
         }
+        *output = acc.to_array();
     }
 
     /// The same result as [`AffineLayer::propagate`], skipping the inputs that are zero.
@@ -269,6 +274,7 @@ mod tests {
         l.weights = Aligned::new(2 * 32);
         l.weights[0..4].copy_from_slice(&[1, 2, 3, 4]);
         l.weights[32..36].copy_from_slice(&[-1, -1, -1, -1]);
+        l.rebuild_sparse();
 
         let mut out = [0i32; 2];
         l.propagate(&[1, 2, 3, 4], &mut out);
