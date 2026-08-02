@@ -382,4 +382,77 @@ mod tests {
         }
         assert!(checked > 100, "only {checked} placements exercised");
     }
+    /// The `do_move` recording must rebuild the child's threat set from the parent's.
+    ///
+    /// This reaches everything the placement-level test above cannot: castling moves four
+    /// men, en passant removes one that is not on the destination, promotion swaps a man in
+    /// place, and a KING move exercises the branch that emits discovered threats only.
+    ///
+    /// **A king move is checked for the OTHER side only, and that is the real contract
+    /// rather than a gap in the test.** Every index is oriented by its own king square, so
+    /// when a king moves, that perspective's whole numbering changes and no list of
+    /// add/remove indices can carry it across — which is exactly why upstream refreshes that
+    /// side instead of delta-ing it. The side whose king stood still is delta-able and must
+    /// reconcile exactly.
+    #[test]
+    fn a_move_delta_rebuilds_the_child_threat_set() {
+        use crate::board::movegen::generate_legal;
+
+        const FENS: [&str; 6] = [
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
+            "2r3k1/1q1nbppp/r3p3/3pP3/pPpP4/P1Q2N2/2RN1PPP/2R4K b - b3 0 1",
+            "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1",
+        ];
+
+        let mut checked = 0usize;
+        for fen in FENS {
+            let parent = Position::from_fen(fen, false).expect("valid fen");
+            let list = generate_legal(&parent);
+            let before = active(&parent);
+
+            for &m in list.iter() {
+                let mut child = parent.clone();
+                let mut delta = Vec::new();
+                let gives_check = child.gives_check(m);
+                child.do_move_recording(m, gives_check, Some(&mut delta));
+                let after = active(&child);
+
+                for p in [Color::White, Color::Black] {
+                    let i = p.index();
+                    let ksq = child.king_square(p);
+                    if ksq != parent.king_square(p) {
+                        continue;
+                    }
+                    let mut got = before[i].clone();
+                    for d in &delta {
+                        let idx =
+                            threat_index(p, d.attacker(), d.from(), d.to(), d.attacked(), ksq);
+                        if idx >= THREAT_DIMENSIONS {
+                            continue;
+                        }
+                        if d.is_add() {
+                            got.push(idx);
+                        } else {
+                            let at = got
+                                .iter()
+                                .position(|&x| x == idx)
+                                .unwrap_or_else(|| panic!("{fen}: {m:?} removes an absent {idx}"));
+                            got.remove(at);
+                        }
+                    }
+                    got.sort_unstable();
+                    assert_eq!(
+                        got, after[i],
+                        "{fen}: after {m:?}, perspective {p:?}: the recorded delta does not \
+                         rebuild the child set"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "only {checked} moves exercised");
+    }
 }
