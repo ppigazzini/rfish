@@ -409,6 +409,39 @@ spine oracle sheds 263M at 657,500 nodes, which scales to ~65M on this workload,
 pays ~65M for the bookkeeping rfish pays 85.7M for. Roughly 1.3x, which is where the rest of
 this port sits.
 
+### The delta was built, and it loses on a hit rate
+
+Built in full and bit-exact — `update_piece_threats` ported, recorded through `do_move`,
+consumed by a fast path in `transform` that derives the child's threat set from the parent's
+instead of rebuilding it. Signature 2508687, `nnue-check` 109 of 109, and a gate-build
+assertion comparing the derived set against the rebuild on every evaluation.
+
+| | search Ir |
+|---|---|
+| rebuild (kept) | 2,067,660,319 |
+| recording only, nothing reading it | 2,153,337,184 |
+| recording + delta path | 2,152,866,131 |
+
+**The delta saves 0.47M against the recording it requires, which costs 85.7M.** The mechanism
+is a hit rate, measured rather than inferred: the fast path fires on **11%** of evaluations.
+Recording happens on 100% of `do_move`s — 163,081 of them — while the delta is usable only
+when the live slot holds this move's parent, and pruning and qsearch mean the next position
+evaluated is usually not the immediate child of the last one evaluated. 11% of the ~158M
+rebuild is ~17M against 85.7M paid.
+
+**Raising that hit rate is the twice-lost stack.** The only way the parent's accumulator is
+always available is a slot per ply, which "One slot, not a stack" measured losing twice. A
+record stack without accumulators does not rescue it either: after a subtree return the live
+slot holds a COUSIN, and no chain of recorded moves connects a cousin to the current position
+at all. Upstream escapes this by keeping the accumulator per ply, which is the trade this port
+has already measured and rejected.
+
+So the per-move delta is not blocked on effort or on the board zone — both are done and tested
+— it is blocked on the accumulator architecture this port chose, and that architecture wins on its own
+measurement. **The board-zone half is kept** (`board/threats.rs`, `do_move_recording`) with
+its differential tests: it is the expensive, error-prone part, it is proven correct, and
+anything that revisits this needs it. Nothing calls it.
+
 **The accumulator half must NOT be a per-ply stack, and that is already settled above.** A
 delta needs the parent's accumulator, and the obvious way to guarantee one is a slot per ply —
 which "One slot, not a stack" records losing twice, by 428M and then by 278M. It does not need
