@@ -225,8 +225,9 @@ top of LTO. Comparing a rustc build that never saw a profile against a `g++` bui
 never saw one either held NEITHER variable fixed.
 
 Rebuilt with everything held equal — both sides clang/LLVM at rustc's own major, both sides
-PGO on top of LTO, both trained on the same `bench`, same tier, same 166,964 nodes, startup
-subtracted by a `quit`-only profile:
+PGO on top of LTO, both trained on the same `bench`, same tier, identical trees, startup
+subtracted by a `quit`-only profile. The first four rows are 166,964 nodes and the last two are
+163,081; the pin moved the tree, so only the ratios compare across that break:
 
 | both sides | rfish | upstream | ratio |
 |---|---|---|---|
@@ -234,12 +235,15 @@ subtracted by a `quit`-only profile:
 | `g++`, no PGO, avx2 | 2,170,601,764 | 1,460,813,993 | 1.486 |
 | clang + PGO + LTO, avx2 | 2,171,591,691 | 1,246,593,188 | 1.742 |
 | the same, after the membership diff below | 2,080,763,904 | 1,246,598,569 | 1.669 |
-| **the same, re-measured at the `c5aef2bf1` pin** | **2,108,359,414** | **1,240,674,464** | **1.699** |
+| the same, re-measured at the `c5aef2bf1` pin | 2,108,359,414 | 1,240,674,464 | 1.699 |
+| **the same, at HEAD** | **2,100,251,134** | **1,240,666,337** | **1.693** |
 
-The last row is the current one. It is not a regression in this port: it is the same code
-measured against a moved target, and upstream gained slightly more from its own retune than
-rfish did — 1.7% on this axis. Re-measure BOTH sides when the pin moves; carrying an old
-ratio across a sync compares two different upstreams.
+The last row is the current one, and the row above it is where the pin moved. That step is not
+a regression in this port: it is the same code measured against a moved target, and upstream
+gained slightly more from its own retune than rfish did — 1.7% on this axis. Re-measure BOTH
+sides when the pin moves; carrying an old ratio across a sync compares two different upstreams.
+The step after it is the port's own, and it is small and real: upstream is unchanged to within
+eight thousand instructions while rfish sheds 8.1M over the same 163,081-node tree.
 
 **The gap WIDENS when the comparison is made fair, and the reason is one-sided.** PGO is
 worth almost nothing to rustc here and 15% to clang, so the honest figure is the largest of
@@ -369,20 +373,21 @@ first: the prize is the ~158M row, not the whole evaluation gap.
 
 ### The search spine is a SEPARATE gap, and it is not closed
 
-Swap both sides to a material evaluation — `eval-material` here, the same formula patched
-into the oracle by `cargo xtask oracle --spine` — and what is left is the spine: movegen,
-movepick, the histories, the TT, the pruning arithmetic. Same tier, same toolchain, same PGO,
-identical trees at 625,992 nodes:
+Swap both sides to a material evaluation — `eval-material` here, and on the oracle the same
+formula plus a stubbed threat scan, both patched in by `cargo xtask oracle --spine` — and what
+is left is the spine: movegen, movepick, the histories, the TT, the pruning arithmetic. Same
+tier, same toolchain, same PGO, identical trees:
 
 | oracle | rfish | upstream | ratio |
 |---|---|---|---|
 | as upstream ships it | 1,445,638,904 | 1,518,970,470 | 0.952 |
 | with the NNUE threat scan compiled out | 1,445,638,857 | 1,297,100,189 | 1.115 |
 | the same, after the two dispatch fixes below | 1,405,589,511 | 1,297,103,102 | 1.084 |
-| **the same, re-measured at the `c5aef2bf1` pin** | **1,421,995,718** | **1,301,230,180** | **1.093** |
+| the same, re-measured at the `c5aef2bf1` pin | 1,421,995,718 | 1,301,230,180 | 1.093 |
+| **the same, at HEAD, with the harness stubbing the scan** | **1,424,139,177** | **1,301,234,036** | **1.094** |
 
-The first three rows were measured at the previous pin, over 625,992 nodes; the last is the
-current one, over 657,500. Rows from different pins are different workloads and only their
+The first three rows were measured at the previous pin, over 625,992 nodes; the last two are
+at `c5aef2bf1`, over 657,500. Rows from different pins are different workloads and only their
 RATIOS are comparable.
 
 **The first row is the trap, and this page published its ancestor for a long time.** Upstream
@@ -392,6 +397,16 @@ nobody reads it at all — so leaving it in charges upstream for NNUE bookkeepin
 which recomputes threats inside its evaluation, is charged for none. Compiling it out leaves
 both sides doing the same work, and the node count is unchanged either way, which is what
 proves the scan was dead rather than load-bearing.
+
+**That row was reachable from the harness until `patch_out_threat_scan` existed, and it was
+reached.** `cargo xtask oracle --spine` patched only `Eval::evaluate`, so a spine oracle built
+from the command alone left the scan in and read **0.910** — below even the 0.952 the trap
+produced at the previous pin, because the port's own side had improved underneath it. The
+compile-out is now part of the command: it stubs `Position::update_piece_threats`, whose six
+call sites are all guarded by `if (dts)`. Rebuilt that way the oracle lands within 4k
+instructions of the row above it, which is what establishes that the stub is the step that had
+been missing rather than a new one. A number this page publishes has to come from a command,
+not from a step someone remembers taking.
 
 So the spine is **not** at parity, and the earlier "1.022x and ahead on every cache axis" was
 an artefact of that asymmetry plus a `g++` oracle. Paired time at depth 13 reads 1.31x, worse
@@ -437,6 +452,42 @@ Three things to read off it, and one of them is a cost rather than a win:
 - **Read traffic did not move**, 1.449 to 1.475 across every change on this branch, and the
   drift is the workload rather than the code. It is the accumulator diff touching two feature
   sets, and only the per-move delta above will move it.
+
+### The spine's IPC deficit is not a data-layout problem
+
+The spine turns 1.094 instructions into 1.33x time, so something outside the instruction count
+is costing it. The full counter set at HEAD, against the stubbed-scan oracle, over 657,500
+nodes on both sides, says where it is NOT:
+
+| event | rfish | upstream | ratio |
+|---|---|---|---|
+| Ir | 1,424,141,019 | 1,301,245,716 | 1.094 |
+| Dr | 400,680,699 | 324,954,411 | **1.233** |
+| Dw | 210,402,533 | 295,755,282 | 0.711 |
+| D1mr | 6,837,759 | 6,722,550 | **1.017** |
+| D1mw | 3,066,667 | 5,619,896 | 0.546 |
+| DLmr | 246,186 | 414,112 | 0.594 |
+| DLmw | 1,000,077 | 1,726,939 | 0.579 |
+| I1mr | 7,206,111 | 3,520,520 | **2.047** |
+| ILmr | 7,478 | 28,928 | 0.259 |
+| Bc / Bcm | 192,435,064 / 12,764,700 | 196,421,694 / 9,810,082 | 0.980 / **1.301** |
+| Bi / Bim | 2,296,457 / 931,683 | 2,041,830 / 925,797 | 1.125 / 1.006 |
+
+**Alignment is the first thing to suspect and the counters rule it out.** A misaligned hot
+table shows up as L1 data misses, and `D1mr` is 1.017 — parity — while every last-level data
+counter is BELOW upstream's. The structures agree: the TT `Cluster` is 32 bytes at
+`repr(align(32))`, matching upstream's `static_assert(sizeof(Cluster) == 32)`; the history rows
+carry `repr(align(64))` through `Line<T>` after the flat `Box<[i16]>` skew was found and fixed;
+`CorrectionHistory`'s rows are sixteen bytes and so cannot straddle a line. Do not spend a
+session re-aligning these.
+
+What is left is code size and prediction. `I1mr` at 2.047 is the bill for the unrollings that
+closed the indirect-branch gap — and `ILmr` at 0.259 says those misses are served from L2
+rather than from memory, which is why the cost shows up as IPC rather than as stalls that would
+dominate. `Bcm` at 1.301 over `Bc` at 0.980 is the other half: rfish retires fewer conditional
+branches than upstream and mispredicts more of them. Read traffic at 1.233 is the one
+data-shaped lead, and `StackEntry` at 72 bytes against upstream's 56 is part of it — but the
+56-byte alternative was measured and was worse, so that row is a REDESIGN and not an edit.
 
 ## The quantisation is the specification
 
