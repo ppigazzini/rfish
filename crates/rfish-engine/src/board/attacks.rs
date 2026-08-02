@@ -245,6 +245,89 @@ impl SliderTables {
 /// static initialisers to avoid.
 static SLIDERS: LazyLock<SliderTables> = LazyLock::new(SliderTables::build);
 
+/// A borrow of the slider tables, taken once and read many times.
+///
+/// A `LazyLock` costs its check per DEREF, not once per program: the acquire load of the
+/// `Once` state is a real load that LLVM may not hoist across the loads around it, and a
+/// caller like [`crate::board::threats::update_piece_threats`] derefs dozens of times.
+/// Measured on a bench: 17.7M instructions -- 0.9% of the whole run -- sat in `Once`.
+///
+/// Take this at the top of such a caller and read through it. The free functions below stay
+/// for callers that ask once.
+#[derive(Clone, Copy)]
+pub struct Sliders(&'static SliderTables);
+
+impl core::fmt::Debug for Sliders {
+    /// The tables themselves are 840 KiB and say nothing a reader wants; the borrow is the
+    /// whole value.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Sliders")
+    }
+}
+
+/// Borrow the slider tables, paying the initialisation check once.
+#[inline(always)]
+#[must_use]
+pub fn sliders() -> Sliders {
+    Sliders(&SLIDERS)
+}
+
+impl Sliders {
+    /// Squares a rook on `sq` attacks through occupancy `occ`.
+    #[inline(always)]
+    #[must_use]
+    pub fn rook(self, sq: Square, occ: Bitboard) -> Bitboard {
+        self.0.rook_attacks[self.0.rook_magics[sq.index()].index(occ)]
+    }
+
+    /// Squares a bishop on `sq` attacks through occupancy `occ`.
+    #[inline(always)]
+    #[must_use]
+    pub fn bishop(self, sq: Square, occ: Bitboard) -> Bitboard {
+        self.0.bishop_attacks[self.0.bishop_magics[sq.index()].index(occ)]
+    }
+
+    /// Squares a queen on `sq` attacks through occupancy `occ`.
+    #[inline(always)]
+    #[must_use]
+    pub fn queen(self, sq: Square, occ: Bitboard) -> Bitboard {
+        self.rook(sq, occ) | self.bishop(sq, occ)
+    }
+
+    /// Bishop and rook attacks from one square in a single borrow.
+    #[inline(always)]
+    #[must_use]
+    pub fn both(self, sq: Square, occ: Bitboard) -> (Bitboard, Bitboard) {
+        (self.bishop(sq, occ), self.rook(sq, occ))
+    }
+
+    /// The attack set of `pt` from `sq`, through this borrow. Mirrors [`attacks_from`].
+    ///
+    /// # Panics
+    /// Panics for [`PieceType::None`], as [`attacks_from`] does.
+    #[inline(always)]
+    #[must_use]
+    pub fn from(self, c: Color, pt: PieceType, sq: Square, occ: Bitboard) -> Bitboard {
+        match pt {
+            PieceType::Pawn => pawn_attacks_from(c, sq),
+            PieceType::Knight => KNIGHT_ATTACKS[sq.index()],
+            PieceType::Bishop => self.bishop(sq, occ),
+            PieceType::Rook => self.rook(sq, occ),
+            PieceType::Queen => self.queen(sq, occ),
+            PieceType::King => KING_ATTACKS[sq.index()],
+            PieceType::None => panic!("no attack set for PieceType::None"),
+        }
+    }
+
+    /// The colourless form of [`Sliders::from`], for the sites that have excluded pawns.
+    #[inline(always)]
+    #[must_use]
+    pub fn piece(self, pt: PieceType, sq: Square, occ: Bitboard) -> Bitboard {
+        debug_assert!(pt != PieceType::Pawn && pt != PieceType::None);
+        self.from(Color::White, pt, sq, occ)
+    }
+}
+
 /// Squares a rook on `sq` attacks through occupancy `occ`.
 #[inline(always)]
 #[must_use]

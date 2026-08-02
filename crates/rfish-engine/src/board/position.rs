@@ -22,7 +22,7 @@
 use core::fmt;
 use core::fmt::Write as _;
 
-use super::attacks::{aligned, between_bb, bishop_attacks, line_bb, piece_attacks, rook_attacks};
+use super::attacks::{aligned, between_bb, line_bb, piece_attacks, sliders};
 use super::bitboard::{
     Bitboard, KING_ATTACKS, KNIGHT_ATTACKS, pawn_attacks_from, relative_rank_bb,
 };
@@ -1037,8 +1037,10 @@ impl Position {
         let mut cs = [Bitboard::EMPTY; PIECE_TYPE_NB];
         cs[PieceType::Pawn.index()] = pawn_attacks_from(!self.side_to_move, ksq);
         cs[PieceType::Knight.index()] = KNIGHT_ATTACKS[ksq.index()];
-        cs[PieceType::Bishop.index()] = bishop_attacks(ksq, occ);
-        cs[PieceType::Rook.index()] = rook_attacks(ksq, occ);
+        // One borrow of the slider tables; see `attacks::Sliders`.
+        let sl = sliders();
+        cs[PieceType::Bishop.index()] = sl.bishop(ksq, occ);
+        cs[PieceType::Rook.index()] = sl.rook(ksq, occ);
         cs[PieceType::Queen.index()] = cs[PieceType::Bishop.index()] | cs[PieceType::Rook.index()];
         // A king cannot give check, so its entry stays empty; the generator relies on it.
         self.st_mut().check_squares = cs;
@@ -1057,12 +1059,13 @@ impl Position {
     #[must_use]
     #[inline]
     pub fn attackers_to_occ(&self, sq: Square, occ: Bitboard) -> Bitboard {
+        // One borrow of the slider tables; see `attacks::Sliders`.
+        let sl = sliders();
         (pawn_attacks_from(Color::Black, sq) & self.pieces_of(Color::White, PieceType::Pawn))
             | (pawn_attacks_from(Color::White, sq) & self.pieces_of(Color::Black, PieceType::Pawn))
             | (KNIGHT_ATTACKS[sq.index()] & self.pieces(PieceType::Knight))
-            | (rook_attacks(sq, occ)
-                & (self.pieces(PieceType::Rook) | self.pieces(PieceType::Queen)))
-            | (bishop_attacks(sq, occ)
+            | (sl.rook(sq, occ) & (self.pieces(PieceType::Rook) | self.pieces(PieceType::Queen)))
+            | (sl.bishop(sq, occ)
                 & (self.pieces(PieceType::Bishop) | self.pieces(PieceType::Queen)))
             | (KING_ATTACKS[sq.index()] & self.pieces(PieceType::King))
     }
@@ -1077,10 +1080,12 @@ impl Position {
         let mut blockers = Bitboard::EMPTY;
         let mut pinners = Bitboard::EMPTY;
 
-        // Sliders that would attack `sq` if every piece between were removed.
-        let snipers = ((rook_attacks(sq, Bitboard::EMPTY)
+        // Sliders that would attack `sq` if every piece between were removed. One borrow of
+        // the slider tables; see `attacks::Sliders`.
+        let sl = sliders();
+        let snipers = ((sl.rook(sq, Bitboard::EMPTY)
             & (self.pieces(PieceType::Queen) | self.pieces(PieceType::Rook)))
-            | (bishop_attacks(sq, Bitboard::EMPTY)
+            | (sl.bishop(sq, Bitboard::EMPTY)
                 & (self.pieces(PieceType::Queen) | self.pieces(PieceType::Bishop))))
             & self.colored(c);
         let occupancy = self.occupied() ^ snipers;
@@ -1209,6 +1214,8 @@ impl Position {
     /// generation.
     #[must_use]
     pub fn legal(&self, m: Move) -> bool {
+        // One borrow of the slider tables; see `attacks::Sliders`.
+        let sl = sliders();
         debug_assert!(m.is_ok());
         let us = self.side_to_move;
         let from = m.from();
@@ -1224,10 +1231,9 @@ impl Position {
             let occ =
                 (self.occupied() ^ Bitboard::from_square(from) ^ Bitboard::from_square(capsq))
                     | Bitboard::from_square(to);
-            return (rook_attacks(ksq, occ)
-                & self.pieces_of2(!us, PieceType::Rook, PieceType::Queen))
-            .is_empty()
-                && (bishop_attacks(ksq, occ)
+            return (sl.rook(ksq, occ) & self.pieces_of2(!us, PieceType::Rook, PieceType::Queen))
+                .is_empty()
+                && (sl.bishop(ksq, occ)
                     & self.pieces_of2(!us, PieceType::Bishop, PieceType::Queen))
                 .is_empty();
         }
@@ -1255,7 +1261,7 @@ impl Position {
             if self.chess960 {
                 let occ = (self.occupied() ^ Bitboard::from_square(rook_from))
                     | Bitboard::from_square(king_to);
-                return (rook_attacks(king_to, occ)
+                return (sl.rook(king_to, occ)
                     & self.pieces_of2(!us, PieceType::Rook, PieceType::Queen))
                 .is_empty();
             }
@@ -1348,6 +1354,8 @@ impl Position {
     /// scan, so it is derived from the cached check squares rather than by making the move.
     #[must_use]
     pub fn gives_check(&self, m: Move) -> bool {
+        // One borrow of the slider tables; see `attacks::Sliders`.
+        let sl = sliders();
         debug_assert!(m.is_ok());
         let from = m.from();
         let to = m.to();
@@ -1366,10 +1374,9 @@ impl Position {
 
         match m.move_type() {
             MoveType::Normal => false,
-            MoveType::Promotion => {
-                piece_attacks(m.promotion_type(), to, self.occupied() ^ Bitboard::from_square(from))
-                    .contains(ksq)
-            }
+            MoveType::Promotion => sl
+                .piece(m.promotion_type(), to, self.occupied() ^ Bitboard::from_square(from))
+                .contains(ksq),
             MoveType::EnPassant => {
                 // Two pawns leave the board and one appears; only a full recheck of the
                 // sliders answers it.
@@ -1377,9 +1384,8 @@ impl Position {
                 let occ =
                     (self.occupied() ^ Bitboard::from_square(from) ^ Bitboard::from_square(capsq))
                         | Bitboard::from_square(to);
-                (rook_attacks(ksq, occ) & self.pieces_of2(us, PieceType::Rook, PieceType::Queen))
-                    .any()
-                    || (bishop_attacks(ksq, occ)
+                (sl.rook(ksq, occ) & self.pieces_of2(us, PieceType::Rook, PieceType::Queen)).any()
+                    || (sl.bishop(ksq, occ)
                         & self.pieces_of2(us, PieceType::Bishop, PieceType::Queen))
                     .any()
             }
@@ -1392,7 +1398,7 @@ impl Position {
                     (self.occupied() ^ Bitboard::from_square(from) ^ Bitboard::from_square(to))
                         | Bitboard::from_square(rook_to)
                         | Bitboard::from_square(king_to);
-                rook_attacks(rook_to, occ).contains(ksq)
+                sl.rook(rook_to, occ).contains(ksq)
             }
         }
     }
@@ -1838,6 +1844,8 @@ impl Position {
     /// material only — no king safety, no tactics beyond the one square.
     #[must_use]
     pub fn see_ge(&self, m: Move, threshold: Value) -> bool {
+        // One borrow of the slider tables; see `attacks::Sliders`.
+        let sl = sliders();
         debug_assert!(m.is_ok());
         // The special move types are given upstream's fixed answers rather than being
         // replayed: their material effect is not a simple exchange on one square.
@@ -1897,7 +1905,7 @@ impl Position {
                     return result;
                 }
                 occupied ^= Bitboard::from_square(bb.lsb());
-                attackers |= bishop_attacks(to, occupied)
+                attackers |= sl.bishop(to, occupied)
                     & (self.pieces(PieceType::Bishop) | self.pieces(PieceType::Queen));
                 continue;
             }
@@ -1918,7 +1926,7 @@ impl Position {
                     return result;
                 }
                 occupied ^= Bitboard::from_square(bb.lsb());
-                attackers |= bishop_attacks(to, occupied)
+                attackers |= sl.bishop(to, occupied)
                     & (self.pieces(PieceType::Bishop) | self.pieces(PieceType::Queen));
                 continue;
             }
@@ -1929,7 +1937,7 @@ impl Position {
                     return result;
                 }
                 occupied ^= Bitboard::from_square(bb.lsb());
-                attackers |= rook_attacks(to, occupied)
+                attackers |= sl.rook(to, occupied)
                     & (self.pieces(PieceType::Rook) | self.pieces(PieceType::Queen));
                 continue;
             }
@@ -1944,9 +1952,9 @@ impl Position {
                 // `queen_attacks` intersected with every slider would admit a BISHOP
                 // standing on a rook ray as an attacker of a square it cannot reach — which
                 // reads as an extra defender and flips the verdict of the whole exchange.
-                attackers |= (bishop_attacks(to, occupied)
+                attackers |= (sl.bishop(to, occupied)
                     & (self.pieces(PieceType::Bishop) | self.pieces(PieceType::Queen)))
-                    | (rook_attacks(to, occupied)
+                    | (sl.rook(to, occupied)
                         & (self.pieces(PieceType::Rook) | self.pieces(PieceType::Queen)));
                 continue;
             }
