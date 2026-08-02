@@ -261,6 +261,7 @@ pub(crate) fn oracle(args: &[&str]) -> Result<Outcome, String> {
     copy_oracle_net(&dest, &src_repo)?;
     if spine {
         patch_material_eval(&dest.join("src/evaluate.cpp"))?;
+        patch_out_threat_scan(&dest.join("src/position.cpp"))?;
     }
 
     println!("oracle {}: make profile-build COMP=clang ARCH={}", dest.display(), tier.upstream);
@@ -432,6 +433,49 @@ fn patch_material_eval(path: &Path) -> Result<(), String> {
         \x20   return Value(v);";
 
     let patched = format!("{}{replacement}{}", &src[..body], &src[end..]);
+    std::fs::write(path, patched).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Stub out `Position::update_piece_threats`, which only the NNUE accumulator ever reads.
+///
+/// **Without this the spine differential measures nothing, and it reports a number that
+/// FLATTERS this port.** Upstream maintains the threat feature set inside `do_move`, writing a
+/// `DirtyThreats` that `nnue/nnue_accumulator.cpp` reads and that nothing else reads. Under the
+/// material evaluation `patch_material_eval` installs, nobody reads it at all — so leaving it in
+/// charges upstream for NNUE bookkeeping while rfish, which recomputes threats inside its
+/// evaluation, is charged for none. Measured here at the `c5aef2bf1` pin: 1,564,677,886
+/// instructions with the scan in against 1,301,230,180 with it out, which turns a real 1.09 into
+/// a fictitious 0.91.
+///
+/// The node count is unchanged either way, and `instruction_differential` re-asserts that: it
+/// refuses to quote a ratio across two different trees. That is what proves the scan is dead
+/// under a material evaluation rather than load-bearing.
+fn patch_out_threat_scan(path: &Path) -> Result<(), String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let signature = "void Position::update_piece_threats(";
+    let start = src.find(signature).ok_or("the oracle has no update_piece_threats to patch")?;
+    let open = "                                    [[maybe_unused]] Bitboard noRaysContaining) \
+                const {\n";
+    let body = src[start..]
+        .find(open)
+        .map(|i| start + i + open.len())
+        .ok_or("update_piece_threats does not end its parameter list where expected")?;
+
+    // Cast the parameters to void rather than dropping their names: the oracle builds with
+    // -Wall -Wextra, and an unused parameter in a header-visible template is noise a reader of
+    // this build log would have to triage.
+    let stub = "    // MEASUREMENT HARNESS installed by `cargo xtask oracle --spine`: the threat\n\
+        \x20   // feature set is read only by the NNUE accumulator, which a material evaluation\n\
+        \x20   // never runs. Maintaining it here would charge upstream for bookkeeping the port\n\
+        \x20   // being measured against it does not do.\n\
+        \x20   (void) pc;\n\
+        \x20   (void) putPiece;\n\
+        \x20   (void) s;\n\
+        \x20   (void) noRaysContaining;\n\
+        \x20   if (dts)\n\
+        \x20       return;\n\n";
+
+    let patched = format!("{}{stub}{}", &src[..body], &src[body..]);
     std::fs::write(path, patched).map_err(|e| format!("{}: {e}", path.display()))
 }
 
