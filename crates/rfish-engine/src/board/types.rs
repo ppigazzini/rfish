@@ -141,6 +141,32 @@ impl PieceType {
         self as usize
     }
 
+    /// The type named by the low three bits of a piece encoding.
+    ///
+    /// Total where [`PieceType::from_index`] is partial, and that is the point: the low three
+    /// bits of a `Piece` are 0..=6 by construction, so the out-of-range arm is unreachable
+    /// from here -- but it is a real branch, and routing every `piece_type()` call through it
+    /// charged 11.8M instructions on a bench. A table indexed by a value the mask proves is
+    /// in range compiles to the mask and one load, which is what zfish's `pc & 7` costs.
+    ///
+    /// Seven names no piece; it reads as [`PieceType::None`] rather than panicking, and no
+    /// valid encoding produces it.
+    #[inline(always)]
+    #[must_use]
+    pub const fn from_low3(bits: u8) -> PieceType {
+        const BY_LOW3: [PieceType; 8] = [
+            PieceType::None,
+            PieceType::Pawn,
+            PieceType::Knight,
+            PieceType::Bishop,
+            PieceType::Rook,
+            PieceType::Queen,
+            PieceType::King,
+            PieceType::None,
+        ];
+        BY_LOW3[(bits & 7) as usize]
+    }
+
     /// The character used for this type in FEN and in `d` output, upper case.
     #[must_use]
     pub const fn to_char(self) -> u8 {
@@ -232,7 +258,7 @@ impl Piece {
     #[inline(always)]
     #[must_use]
     pub const fn piece_type(self) -> PieceType {
-        PieceType::from_index((self.0 & 7) as usize)
+        PieceType::from_low3(self.0)
     }
 
     /// True for [`Piece::NONE`].
@@ -657,7 +683,7 @@ impl Move {
     #[inline(always)]
     #[must_use]
     pub const fn promotion_type(self) -> PieceType {
-        PieceType::from_index((((self.0 >> 12) & 3) + PieceType::Knight as u16) as usize)
+        PieceType::from_low3((((self.0 >> 12) & 3) as u8) + PieceType::Knight as u8)
     }
 
     /// True unless this is [`Move::NONE`] or [`Move::NULL`].
