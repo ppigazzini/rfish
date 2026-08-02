@@ -769,3 +769,101 @@ What worked: disjoint FILE charters (ten patches, zero merge conflicts, and the 
 wave composed to within 0.1M of the sum of their individual measurements); handing each lane
 the falsified list for its own file; and requiring a measured number for every rejected
 variant, which is where three of the results above came from.
+
+---
+
+## 16. What the sibling ports learned, and which of it crosses into Rust
+
+`../mcfish/docs/08-idiomatic-c.md` and `../zfish/docs/08-idiomatic-zig.md` are the same
+document as this one, written for C23 and for Zig. Reading both is worth an afternoon,
+because the three ports hit different walls: **the walls are a property of the toolchain,
+not of the engine.** What follows is only the part that crosses into Rust — with the ones
+that do NOT cross marked, because assuming a sibling's lever applies here is how two of this
+file's falsified entries were generated.
+
+### 16.1 The autovectorisation split, and why it decides which port to copy
+
+zfish's headline rule is *"vectorize integer hot loops by hand — the toolchain will not."*
+Its NNUE carried a persistent deficit for exactly that reason, and closing it meant
+hand-writing a vector form of every `u8 x i8 -> i32` dot.
+
+mcfish's headline rule is the OPPOSITE, and it says why: *"clang auto-vectorizes integer hot
+loops — so hand-write vectors for a reason."* It verified the dot product lowers to
+`pmaddwd` at `-O3` and warns in as many words not to port zfish's per-loop vectorisation
+slices on the assumption the compiler needs help.
+
+**rfish is LLVM, so mcfish is right and zfish is inapplicable** — and this file has the
+receipts on both sides: an explicit `std::simd` fold cost **+177M** (§11), while §15.1 and
+§15.2 won by changing what the scalar loops were *fed*, not by vectorising them. The
+practical rule: **when the two siblings disagree, copy mcfish.** It shares rfish's backend.
+
+The one place zfish still transfers is where the exact lowering is load-bearing rather than
+merely fast — mcfish makes the same carve-out for its `pmaddubsw` kernel, whose `i16`
+intermediate SATURATES where the plain sum does not.
+
+### 16.2 Re-take a falsified knob only when you can name what changed
+
+zfish's AVX2 accumulator tile was measured and **rejected twice** before landing on the third
+look, deliberately re-taken after other work had altered the register and traffic context the
+earlier verdicts were measured in. Its rule: *"'try it again' is not a method; 'the context
+that falsified it no longer holds' is."*
+
+Applied here, and it is why `TILE`'s comment now carries two sweeps. The 32/64/128/256 sweep
+behind `TILE = 128` was taken at **nehalem**, and the fold has since been rewritten twice.
+Re-swept at avx2: 64/128/256 → **1,947M / 1,751M / 1,768M**. 128 is the peak on both tiers,
+so the knob held — a negative result, and worth the two measurements it cost, because the
+comment previously asserted the value might not travel and now says which tiers it was
+checked on.
+
+The same rule already produced a POSITIVE result in §14.2: `MoveBuf` as a boxed array
+measured neutral (+28K), was reverted, and measured −2.4M later once the push loop was
+inlined into a caller that could hold the count in a register.
+
+### 16.3 The instruction axis versus the latency axis, settled across two ports
+
+zfish tunes its affine chain count per ISA and measured **−16.7M at AVX2** for two chains.
+A lane here measured the same change at **+3.08M** and rejected it. Both are correct: zfish
+quotes cycles, this repo quotes instructions, and chains hide latency while adding
+instructions (§10). This is the clearest example in either file of two ports appearing to
+contradict each other while measuring different quantities — check the axis before believing
+a cross-port comparison.
+
+zfish's constraint on the shape is worth keeping if the chains are ever revisited on a cycle
+harness: **the chain index must be a compile-time constant.** With a runtime counter the
+accumulator array needs an address, spills, and round-trips per group, which costs more than
+the chains win.
+
+### 16.4 Ported logic is not ported code: upstream's paths are ISA-GATED
+
+mcfish's largest single divergence, and it hid behind every behavioural gate for the port's
+whole life: **upstream has one implementation per ISA tier selected by `#ifdef`, and a port
+that transcribes only the portable path silently ships upstream's oldest algorithm at every
+tier.** A different algorithm producing the same attack set produces the same tree, so no
+signature or perft catches it.
+
+Two of the instances it lists are NNUE — the `packus` transform body (`__AVX512BW__`) and
+the NNZ index list that upstream never builds as a bitset at `USE_AVX512` — and both are
+above rfish's avx2 measurement tier, so neither moves the numbers in this file. The third,
+**dual hyperbola quintessence gated `__AVX2__`, replacing magic bitboards with 3 KiB of
+L1-resident structs**, is at a tier rfish does build and is board-side rather than NNUE.
+None of the three is ported here. **This is an unexplored class in rfish, not a closed one**,
+and mcfish's method for finding them is a grep over upstream for its own gates rather than a
+reading of the portable path.
+
+The caveat mcfish attaches is load-bearing: **a divergence from upstream is a strong PRIOR,
+not a proof.** It ported upstream's vectorised move splats in full, bit-exact and fully
+gated, and measured them slower on three runs before reverting.
+
+### 16.5 Levers that do not cross, and why
+
+- **`_Atomic` de-vectorising a bulk fill** was mcfish's single largest gap: its shared history
+  tables filled ~4M entries one atomic store at a time, 183M instructions against upstream's
+  67M, fixed to 14M by writing through a plain view during the provably exclusive phase.
+  **rfish is immune by construction** — its history tables are per-worker plain `i16`, not
+  shared atomics. Worth knowing only so nobody introduces the problem.
+- **Returning large hot-path structs by value**, which cost zfish a per-node `memcpy` and cut
+  its bench's memcpy share from 3.4% to 0.8% when fixed. rfish's whole libc/runtime zone is
+  **21.4M against zfish's 91.1M and mcfish's 52.3M** — the best of the three — so there is
+  nothing here to recover. Rust's move semantics and LLVM's RVO already do it.
+- **Leaving a fully-written buffer `undefined`.** Not available: safe Rust must initialise.
+  §9 and §14.2 record the shape that replaces it — initialise once per worker, reuse forever.

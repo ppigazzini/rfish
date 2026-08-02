@@ -379,13 +379,20 @@ impl EvalScratch {
 
 /// Accumulator entries the fold carries at once.
 ///
-/// Measured rather than reasoned: 32, 64, 128 and 256 were all built and run, and the curve
-/// is not monotonic in either direction. On `bench 16 1 8` at nehalem, whole-run search
-/// instructions were 4,093M / 3,673M / 3,598M / 4,037M. Too small and the per-tile sweep
+/// Measured rather than reasoned, and measured TWICE. Too small and the per-tile sweep
 /// overhead — the copy in and the copy out — is paid too many times; too large and the
-/// running values no longer stay in registers across the row loop. 128 is the peak on this
-/// tier; a tier with more or wider registers may well peak elsewhere, so re-measure rather
-/// than assuming this number travels.
+/// running values no longer stay in registers across the row loop.
+///
+/// 32, 64, 128 and 256 at **nehalem**, whole-run search instructions on `bench 16 1 8`:
+/// 4,093M / 3,673M / 3,598M / 4,037M.
+///
+/// Re-swept at **avx2** after the fold was rewritten twice — once for the combined no-copy
+/// sweep and once to index the weight rows instead of zipping range slices — because that
+/// is the register and traffic context the earlier verdict was taken in, and zfish's own
+/// tile knob only landed on its third look after exactly that kind of change. 64 / 128 /
+/// 256 measured 1,947M / 1,751M / 1,768M. **128 is the peak on both tiers**, so the value
+/// travels further than the original note assumed — but re-measure rather than assume it,
+/// which is what turned this comment from one sweep into two.
 const TILE: usize = 128;
 
 /// [`FT_MAX_VAL`] at the accumulator's own width.
