@@ -167,22 +167,29 @@ pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
     let us = pos.side_to_move();
     let checkers = pos.checkers();
 
+    // The four board sets every mask below is cut from, read ONCE. `checkers` costs a walk
+    // to the end of the state chain, and the other three are field reads LLVM will not merge
+    // across the `list` writes because a `MoveSink` is free to alias anything.
+    let occ = pos.occupied();
+    let own = pos.colored(us);
+    let enemy = pos.colored(!us);
+
     // The target mask is what makes one generator body serve every kind: the piece loops
     // are identical, only the set of acceptable destinations changes.
     let target = if checkers.any() {
         if checkers.more_than_one() {
             // A double check can only be answered by a king move, so skip the piece loops
             // entirely and go straight to the king.
-            generate_king_moves(pos, us, !pos.colored(us), list);
+            generate_king_moves(pos, us, !own, list);
             return;
         }
         // A single check: block on the line, or capture the checker.
         between_bb(pos.king_square(us), checkers.lsb())
     } else {
         match gt {
-            GenType::Captures => pos.colored(!us),
-            GenType::Quiets => !pos.occupied(),
-            GenType::NonEvasions | GenType::Evasions => !pos.colored(us),
+            GenType::Captures => enemy,
+            GenType::Quiets => !occ,
+            GenType::NonEvasions | GenType::Evasions => !own,
         }
     };
 
@@ -190,15 +197,15 @@ pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
     // be narrowed afterwards rather than before.
     let target = if checkers.any() {
         match gt {
-            GenType::Captures => target & pos.colored(!us),
-            GenType::Quiets => target & !pos.occupied(),
+            GenType::Captures => target & enemy,
+            GenType::Quiets => target & !occ,
             _ => target,
         }
     } else {
         target
     };
 
-    generate_pawn_moves(pos, us, gt, target, list);
+    generate_pawn_moves(pos, us, gt, checkers, occ, enemy, target, list);
 
     // Written out per piece type rather than looped over one, so `piece_attacks` resolves to
     // that type's own kernel at each site. Through a RUNTIME piece type the match inside it
@@ -216,7 +223,7 @@ pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
     macro_rules! generate_for {
         ($pt:expr) => {{
             for from in pos.pieces_of(us, $pt) {
-                for to in sl.piece($pt, from, pos.occupied()) & target {
+                for to in sl.piece($pt, from, occ) & target {
                     list.push_move(Move::new(from, to));
                 }
             }
@@ -231,9 +238,9 @@ pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
     // escapes by leaving, which no target mask describes.
     let king_target = if checkers.any() {
         match gt {
-            GenType::Captures => pos.colored(!us),
-            GenType::Quiets => !pos.occupied(),
-            _ => !pos.colored(us),
+            GenType::Captures => enemy,
+            GenType::Quiets => !occ,
+            _ => !own,
         }
     } else {
         target
@@ -269,10 +276,14 @@ fn generate_castling<S: MoveSink>(pos: &Position, us: Color, list: &mut S) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_pawn_moves<S: MoveSink>(
     pos: &Position,
     us: Color,
     gt: GenType,
+    checkers: Bitboard,
+    occ: Bitboard,
+    enemies: Bitboard,
     target: Bitboard,
     list: &mut S,
 ) {
@@ -286,11 +297,11 @@ fn generate_pawn_moves<S: MoveSink>(
     let pawns = pos.pieces_of(us, PieceType::Pawn);
     let on_seventh = pawns & seventh;
     let not_on_seventh = pawns & !seventh;
-    let empty = !pos.occupied();
-    let enemies = pos.colored(them);
+    let empty = !occ;
 
-    // Under check only the checker can be captured, so the enemy set collapses to it.
-    let enemies = if gt == GenType::Evasions { pos.checkers() } else { enemies };
+    // Under check only the checker can be captured, so the enemy set collapses to it. The
+    // caller already holds both sets; re-reading `checkers` here is a second state-chain walk.
+    let enemies = if gt == GenType::Evasions { checkers } else { enemies };
     let evasions = gt == GenType::Evasions;
 
     // Single and double pushes. A pawn on the seventh is handled by the promotion block,
