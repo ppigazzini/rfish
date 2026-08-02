@@ -218,6 +218,19 @@ safe Rust must initialise the array and C++ leaves it undefined. Net worse than 
 nothing. There is no safe way to have a large uninitialised buffer; the answer is not to
 need one.
 
+**A fourth one survived all of that, in the evaluation rather than the search.**
+`Network::evaluate` opened with `let mut transformed = vec![0u8; L1]` — a malloc, a 1 KiB
+zero-fill and a free per EVALUATION, 61,341 of them over `bench 16 1 8` — for a buffer
+`transform` overwrites in full before anything reads it, so it never needed to be fresh.
+`EvalScratch` already existed as the per-worker home for exactly this and said so in its own
+doc comment. Hoisting it there is **38.4 M** on the NNUE axis.
+
+Two things to take from its having lasted so long. The audit that found the first three swept
+the SEARCH and stopped there, so "per-node" was read as "per node of the tree" and an
+allocation one call deeper went unexamined — grep the evaluation too. And a struct whose
+documentation says it exists to prevent per-node allocation is not evidence that it does;
+`EvalScratch` carried that sentence the whole time.
+
 What works is the *workhorse collection* from the Rust Performance Book: hoist the buffer
 out of the hot path, keep it alive, and `clear()` it — capacity survives, so after the
 first visit there is neither an allocation nor an initialisation. rfish keys those buffers

@@ -236,14 +236,29 @@ subtracted by a `quit`-only profile. The first four rows are 166,964 nodes and t
 | clang + PGO + LTO, avx2 | 2,171,591,691 | 1,246,593,188 | 1.742 |
 | the same, after the membership diff below | 2,080,763,904 | 1,246,598,569 | 1.669 |
 | the same, re-measured at the `c5aef2bf1` pin | 2,108,359,414 | 1,240,674,464 | 1.699 |
-| **the same, at HEAD** | **2,100,251,134** | **1,240,666,337** | **1.693** |
+| the same, at HEAD | 2,100,251,134 | 1,240,666,337 | 1.693 |
+| **the same, after the memory-layout fixes** | **2,067,659,994** | **1,240,666,478** | **1.667** |
 
-The last row is the current one, and the row above it is where the pin moved. That step is not
-a regression in this port: it is the same code measured against a moved target, and upstream
-gained slightly more from its own retune than rfish did — 1.7% on this axis. Re-measure BOTH
-sides when the pin moves; carrying an old ratio across a sync compares two different upstreams.
-The step after it is the port's own, and it is small and real: upstream is unchanged to within
-eight thousand instructions while rfish sheds 8.1M over the same 163,081-node tree.
+The `c5aef2bf1` row is where the pin moved. That step is not a regression in this port: it is
+the same code measured against a moved target, and upstream gained slightly more from its own
+retune than rfish did — 1.7% on this axis. Re-measure BOTH sides when the pin moves; carrying
+an old ratio across a sync compares two different upstreams.
+
+**The last row is two memory-layout defects, and both were invisible to every gate.** Neither
+moves a node count, so nothing in the tree could see them:
+
+- `Network::evaluate` allocated the transformed-feature buffer with `vec![0u8; L1]` — a
+  malloc, a 1 KiB zero-fill and a free per evaluation, 61,341 of them over this bench, for a
+  buffer `transform` overwrites in full before anything reads it. Hoisting it into
+  `EvalScratch`, which exists for exactly this and says so in its own doc comment, is **38.4M**.
+- Every NNUE weight table was a `Vec`, so its alignment was the ELEMENT's — two bytes for an
+  `i16` — and glibc returns the large ones sixteen bytes past a cache line. Upstream declares
+  all of them `alignas(CacheLineSize)`; see the section below for what that is worth here and
+  what it costs.
+
+Together they are 32.6M, and the same fix for the search tables had already been in
+`history.rs` for a long time. **The NNUE arrays never got it.** When an instruction ledger
+stops moving, check what the allocator is doing before concluding the gap is algorithmic.
 
 **The gap WIDENS when the comparison is made fair, and the reason is one-sided.** PGO is
 worth almost nothing to rustc here and 15% to clang, so the honest figure is the largest of
@@ -453,6 +468,33 @@ Three things to read off it, and one of them is a cost rather than a win:
   drift is the workload rather than the code. It is the accumulator diff touching two feature
   sets, and only the per-move delta above will move it.
 
+### What cache-line alignment is worth, measured against itself
+
+The alignment half of that pair does not show on the instruction axis at all — it **costs**
+5.8M there, because `Aligned` derefs to a subslice and every site not hoisted pays for the
+offset and its bounds test. Line splits are a hardware effect and callgrind counts the load
+either way, so the instruction ledger is the wrong instrument and a ratio taken from it would
+reject a real effect.
+
+Measured against itself instead: one binary, a temporary switch forcing the old sixteen-byte
+offset, so the code, the PGO layout and the instruction count are identical across both arms
+and alignment is the only variable. Fifteen interleaved rounds of the depth-13 bench:
+
+| | median misaligned/aligned | spread |
+|---|---|---|
+| all fifteen rounds | 1.0139 | 0.8977..1.0742 |
+| the thirteen after the cold-start pair | 1.0153 | 11 of 13 favour aligned |
+
+**So it is worth about 1.5%, and this box cannot establish it** — the spread straddles 1.000.
+Two `perf` runs before the controlled arm existed appeared to show 6%, and that was box state:
+rfish's absolute time fell 13% between runs while upstream's fell 6%, on a machine that had
+just finished a PGO build. Build the controlled arm before believing a paired ratio taken
+across two sessions.
+
+It is kept anyway, for the reason upstream and both siblings keep it. The alignment that
+exists without it is allocator luck: the accumulator survives at avx2 only because it happens
+to land at `%32 == 0`, and a 64-byte AVX-512 load at `--tier native` would not forgive that.
+
 ### The spine's IPC deficit is not a data-layout problem
 
 The spine turns 1.094 instructions into 1.33x time, so something outside the instruction count
@@ -473,9 +515,12 @@ nodes on both sides, says where it is NOT:
 | Bc / Bcm | 192,435,064 / 12,764,700 | 196,421,694 / 9,810,082 | 0.980 / **1.301** |
 | Bi / Bim | 2,296,457 / 931,683 | 2,041,830 / 925,797 | 1.125 / 1.006 |
 
-**Alignment is the first thing to suspect and the counters rule it out.** A misaligned hot
-table shows up as L1 data misses, and `D1mr` is 1.017 — parity — while every last-level data
-counter is BELOW upstream's. The structures agree: the TT `Cluster` is 32 bytes at
+**Alignment is the first thing to suspect and the counters rule it out — ON THIS AXIS.** A
+misaligned hot table shows up as L1 data misses, and `D1mr` is 1.017 — parity — while every
+last-level data counter is BELOW upstream's. Do not carry that conclusion to the NNUE axis: it
+was carried once, and the NNUE weight tables turned out to be misaligned by sixteen bytes (see
+above). The spine runs a material evaluation and never touches a weight table, so these
+counters say nothing whatever about them. The structures agree: the TT `Cluster` is 32 bytes at
 `repr(align(32))`, matching upstream's `static_assert(sizeof(Cluster) == 32)`; the history rows
 carry `repr(align(64))` through `Line<T>` after the flat `Box<[i16]>` skew was found and fixed;
 `CorrectionHistory`'s rows are sixteen bytes and so cannot straddle a line. Do not spend a
