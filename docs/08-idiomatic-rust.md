@@ -302,6 +302,15 @@ Every one of these was paid for in a sibling port. They are not Rust-specific.
   control number and does not hold at the fast ones. Three measured cells against a PGO'd
   upstream — 0.1+0.001 at two tiers and 1+0.01 — all imply **138–152 Elo per doubling**.
   Use the figure that matches the clock being run, or the run is mis-sized before it starts.
+- **An instruction count cannot see a latency win, and it is not neutral about one.**
+  Callgrind counts instructions RETIRED. Anything whose whole purpose is to hide dependency
+  latency — multiple accumulator chains, software pipelining, unrolling for ILP — can only
+  ADD instructions, so it reads as a regression on this axis no matter how much wall clock
+  it buys. Measured here: mcfish's two-chain affine accumulator cost **+3.08M Ir**. That
+  does NOT mean it is a bad idea; it means Ir is the wrong instrument for it, and this repo
+  has no trustworthy cycle harness (see the NPS entry below). Before optimising, decide
+  which quantity the change is supposed to move, and do not chase a latency idea against an
+  instruction target.
 - **NPS on this class of box cannot settle a few percent.** Readings ranged 240k–275k for
   one unchanged binary, and a cold first run read 103k. Use callgrind, which is
   deterministic to 0.01%, for anything under ~10%; use NPS only for a headline ratio.
@@ -324,6 +333,10 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | A fixed `[DirtyThreat; 96]` for the threat records, mirroring upstream's `ValueList<DirtyThreat, 96>` | **Falsified, with a measurement**, though the bound is upstream's own proven one. Inline in `PlySlot` it cost **+2.83M** — 388 bytes widened the stride of an array of 256 that is indexed per node — and boxed it still cost **+1.96M**. The list is short, so the `Vec`'s capacity check was already cheap. Copying an oracle's data structure is not automatically right; see §14. |
 | Const-generic `GenType` on the move generator, mirroring upstream's `template<GenType Type>` | **Falsified, with a measurement.** Every picker call site passes a literal kind, and the generator tests it ten times, so the fold looked certain. It cost **+2.14M**, rising to **+14.4M** with the pawn generator forced inline alongside it: four specialised copies of the generator execute MORE instructions than one shared body. |
 | A borrow handle for the RAY tables, mirroring the one that works for the sliders | **Falsified three times, at three baselines** (+1.76M, +2.96M, +1.05M). See §5. |
+| Two independent accumulator chains in the sparse affine walk, mirroring mcfish's `AFFINE_CHAINS = 2` | **Falsified ON THE INSTRUCTION AXIS, at +3.08M — and that is the wrong axis for it.** Chains hide dependency latency; Ir counts retired instructions, so they can only add. Not re-attemptable until this repo has a trustworthy cycle harness. See §10. |
+| Narrowing the pawn-pair `changed` set to zfish's per-board `after & !before` / `before & !after` masks | **Falsified, with a measurement**, at +41K. It is CORRECT — the signature confirms rfish's extra pairs cancel in the fold, which was worth establishing — but on the common pawn move the symmetric difference is already just `{from, to}`, so it saves a handful of emitted pairs and pays four extra `andnot`s on every call. |
+| Upstream's hybrid same-half king-move accumulator path | **Not attempted, for a stated reason.** `halfka_delta` takes ONE king square and assumes base and target share it, so a hybrid path needs a new function re-indexing every piece from the old square to the new — roughly 64 rows. In upstream and zfish that buys skipping a full refresh; here rfish's refresh already starts from a per-king-square cache entry whose halfka diff is usually small, so the hybrid would ADD halfka work. Measure before assuming. |
+| Fusing move scoring into generation, because "the siblings have no `generate_append`" | **The PREMISE was false.** mcfish's `score_list()` calls `generate_captures`/`generate_quiets`/`generate_evasions` to build the whole list and then walks it to fill `out[i].value` — exactly rfish's shape. It only looks fused because it is one static function that callgrind folds into `nextMove`. The picker-zone gap is inside the generation loops, not in the pass structure. See §15.6. |
 | Making `Bitboard::iter` borrow instead of copy | **Rejected by design.** Iterating by value is what lets a loop mutate the board it came from, which is upstream's `while (b) pop_lsb(b)` over a local with the local made explicit. |
 | Rewriting the feature transformer's fold and transform in `std::simd` | **Not worth attempting, from the disassembly.** Both already emit upstream's kernel shape — `vpaddw`/`vpsubw`/`vpmovsxbw` in the fold, `vpminsw`/`vpmullw`/`vpsrlw`/`vpackuswb` in the transform — over 136 and 156 `%ymm` operands. Explicit vectors would transcribe what LLVM emits. See §12. |
 | Upstream's per-move accumulator delta | **Falsified, with a measurement, after being BUILT.** Bit-exact (signature 2508687, nnue-check 109/109) and it loses: recording costs 85.7M on every `do_move` and the fast path fires on **11%** of evaluations, so it saves 0.47M. The board-zone half is kept and tested; see `docs/03-engine-eval.md`. |
@@ -622,9 +635,137 @@ The disassembly and the per-function profile, not intuition. Three checks earned
   `slice::last` and 6.5M of `Once` inside the spine and search zones. Neither appears in
   rfish's own source as anything.
 
-**One thing this campaign did NOT get to, and it is the largest identified item left.**
-`Position::st()` is `states.last().expect(..)`, and that walk costs **15.7M** inside spine
-and search. Upstream and both siblings hold the current state directly. The refactor was
-traced and stopped: `set_repetition`, `upcoming_repetition` and `has_repeated` index
-arbitrary positions in the chain, so moving the current state out of the vector puts a branch
-in all three. It needs the state chain restructured, not a local edit.
+**The item this campaign named as outstanding has since been done — see §15.4.** It was
+`Position::st()` as `states.last().expect(..)`, worth 15.7M, and the obstacle recorded here
+was that `set_repetition`, `upcoming_repetition` and `has_repeated` index arbitrary positions
+in the chain. That obstacle turned out to be illusory, and the reason is worth keeping: split
+into `st: StateInfo` plus `prev: Vec<StateInfo>`, **`prev.len()` is exactly the current
+state's old index**, so every backwards walk lands wholly inside `prev` and none of the three
+needs a "which half am I in" test. No dispatch helper was required. A refactor that looks like
+it needs a branch everywhere sometimes only needs the right split point.
+
+---
+
+## 15. Five more shapes, from a two-wave agent fleet
+
+Ten chartered lanes, each on a disjoint file, each with a twenty-minute budget, all measured
+the same way: avx2 tier, matched net, an identical 163 081-node bench, startup subtracted.
+Two waves took the whole bench from **1 909 M to 1 763 M instructions** at a bit-identical
+signature. The shapes below are new; §14's four still hold and are not repeated.
+
+The headline is that **eight of the ten largest wins in this file are in the NNUE zone, and
+none of them needed an intrinsic.** ../mcfish is plain C and beats rfish on the affine layer;
+that is what said the gap was ordinary program structure rather than the `unsafe` ban.
+
+### 15.1 Delete the horizontal reduction — walk by column, not by row
+
+`AffineLayer::propagate` walked weights a row at a time: one scalar accumulator per output,
+the input re-read for each of the N rows, and a **horizontal reduction per row**. LLVM
+vectorises the inner dot product happily and then spends log2(N) shuffle-and-add pairs to
+extract one lane — N times over.
+
+Walking by COLUMN over the transposed copy the sparse path already maintains gives one
+`Simd<i32, N>` accumulator seeded from the biases, the input read once, and **no horizontal
+reduction at all**: each product lands in the lane it belongs to. Bit-exact by construction,
+because it is the same integer products summed in a different order.
+
+**−41.9M**, and no new memory — it reuses a copy that was already resident.
+
+Generalise it as: *a reduction whose result is one lane of a vector you are about to build
+anyway is pure waste.* Look for `sum` accumulated across a loop and then stored to
+`out[i]` — that is the signature of a row walk that wants to be a column walk.
+
+### 15.2 An unconditional early-exit scan loses to one whole-array compare
+
+`halfka_delta` compared two 64-square boards eight `[Piece; 8]` words at a time, opening only
+the words that differed. That reads as the careful version — and the scan ran on **every**
+call regardless of how few squares a move touched, twice per accumulator update.
+
+One `Simd<u8, 64>` compare, `simd_ne().to_bitmask()`, then a `trailing_zeros` /
+`differs &= differs - 1` walk over the two to four set bits: **−47.2M**, the largest single
+win in this file.
+
+The objection that killed the idea for a long time was that `was.map(Piece::raw)` pays a
+64-byte copy to build the vector. **It does not.** `map` over a transparent newtype folds
+into the two 32-byte loads the compare already needs; LLVM never materialises the copy. The
+lesson is narrower than "use SIMD": *an early-exit scan only pays when the exit is actually
+taken early, and a fixed-size compare has no loop to exit.*
+
+Tier caveat, stated because it is untested: `to_bitmask()` on a 64-lane mask lowers to two
+`vpmovmskb` and a shift-or at avx2. A tier with no 32-byte compare may lower it to four
+16-byte compares.
+
+### 15.3 Write both destinations while the value is still in registers
+
+`refresh` folded into the ply slot and then `clone_from`'d the result into the cache slot — a
+second full read and write of the 2 KiB row it had just written. Mirroring each tile to both
+destinations while it is live (`fold_mirror`) makes every entry written twice and read back
+never: **−19.6M**.
+
+The shape to look for is a compute-then-copy pair where the copy's source was produced
+locally. The copy is only free if the compiler can prove the value is still live, and across
+a 2 KiB buffer it cannot.
+
+### 15.4 Carry state in place; a swap costs a copy a push does not
+
+Two commits, and the second is the interesting half. Holding the current `StateInfo` as a
+FIELD instead of at the end of a `Vec` removed `slice::last` from every state access
+(**−12.8M**) — but building a local and `mem::replace`-ing it in made a do/undo pair pay two
+~200-byte copies where the old `push`/`pop` paid one, because `pop()`'s discarded result had
+compiled to a length decrement. Pushing the old state and then mutating the field **in
+place** recovers it (**−5.8M**).
+
+Two notes worth keeping. The borrow checker does not fight the in-place form provided each
+field is written as its own statement, so no `&mut` outlives a single statement — §1's trap.
+And carrying in place means the recomputed group is no longer zeroed, so **every** field must
+be written before return; that list belongs in a comment at the push, not in a reviewer's
+head.
+
+### 15.5 A store a later assignment overwrites is a store
+
+`MoveBuf::push_move` wrote `score: 0` alongside the move, and all three scoring passes
+*assign* over exactly the appended range rather than accumulating into it. The store was
+dead. Same wave: `partial_insertion_sort` specialised for the `i32::MIN` limit its four
+unconditional callers pass, where `sorted_end` tracks `p` exactly and the limit compare and a
+self-assignment both vanish. **−1.5M** together.
+
+### 15.6 What the fleet got WRONG, and it was my premise
+
+Two lanes were chartered on the claim that the siblings fuse move scoring into generation and
+rfish's separate `generate_append` was therefore the picker-zone gap. **That is false.**
+mcfish's `score_list()` builds the whole list and then walks it to fill `out[i].value` —
+exactly rfish's shape. It only *looks* fused because it is one static function, and callgrind
+folds it into `nextMove`'s attribution.
+
+The general trap, and it has now bitten twice in this file: **function-level cost comparisons
+across differently-inlined binaries are void by construction** (§10 already says this for
+attribution; it applies to inlining boundaries too). rfish's `next_move` at 123.5M "beating"
+zfish's `nextMove` at 127.7M was never like-for-like either — zfish's number already contained
+its generation. **Compare zone totals, or compare call counts and derive a per-call cost.**
+Call counts are the reliable instrument: `next_move` is called 380 931 times in all three
+ports and `see_ge` 202 943, so once the counts match, a cost difference is a per-call
+difference and nothing else.
+
+### 15.7 Running a fleet on this repo
+
+Four traps cost the first wave most of its budget. All four are environmental, none is in any
+doc, and every one produces a plausible number rather than an error:
+
+- **A worktree has no net.** `resources/` is gitignored, so a worktree checkout has no
+  `.nnue`. Callgrind runs and `cargo xtask signature` then silently use the CLASSICAL
+  evaluation — signature reads 3454359, not 2508687. Two lanes read that as their own patch
+  breaking bit-exactness. Fix before anything else:
+  `mkdir -p resources && ln -sf <main>/resources/nn-*.nnue resources/`
+- **`cargo xtask signature` rebuilds `target/release/stockfish` at the DEFAULT arch**, wiping
+  an `--arch avx2` binary. Copy the binary out before running any gate.
+- **`cargo xtask nnue-check` and the `tb` gate need `../Stockfish`**, resolved from the
+  workspace root, which does not exist from inside a worktree. They SKIP with exit 2. A
+  skipped gate proves nothing; run them at integration.
+- **A worktree starts where its branch last was, not at the integrator's HEAD.** Three of ten
+  lanes arrived on a stale commit. Every lane must `git log --oneline -1`, reset, and
+  re-verify before building.
+
+What worked: disjoint FILE charters (ten patches, zero merge conflicts, and the five in one
+wave composed to within 0.1M of the sum of their individual measurements); handing each lane
+the falsified list for its own file; and requiring a measured number for every rejected
+variant, which is where three of the results above came from.

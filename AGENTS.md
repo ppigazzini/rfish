@@ -208,9 +208,17 @@ blind spots) before proposing any optimisation. Four rules that outrank intuitio
   masking a square index to drop `piece_on`'s comparison COST 2.0M.
 - **The largest wins are constructs that read as free.** A `LazyLock` deref, an `Option` no
   caller can make `None`, a `Vec` whose length never changes, a loop that will not unroll
-  because of a `break`. [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) section 14
-  records the four shapes, what each was worth, and the six of the same shape that measured
-  WORSE — read it before hand-optimising anything in the spine or the search.
+  because of a `break`, a horizontal reduction, a compute-then-copy pair.
+  [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) sections 14 and 15 record nine such
+  shapes, what each was worth, and the ten of the same shape that measured WORSE — read both
+  before hand-optimising anything, in either zone.
+- **An instruction count cannot see a latency win.** Callgrind counts instructions RETIRED,
+  so multiple accumulator chains, software pipelining and unrolling-for-ILP can only ADD to
+  it however much wall clock they buy. Decide which quantity a change is meant to move before
+  measuring it.
+- **Comparing one function's cost across two ports is void when they inline differently.**
+  Compare zone totals, or match CALL COUNTS first and derive a per-call cost — the counts are
+  identical across the three ports, which is what makes them the reliable instrument.
 
 ## Fleets and subagents
 
