@@ -569,6 +569,30 @@ Built. **The per-move delta is now 38.4M cheaper than the rebuild**, at avx2 ove
 | the same, no-copy combined fold | 2,101,249,794 | +37M |
 | **the same, `active_sets` hoisted, hop cap 2** | **2,025,331,895** | **−38.4M** |
 
+The table above is a non-PGO build, which UNDERSTATES the change. Both sides rebuilt with
+`cargo xtask pgo --tier avx2`, and the whole counter set beside it:
+
+| | rebuild | delta | ratio |
+|---|---|---|---|
+| search Ir, PGO | 2,069,877,327 | **1,988,088,860** | **0.960** |
+| search Ir, no PGO | 2,063,764,878 | 2,025,331,895 | 0.981 |
+| Dr / Dw | 718,892,052 / 261,929,488 | 742,892,459 / 275,619,088 | 1.033 / 1.052 |
+| D1mr / D1mw | 83,214,684 / 13,011,462 | 78,379,383 / 17,327,378 | **0.942** / 1.332 |
+| I1mr | 11,866,704 | 18,179,235 | **1.532** |
+| Bc / Bcm | 474,487,967 / 20,884,890 | 464,954,405 / 20,479,262 | 0.980 / **0.981** |
+| Bi / Bim | 1,642,775 / 426,584 | 2,174,052 / 558,245 | 1.323 / 1.309 |
+
+PGO doubles the instruction win, from 1.9% to 4.0%, and the reason is in the `I1mr` row: the
+two-path dispatch and the wider fold cost 53% more instruction-cache misses, and code layout
+is what PGO does. Against the pinned upstream oracle the NNUE axis moves from 1.667 to
+**1.602**.
+
+**Time does not resolve it on this box, and the run says so rather than hiding it.** Seven
+interleaved rounds of `bench 16 1 12`, alternating which binary runs first: the median paired
+ratio is 1.029 with a spread of 0.915 to 1.157. That straddles 1.000 in both directions, which
+is the documented behaviour of this machine below ~10% — the callgrind number is the one to
+read, and a wall-clock claim either way would be noise.
+
 Every row after the first is the SAME architecture. What separated a 61% loss from a win was
 four things, none of them the delta itself:
 
