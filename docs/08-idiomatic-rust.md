@@ -333,6 +333,7 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | A fixed `[DirtyThreat; 96]` for the threat records, mirroring upstream's `ValueList<DirtyThreat, 96>` | **Falsified, with a measurement**, though the bound is upstream's own proven one. Inline in `PlySlot` it cost **+2.83M** — 388 bytes widened the stride of an array of 256 that is indexed per node — and boxed it still cost **+1.96M**. The list is short, so the `Vec`'s capacity check was already cheap. Copying an oracle's data structure is not automatically right; see §14. |
 | Const-generic `GenType` on the move generator, mirroring upstream's `template<GenType Type>` | **Falsified, with a measurement.** Every picker call site passes a literal kind, and the generator tests it ten times, so the fold looked certain. It cost **+2.14M**, rising to **+14.4M** with the pawn generator forced inline alongside it: four specialised copies of the generator execute MORE instructions than one shared body. |
 | A borrow handle for the RAY tables, mirroring the one that works for the sliders | **Falsified three times, at three baselines** (+1.76M, +2.96M, +1.05M). See §5. |
+| Upstream's **dual hyperbola quintessence**, its `USE_AVX2` slider path, replacing the magic bitboards | **BUILT, bit-exact at both tiers, and falsified on both axes.** +73.7M instructions and +2.05M I1 misses against a D1 read-miss saving of **805,579** — the cache win is real and roughly an order of magnitude too small to pay for the instructions. A magic lookup is a multiply, a shift and one indexed load; the four-lane HQ kernel is fifteen-odd vector ops. See §16.4. |
 | Two independent accumulator chains in the sparse affine walk, mirroring mcfish's `AFFINE_CHAINS = 2` | **Falsified ON THE INSTRUCTION AXIS, at +3.08M — and that is the wrong axis for it.** Chains hide dependency latency; Ir counts retired instructions, so they can only add. Not re-attemptable until this repo has a trustworthy cycle harness. See §10. |
 | Narrowing the pawn-pair `changed` set to zfish's per-board `after & !before` / `before & !after` masks | **Falsified, with a measurement**, at +41K. It is CORRECT — the signature confirms rfish's extra pairs cancel in the fold, which was worth establishing — but on the common pawn move the symmetric difference is already just `{from, to}`, so it saves a handful of emitted pairs and pays four extra `andnot`s on every call. |
 | Upstream's hybrid same-half king-move accumulator path | **Not attempted, for a stated reason.** `halfka_delta` takes ONE king square and assumes base and target share it, so a hybrid path needs a new function re-indexing every piece from the old square to the new — roughly 64 rows. In upstream and zfish that buys skipping a full refresh; here rfish's refresh already starts from a per-king-square cache entry whose halfka diff is usually small, so the hybrid would ADD halfka work. Measure before assuming. |
@@ -854,13 +855,75 @@ The caveat mcfish attaches is load-bearing: **a divergence from upstream is a st
 not a proof.** It ported upstream's vectorised move splats in full, bit-exact and fully
 gated, and measured them slower on three runs before reverting.
 
+**That caveat is now this port's result too, on the first member of the class it tested.**
+Dual hyperbola quintessence was built here in full — safe `std::simd` throughout, since every
+intrinsic upstream uses has a portable spelling (`_mm256_sub_epi64` is `-`, and
+`_mm256_shuffle_epi8` against a descending index vector is `swap_bytes` plus a two-lane
+swizzle) — gated on `cfg(target_feature = "avx2")` exactly as upstream gates on `USE_AVX2`.
+
+It is **bit-exact at both tiers**, which is the part worth keeping: the whole unit suite
+passes under `-C target-cpu=haswell`, and an avx2 build's `bench 16 1 13` reproduces the
+anchor, so the vector algorithm and the magic tables agree on every position in it. That is
+this repo's stand-in for mcfish's `arch-determinism` gate, and building it exposed a real
+hole: **`cargo xtask signature` builds at the DEFAULT arch, so it tests the PORTABLE arm and
+cannot see an avx2-gated path at all.** Any future member of this class has to be checked the
+way this one was, at both tiers, by hand.
+
+And it loses:
+
+| | magic | dual HQ | |
+|---|---|---|---|
+| Ir | 2,968,249,767 | 3,041,958,575 | **+73.7M** |
+| D1mr | 76,787,392 | 75,981,813 | −805,579 |
+| I1mr | 12,754,982 | 14,805,094 | **+2.05M** |
+| DLmr | 6,335,821 | 6,402,239 | +66,418 |
+
+The D1 saving is real — 841 KiB of randomly indexed tables really does become 64 structs of
+48 bytes — and it is roughly an order of magnitude too small to pay for the instructions. A
+magic lookup is a multiply, a shift and one indexed load; the four-lane kernel is fifteen-odd
+vector operations plus a rank-table load.
+
+**Note what mcfish does and does not claim.** This path appears in its ISA-gating table,
+which is about FIDELITY, and NOT in its table of spellings that measured. Reading a measured
+win into it was my inference, and it was wrong. The class stays open — its two NNUE members
+sit above avx2 and are untested here — but its prior should be read as "upstream chose this
+for a machine and a cost model; check that both still apply", not "upstream has it, so we are
+missing a win".
+
 ### 16.5 Levers that do not cross, and why
 
 - **`_Atomic` de-vectorising a bulk fill** was mcfish's single largest gap: its shared history
   tables filled ~4M entries one atomic store at a time, 183M instructions against upstream's
   67M, fixed to 14M by writing through a plain view during the provably exclusive phase.
-  **rfish is immune by construction** — its history tables are per-worker plain `i16`, not
-  shared atomics. Worth knowing only so nobody introduces the problem.
+
+  **Checked here properly, because the first version of this entry asserted immunity instead
+  of measuring it.** The history half of the claim holds: rfish's tables are per-worker plain
+  `i16` with `fill` taking `&mut self`, so there are no atomics to de-vectorise. But rfish
+  DOES have a bulk fill over atomics — `TranspositionTable::clear` stores zero into every
+  `AtomicU64` of every cluster, and it runs on `ucinewgame`, on `Clear Hash` and at the start
+  of every bench. That is the same shape, so it was worth a measurement rather than an
+  argument.
+
+  One clear at `Hash 256`, isolated by differencing a `ucinewgame` session against one
+  without it:
+
+  | | Ir |
+  |---|---|
+  | the existing `store(0, Relaxed)` per word | **38,410,812** |
+  | rewritten through `get_mut()` as plain `u64` | **270,146,121** |
+
+  The "fix" is **seven times worse**, and the existing code is already near optimal: 33.5M
+  words at **1.1 instructions per store** is an unrolled store loop, not the per-element
+  scalar disaster mcfish found. (Whole-binary the rewrite also cost +14.5M on the bench, an
+  inlining flip of the kind mcfish warns about near the transposition table — but the local
+  number above is the one that settles it.)
+
+  **The reason the analogue does not carry is the WIDTH, and it is worth stating because it
+  bounds the whole class.** mcfish's tables are `_Atomic int16_t`. Its win came from merging
+  many NARROW atomic stores into one wide vector store, which clang will not do through the
+  atomic API. rfish's are `AtomicU64` — already the machine's store width, so there is
+  nothing to merge and no vectorisation being suppressed. **Look for this bug only where the
+  atomic element is narrower than a word.**
 - **Returning large hot-path structs by value**, which cost zfish a per-node `memcpy` and cut
   its bench's memcpy share from 3.4% to 0.8% when fixed. rfish's whole libc/runtime zone is
   **21.4M against zfish's 91.1M and mcfish's 52.3M** — the best of the three — so there is
