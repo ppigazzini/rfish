@@ -26,6 +26,7 @@ use super::attacks::{aligned, between_bb, bishop_attacks, line_bb, piece_attacks
 use super::bitboard::{
     Bitboard, KING_ATTACKS, KNIGHT_ATTACKS, pawn_attacks_from, relative_rank_bb,
 };
+use super::threats::{self, DirtyThreat};
 use super::types::{
     COLOR_NB, CastlingRights, Color, Direction, Key, Move, MoveType, PIECE_NB, PIECE_TYPE_NB,
     Piece, PieceType, SQUARE_NB, Square, Value, piece_value,
@@ -570,15 +571,38 @@ impl Position {
     // -- placement ---------------------------------------------------------
 
     fn put_piece(&mut self, pc: Piece, sq: Square) {
+        self.put_piece_dirty(pc, sq, None);
+    }
+
+    /// [`Position::put_piece`], recording the threat features it creates.
+    ///
+    /// The board is updated FIRST, so the scan sees the occupancy that INCLUDES the new man
+    /// — which is the invariant `board::threats` documents and the reason a removal is the
+    /// mirror of an addition rather than its own case.
+    fn put_piece_dirty(&mut self, pc: Piece, sq: Square, dts: Option<&mut Vec<DirtyThreat>>) {
         self.board[sq.index()] = pc;
         self.by_type[0] |= sq;
         self.by_type[pc.piece_type().index()] |= sq;
         self.by_color[pc.color().index()] |= sq;
         self.piece_count[pc.index()] += 1;
+        if let Some(out) = dts {
+            threats::update_piece_threats(self, pc, true, sq, out, Bitboard::ALL, true);
+        }
     }
 
     fn remove_piece(&mut self, sq: Square) {
+        self.remove_piece_dirty(sq, None);
+    }
+
+    /// [`Position::remove_piece`], recording the threat features it destroys.
+    ///
+    /// The scan runs BEFORE the board changes, for the same reason `put_piece_dirty` runs it
+    /// after: both must see the man on the square.
+    fn remove_piece_dirty(&mut self, sq: Square, dts: Option<&mut Vec<DirtyThreat>>) {
         let pc = self.board[sq.index()];
+        if let Some(out) = dts {
+            threats::update_piece_threats(self, pc, false, sq, out, Bitboard::ALL, true);
+        }
         self.by_type[0] ^= sq;
         self.by_type[pc.piece_type().index()] ^= sq;
         self.by_color[pc.color().index()] ^= sq;
@@ -587,13 +611,52 @@ impl Position {
     }
 
     fn move_piece(&mut self, from: Square, to: Square) {
+        self.move_piece_dirty(from, to, None);
+    }
+
+    /// [`Position::move_piece`], recording both halves of the move's threat change.
+    ///
+    /// The from-to mask is passed as `no_rays`: a slider looking along the very line the man
+    /// travels neither gains nor loses a discovery, and without the mask the departure and
+    /// the arrival would each record one.
+    fn move_piece_dirty(
+        &mut self,
+        from: Square,
+        to: Square,
+        mut dts: Option<&mut Vec<DirtyThreat>>,
+    ) {
         let pc = self.board[from.index()];
         let delta = Bitboard::from_square(from) | Bitboard::from_square(to);
+        if let Some(out) = dts.as_deref_mut() {
+            threats::update_piece_threats(self, pc, false, from, out, delta, true);
+        }
         self.by_type[0] ^= delta;
         self.by_type[pc.piece_type().index()] ^= delta;
         self.by_color[pc.color().index()] ^= delta;
         self.board[from.index()] = Piece::NONE;
         self.board[to.index()] = pc;
+        if let Some(out) = dts {
+            threats::update_piece_threats(self, pc, true, to, out, delta, true);
+        }
+    }
+
+    /// Replace the man on `sq`, recording the threat change — upstream's `swap_piece`.
+    ///
+    /// **Both scans run with the ray half OFF, and that is what makes the ordering legal.**
+    /// The removal is recorded while `sq` is already empty, which would break the
+    /// occupancy invariant if anything read it — but a square's own occupancy cannot block a
+    /// ray leaving it, so only the discovered half could care, and that half is not computed.
+    /// The two placements are on the same square, so their ray effects cancel anyway.
+    fn swap_piece_dirty(&mut self, sq: Square, pc: Piece, mut dts: Option<&mut Vec<DirtyThreat>>) {
+        let old = self.board[sq.index()];
+        self.remove_piece(sq);
+        if let Some(out) = dts.as_deref_mut() {
+            threats::update_piece_threats(self, old, false, sq, out, Bitboard::ALL, false);
+        }
+        self.put_piece(pc, sq);
+        if let Some(out) = dts {
+            threats::update_piece_threats(self, pc, true, sq, out, Bitboard::ALL, false);
+        }
     }
 
     // -- setup -------------------------------------------------------------
@@ -1343,6 +1406,21 @@ impl Position {
     /// child's checkers and every generation decision below it. Callers that do not
     /// already know it should use [`Position::do_move`].
     pub fn do_move_checked(&mut self, m: Move, gives_check: bool) {
+        self.do_move_recording(m, gives_check, None);
+    }
+
+    /// [`Position::do_move_checked`], recording every threat feature the move changes.
+    ///
+    /// `dts` is upstream's `DirtyThreats`, and the list it appends is the input the per-move
+    /// accumulator delta consumes instead of rebuilding both feature sets. Passing `None`
+    /// records nothing and is the path every existing caller takes, so this is inert until
+    /// the accumulator reads it.
+    pub fn do_move_recording(
+        &mut self,
+        m: Move,
+        gives_check: bool,
+        mut dts: Option<&mut Vec<DirtyThreat>>,
+    ) {
         debug_assert!(m.is_ok());
         let us = self.side_to_move;
         let them = !us;
@@ -1381,10 +1459,10 @@ impl Position {
             let rook_to = Square::make(if king_side { 5 } else { 3 }, from.rank());
             let rook = self.piece_on(to);
 
-            self.remove_piece(from);
-            self.remove_piece(to);
-            self.put_piece(pc, king_to);
-            self.put_piece(rook, rook_to);
+            self.remove_piece_dirty(from, dts.as_deref_mut());
+            self.remove_piece_dirty(to, dts.as_deref_mut());
+            self.put_piece_dirty(pc, king_to, dts.as_deref_mut());
+            self.put_piece_dirty(rook, rook_to, dts.as_deref_mut());
 
             key ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, king_to);
             key ^= zobrist::psq(rook, to) ^ zobrist::psq(rook, rook_to);
@@ -1399,7 +1477,7 @@ impl Position {
                 if mt == MoveType::EnPassant { self.piece_on(capsq) } else { self.piece_on(to) };
 
             if !captured.is_none() {
-                self.remove_piece(capsq);
+                self.remove_piece_dirty(capsq, dts.as_deref_mut());
                 key ^= zobrist::psq(captured, capsq);
                 if captured.piece_type() == PieceType::Pawn {
                     st.pawn_key ^= zobrist::psq(captured, capsq);
@@ -1418,7 +1496,7 @@ impl Position {
             }
             st.captured_piece = captured;
 
-            self.move_piece(from, to);
+            self.move_piece_dirty(from, to, dts.as_deref_mut());
             key ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, to);
 
             if pc.piece_type() == PieceType::Pawn {
@@ -1456,8 +1534,7 @@ impl Position {
                     }
                 } else if mt == MoveType::Promotion {
                     let promo = Piece::new(us, m.promotion_type());
-                    self.remove_piece(to);
-                    self.put_piece(promo, to);
+                    self.swap_piece_dirty(to, promo, dts);
                     key ^= zobrist::psq(pc, to) ^ zobrist::psq(promo, to);
                     st.pawn_key ^= zobrist::psq(pc, to);
                     st.non_pawn_key[us.index()] ^= zobrist::psq(promo, to);
