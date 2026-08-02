@@ -119,22 +119,6 @@ impl StateInfo {
             repetition: 0,
         }
     }
-
-    /// The prefix a move carries forward. Everything from `key` on is recomputed.
-    fn carried_forward(&self) -> StateInfo {
-        StateInfo {
-            material_key: self.material_key,
-            pawn_key: self.pawn_key,
-            minor_piece_key: self.minor_piece_key,
-            non_pawn_key: self.non_pawn_key,
-            non_pawn_material: self.non_pawn_material,
-            rule50: self.rule50,
-            plies_from_null: self.plies_from_null,
-            ep_square: self.ep_square,
-            castling_rights: self.castling_rights,
-            ..StateInfo::empty()
-        }
-    }
 }
 
 /// Why a FEN record was rejected, in upstream's words.
@@ -1459,26 +1443,33 @@ impl Position {
         let pc = self.piece_on(from);
         debug_assert_eq!(pc.color(), us);
 
-        let mut st = self.st().carried_forward();
-        let mut key = self.st().key ^ zobrist::side();
-        st.rule50 += 1;
-        st.plies_from_null += 1;
+        // Archive the parent, then carry the child forward IN PLACE. Every field of the
+        // RECOMPUTED group is written before this returns: `key` and `checkers` below,
+        // `captured_piece` on both arms, `blockers`, `pinners` and `check_squares` by
+        // `set_check_info`, and `repetition` by `set_repetition`; a field added to that
+        // group must be written here too, because nothing clears it any more. Building a
+        // child state locally and swapping it in instead copies the whole record twice per
+        // do/undo pair rather than once.
+        self.prev.push(self.st.clone());
+        let mut key = self.st.key ^ zobrist::side();
+        self.st.rule50 += 1;
+        self.st.plies_from_null += 1;
         self.game_ply += 1;
 
         // Clear the parent's en-passant key before anything else can set a new one.
-        if st.ep_square.is_ok() {
-            key ^= zobrist::en_passant(st.ep_square.file());
-            st.ep_square = Square::NONE;
+        if self.st.ep_square.is_ok() {
+            key ^= zobrist::en_passant(self.st.ep_square.file());
+            self.st.ep_square = Square::NONE;
         }
 
         // Castling rights die when the king or a rook leaves, or when a rook is captured.
         let lost = self.castling_rights_mask[from.index()]
             .union(self.castling_rights_mask[to.index()])
-            .intersect(st.castling_rights);
+            .intersect(self.st.castling_rights);
         if !lost.is_empty() {
-            key ^= zobrist::castling(st.castling_rights);
-            st.castling_rights = st.castling_rights.without(lost);
-            key ^= zobrist::castling(st.castling_rights);
+            key ^= zobrist::castling(self.st.castling_rights);
+            self.st.castling_rights = self.st.castling_rights.without(lost);
+            key ^= zobrist::castling(self.st.castling_rights);
         }
 
         if mt == MoveType::Castling {
@@ -1495,9 +1486,10 @@ impl Position {
 
             key ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, king_to);
             key ^= zobrist::psq(rook, to) ^ zobrist::psq(rook, rook_to);
-            st.non_pawn_key[us.index()] ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, king_to);
-            st.non_pawn_key[us.index()] ^= zobrist::psq(rook, to) ^ zobrist::psq(rook, rook_to);
-            st.captured_piece = Piece::NONE;
+            self.st.non_pawn_key[us.index()] ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, king_to);
+            self.st.non_pawn_key[us.index()] ^=
+                zobrist::psq(rook, to) ^ zobrist::psq(rook, rook_to);
+            self.st.captured_piece = Piece::NONE;
         } else {
             // A capture removes the victim first, so the mover lands on an empty square.
             let capsq =
@@ -1509,28 +1501,26 @@ impl Position {
                 self.remove_piece_dirty(capsq, dts.as_deref_mut());
                 key ^= zobrist::psq(captured, capsq);
                 if captured.piece_type() == PieceType::Pawn {
-                    st.pawn_key ^= zobrist::psq(captured, capsq);
+                    self.st.pawn_key ^= zobrist::psq(captured, capsq);
                 } else {
-                    st.non_pawn_key[them.index()] ^= zobrist::psq(captured, capsq);
-                    st.non_pawn_material[them.index()] -= piece_value(captured);
+                    self.st.non_pawn_key[them.index()] ^= zobrist::psq(captured, capsq);
+                    self.st.non_pawn_material[them.index()] -= piece_value(captured);
                     if matches!(captured.piece_type(), PieceType::Knight | PieceType::Bishop) {
-                        st.minor_piece_key ^= zobrist::psq(captured, capsq);
+                        self.st.minor_piece_key ^= zobrist::psq(captured, capsq);
                     }
                 }
-                st.material_key ^= zobrist::psq(
-                    captured,
-                    Square::new(8 + self.piece_count[captured.index()] as usize),
-                );
-                st.rule50 = 0;
+                let slot = Square::new(8 + self.piece_count[captured.index()] as usize);
+                self.st.material_key ^= zobrist::psq(captured, slot);
+                self.st.rule50 = 0;
             }
-            st.captured_piece = captured;
+            self.st.captured_piece = captured;
 
             self.move_piece_dirty(from, to, dts.as_deref_mut());
             key ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, to);
 
             if pc.piece_type() == PieceType::Pawn {
-                st.pawn_key ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, to);
-                st.rule50 = 0;
+                self.st.pawn_key ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, to);
+                self.st.rule50 = 0;
 
                 // A double push only sets an en-passant square when a capture is actually
                 // LEGAL there -- not merely when some enemy pawn attacks the square.
@@ -1554,10 +1544,12 @@ impl Position {
                     let pawns = pawn_attacks_from(us, ep) & self.pieces_of(them, PieceType::Pawn);
                     if pawns.any() {
                         let ksq = self.king_square(them);
-                        let not_blockers = !self.st().blockers[them.index()];
+                        // The blockers are still the parent's: `set_check_info` has not run
+                        // for this move yet.
+                        let not_blockers = !self.st.blockers[them.index()];
                         let no_discovery = not_blockers.contains(from) || from.file() == ksq.file();
                         if no_discovery && (pawns & (not_blockers | line_bb(ep, ksq))).any() {
-                            st.ep_square = ep;
+                            self.st.ep_square = ep;
                             key ^= zobrist::en_passant(ep.file());
                         }
                     }
@@ -1565,36 +1557,33 @@ impl Position {
                     let promo = Piece::new(us, m.promotion_type());
                     self.swap_piece_dirty(to, promo, dts);
                     key ^= zobrist::psq(pc, to) ^ zobrist::psq(promo, to);
-                    st.pawn_key ^= zobrist::psq(pc, to);
-                    st.non_pawn_key[us.index()] ^= zobrist::psq(promo, to);
-                    st.non_pawn_material[us.index()] += piece_value(promo);
+                    self.st.pawn_key ^= zobrist::psq(pc, to);
+                    self.st.non_pawn_key[us.index()] ^= zobrist::psq(promo, to);
+                    self.st.non_pawn_material[us.index()] += piece_value(promo);
                     if matches!(m.promotion_type(), PieceType::Knight | PieceType::Bishop) {
-                        st.minor_piece_key ^= zobrist::psq(promo, to);
+                        self.st.minor_piece_key ^= zobrist::psq(promo, to);
                     }
-                    st.material_key ^= zobrist::psq(
-                        promo,
-                        Square::new(8 + self.piece_count[promo.index()] as usize - 1),
-                    );
-                    st.material_key ^=
-                        zobrist::psq(pc, Square::new(8 + self.piece_count[pc.index()] as usize));
+                    let promo_slot = Square::new(8 + self.piece_count[promo.index()] as usize - 1);
+                    let pawn_slot = Square::new(8 + self.piece_count[pc.index()] as usize);
+                    self.st.material_key ^= zobrist::psq(promo, promo_slot);
+                    self.st.material_key ^= zobrist::psq(pc, pawn_slot);
                 }
             } else {
-                st.non_pawn_key[us.index()] ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, to);
+                self.st.non_pawn_key[us.index()] ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, to);
                 if matches!(pc.piece_type(), PieceType::Knight | PieceType::Bishop) {
-                    st.minor_piece_key ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, to);
+                    self.st.minor_piece_key ^= zobrist::psq(pc, from) ^ zobrist::psq(pc, to);
                 }
             }
         }
 
-        st.key = key;
+        self.st.key = key;
         self.side_to_move = them;
-        st.checkers = if gives_check {
+        self.st.checkers = if gives_check {
             self.attackers_to(self.king_square(them)) & self.colored(us)
         } else {
             Bitboard::EMPTY
         };
 
-        self.prev.push(core::mem::replace(&mut self.st, st));
         self.set_check_info();
         self.set_repetition();
 
@@ -1688,13 +1677,14 @@ impl Position {
     /// Flip the side to move without touching a piece.
     pub fn do_null_move(&mut self) {
         debug_assert!(!self.in_check());
-        let mut st = self.st().carried_forward();
-        let mut key = self.st().key ^ zobrist::side();
-        if st.ep_square.is_ok() {
-            key ^= zobrist::en_passant(st.ep_square.file());
-            st.ep_square = Square::NONE;
+        // Carry the child forward in place, as `do_move_recording` does.
+        self.prev.push(self.st.clone());
+        let mut key = self.st.key ^ zobrist::side();
+        if self.st.ep_square.is_ok() {
+            key ^= zobrist::en_passant(self.st.ep_square.file());
+            self.st.ep_square = Square::NONE;
         }
-        st.key = key;
+        self.st.key = key;
         // The halfmove clock is deliberately NOT advanced. A null move is not a move: no
         // piece moved, so nothing about the fifty-move rule changed, and charging the
         // clock for it would damp every evaluation below a null-move search by an amount
@@ -1702,12 +1692,11 @@ impl Position {
         //
         // A null move IS irreversible for repetition purposes, though — nothing before it
         // can repeat with the same side to move — so the repetition walk is cut here.
-        st.plies_from_null = 0;
-        st.captured_piece = Piece::NONE;
-        st.checkers = Bitboard::EMPTY;
+        self.st.plies_from_null = 0;
+        self.st.captured_piece = Piece::NONE;
+        self.st.checkers = Bitboard::EMPTY;
 
         self.side_to_move = !self.side_to_move;
-        self.prev.push(core::mem::replace(&mut self.st, st));
         self.set_check_info();
         self.st.repetition = 0;
     }
