@@ -150,21 +150,46 @@ impl core::ops::DerefMut for MoveBuf {
 }
 
 impl MoveSink for MoveBuf {
-    /// Scored zero: every entry gets its real score from the scoring pass that follows,
-    /// which walks exactly the range this generation appended.
+    /// Write the MOVE only, and leave the score field holding whatever the slot held before.
+    ///
+    /// Every entry gets its real score from the scoring pass that follows, which walks
+    /// exactly the range this generation appended and ASSIGNS rather than accumulates, so
+    /// the stale value is never read. Storing a zero here is a second store per generated
+    /// move that nothing consumes.
     ///
     /// # Panics
     /// Panics when the buffer is full. `MAX_MOVES` is a property of chess, not a guess, so
     /// that means the generator emitted a move twice.
     #[inline(always)]
     fn push_move(&mut self, m: Move) {
-        self.moves[self.len] = ScoredMove { mv: m, score: 0 };
+        self.moves[self.len].mv = m;
         self.len += 1;
     }
 }
 
 /// Quiet moves scoring at or below this are deferred behind the bad captures.
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
+
+/// Sort every entry descending — [`partial_insertion_sort`] with a limit nothing can fail.
+///
+/// The capture and evasion stages pass `i32::MIN`, which no `i32` score is below, so the
+/// limit test is always taken and `sorted_end` tracks `p` exactly. That collapses the moving
+/// boundary: the store that hands `p`'s slot to the displaced entry becomes a
+/// self-assignment, and the limit compare becomes dead. The permutation is unchanged by
+/// construction, which is what lets the two share a signature.
+fn full_insertion_sort(moves: &mut [ScoredMove]) {
+    let mut p = 1usize;
+    while p < moves.len() {
+        let tmp = moves[p];
+        let mut q = p;
+        while q != 0 && moves[q - 1].score < tmp.score {
+            moves[q] = moves[q - 1];
+            q -= 1;
+        }
+        moves[q] = tmp;
+        p += 1;
+    }
+}
 
 /// Sort `[begin, end)` descending, but only the entries scoring at least `limit`.
 ///
@@ -321,7 +346,7 @@ impl MovePicker {
                     self.end_cur = buf.len();
                     self.end_captures = buf.len();
                     self.end_generated = buf.len();
-                    partial_insertion_sort(&mut buf[..self.end_cur], i32::MIN);
+                    full_insertion_sort(&mut buf[..self.end_cur]);
                     self.stage = match self.stage {
                         Stage::CaptureInit => Stage::GoodCapture,
                         Stage::ProbCutInit => Stage::ProbCut,
@@ -406,7 +431,7 @@ impl MovePicker {
                     self.cur = 0;
                     self.end_cur = buf.len();
                     self.end_generated = buf.len();
-                    partial_insertion_sort(&mut buf[..self.end_cur], i32::MIN);
+                    full_insertion_sort(&mut buf[..self.end_cur]);
                     self.stage = Stage::Evasion;
                 }
 
