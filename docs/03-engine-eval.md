@@ -398,6 +398,31 @@ does in one instruction what takes four here and four scalar attempts to recover
 lost; the accumulator fold, now within about a third of upstream's incremental update; and
 recomputing the active set, which is **~158M and not ~300M**. Quote the measured row.
 
+**The delta's cost side is measured, and it is 85.7M.** Wiring `do_move_recording` into the
+search — recording the threat delta on every move, with nothing yet reading it — moves
+`bench 16 1 8` from 2,067,660,319 to 2,153,337,184 at an identical 163,081 nodes. Against the
+~158M the threat and pawn-pair rebuild costs, the whole milestone is therefore worth about
+**72M net, 1.667 to roughly 1.61** — not the 827M the gap to upstream might suggest.
+
+That figure is a port ratio rather than a defect. Compiling upstream's threat scan out of the
+spine oracle sheds 263M at 657,500 nodes, which scales to ~65M on this workload, so upstream
+pays ~65M for the bookkeeping rfish pays 85.7M for. Roughly 1.3x, which is where the rest of
+this port sits.
+
+**The accumulator half must NOT be a per-ply stack, and that is already settled above.** A
+delta needs the parent's accumulator, and the obvious way to guarantee one is a slot per ply —
+which "One slot, not a stack" records losing twice, by 428M and then by 278M. It does not need
+re-deriving a third time. It does not need to: that same section measured why the single slot
+wins, and the reason is that a depth-first search evaluates a node and then its CHILD, so the
+slot already holds the parent in the common case. The delta therefore rides on the slot that
+exists — apply the recorded records when the slot holds this move's parent, fall back to the
+rebuild when a subtree return has left a cousin there.
+
+**And read the size before spending the effort.** The 827M excess is not mostly the delta: it
+is the first affine layer (~210M) and the per-feature accumulator cost (~199M). ../zfish
+reaches 1.001 with SAFE portable SIMD, so the affine half is not walled off by the `unsafe`
+ban the way this page used to argue. Cost the delta at 72M and weigh it against those.
+
 **The per-move delta is a REDESIGN, not an edit, and the reason is the refresh cache.**
 Upstream can apply a delta because its accumulator is a stack that moves in lockstep with
 `do_move`/`undo_move`, so the base is always the parent. rfish keys its accumulator on the
