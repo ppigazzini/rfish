@@ -27,6 +27,7 @@ use crate::board::bitboard::{
     Bitboard, KING_ATTACKS, KNIGHT_ATTACKS, RANK_1, RANK_8, file_bb, pawn_attacks_from,
 };
 use crate::board::position::Position;
+use crate::board::threats::{DirtyPawnPairs, DirtyThreat};
 use crate::board::types::{
     COLOR_NB, Color, Direction, PIECE_NB, Piece, PieceType, SQUARE_NB, Square,
 };
@@ -559,9 +560,25 @@ pub fn pawn_pair_index(
 /// Every active pawn-pair feature, for one perspective.
 pub fn pawn_pair_active(pos: &Position, out: &mut [Vec<u32>; COLOR_NB]) {
     let ksq = [pos.king_square(Color::White), pos.king_square(Color::Black)];
-    let white = pos.pieces_of(Color::White, PieceType::Pawn);
-    let black = pos.pieces_of(Color::Black, PieceType::Pawn);
+    pawn_pairs_of(
+        pos.pieces_of(Color::White, PieceType::Pawn),
+        pos.pieces_of(Color::Black, PieceType::Pawn),
+        ksq,
+        out,
+    );
+}
 
+/// Every pawn-pair feature of one pair of pawn bitboards, for both perspectives.
+///
+/// Split out of [`pawn_pair_active`] because the per-move delta has the two bitboards and
+/// no position: [`DirtyPawnPairs`] records them before and after, and the pawn-pair set is
+/// a pure function of them.
+fn pawn_pairs_of(
+    white: Bitboard,
+    black: Bitboard,
+    ksq: [Square; COLOR_NB],
+    out: &mut [Vec<u32>; COLOR_NB],
+) {
     // Walking `bb` while popping is what deduplicates same-colour pairs: only pawns after
     // `from` in square order are considered, so each unordered pair is seen once.
     let mut bb = white;
@@ -595,6 +612,56 @@ pub fn pawn_pair_active(pos: &Position, out: &mut [Vec<u32>; COLOR_NB]) {
     }
 }
 
+/// The threat features one move adds and removes, for both perspectives.
+///
+/// This is the whole point of the per-move delta: the child's threat set is never
+/// MATERIALISED. Upstream's `DirtyThreats` are already the difference, so all that is left
+/// is to index each record against each perspective's king square and drop the pairs the
+/// network does not encode.
+///
+/// A move may both destroy and recreate the same threat — a slider leaving a square and
+/// another arriving on it — so an index can appear in both lists. That needs no netting:
+/// the fold applies the sum of `adds` less the sum of `subs`, and the two rows cancel
+/// exactly. It would matter only to a materialised set, which is what this replaces.
+pub fn threat_delta(
+    dts: &[DirtyThreat],
+    ksq: [Square; COLOR_NB],
+    adds: &mut [Vec<u32>; COLOR_NB],
+    subs: &mut [Vec<u32>; COLOR_NB],
+) {
+    for dt in dts {
+        let (attacker, attacked, from, to) = (dt.attacker(), dt.attacked(), dt.from(), dt.to());
+        for p in Color::ALL {
+            let i = p.index();
+            let index = threat_index(p, attacker, from, to, attacked, ksq[i]);
+            if index >= THREAT_DIMENSIONS {
+                continue;
+            }
+            if dt.is_add() { adds[i].push(index) } else { subs[i].push(index) }
+        }
+    }
+}
+
+/// The pawn-pair features one move adds and removes, for both perspectives.
+///
+/// Unlike the threats there is no record per changed feature, because one pawn moving
+/// changes every pair it belongs to. What is recorded is the two bitboards, and the pair set
+/// is a pure function of them — so the delta is the set of the `before` boards against the
+/// set of the `after` boards. Both are small, and the common case costs nothing at all:
+/// most moves leave the pawns alone and [`DirtyPawnPairs::is_unchanged`] returns early.
+pub fn pawn_pair_delta(
+    dpp: &DirtyPawnPairs,
+    ksq: [Square; COLOR_NB],
+    adds: &mut [Vec<u32>; COLOR_NB],
+    subs: &mut [Vec<u32>; COLOR_NB],
+) {
+    if dpp.is_unchanged() {
+        return;
+    }
+    pawn_pairs_of(dpp.before[0], dpp.before[1], ksq, subs);
+    pawn_pairs_of(dpp.after[0], dpp.after[1], ksq, adds);
+}
+
 /// The threat and pawn-pair sets share one weight array.
 pub const THREAT_AND_PP_DIMENSIONS: usize = (THREAT_DIMENSIONS + PP_DIMENSIONS) as usize;
 
@@ -602,6 +669,89 @@ pub const THREAT_AND_PP_DIMENSIONS: usize = (THREAT_DIMENSIONS + PP_DIMENSIONS) 
 mod tests {
     use super::*;
     use crate::board::position::START_FEN;
+
+    /// The delta the accumulator will be fed carries the child's set exactly.
+    ///
+    /// Stated as COUNTS per index rather than as sets, because that is what the fold applies:
+    /// it adds every row in `adds` and subtracts every row in `subs`, so a feature that a
+    /// move both destroys and recreates must appear in both and cancel. A set comparison
+    /// would call that a bug; the accumulator does not see it at all.
+    ///
+    /// A perspective whose king moved is skipped: every index it sees is keyed off that
+    /// square, so the whole set is re-indexed and the accumulator refreshes rather than
+    /// diffing. That is the one case the per-move delta does not serve.
+    #[test]
+    fn the_recorded_delta_carries_the_child_set_for_both_feature_kinds() {
+        use std::collections::HashMap;
+
+        use crate::board::movegen::generate_legal;
+
+        const FENS: [&str; 6] = [
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
+            "2r3k1/1q1nbppp/r3p3/3pP3/pPpP4/P1Q2N2/2RN1PPP/2R4K b - b3 0 1",
+            "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1",
+        ];
+
+        fn full(pos: &Position) -> [Vec<u32>; COLOR_NB] {
+            let mut out = [Vec::new(), Vec::new()];
+            threat_active(pos, &mut out);
+            pawn_pair_active(pos, &mut out);
+            out
+        }
+        fn counts(v: &[u32]) -> HashMap<u32, i32> {
+            let mut m = HashMap::new();
+            for &f in v {
+                *m.entry(f).or_insert(0) += 1;
+            }
+            m
+        }
+
+        let mut checked = 0usize;
+        for fen in FENS {
+            let parent = Position::from_fen(fen, false).expect("valid fen");
+            let before = full(&parent);
+
+            for &m in generate_legal(&parent).iter() {
+                let mut child = parent.clone();
+                let mut dts = Vec::new();
+                let gives_check = child.gives_check(m);
+                let dpp = child.do_move_recording(m, gives_check, Some(&mut dts));
+
+                let ksq = [child.king_square(Color::White), child.king_square(Color::Black)];
+                let mut adds = [Vec::new(), Vec::new()];
+                let mut subs = [Vec::new(), Vec::new()];
+                threat_delta(&dts, ksq, &mut adds, &mut subs);
+                pawn_pair_delta(&dpp, ksq, &mut adds, &mut subs);
+
+                let after = full(&child);
+                for p in Color::ALL {
+                    let i = p.index();
+                    if ksq[i] != parent.king_square(p) {
+                        continue;
+                    }
+                    let mut got = counts(&before[i]);
+                    for (&f, &n) in &counts(&adds[i]) {
+                        *got.entry(f).or_insert(0) += n;
+                    }
+                    for (&f, &n) in &counts(&subs[i]) {
+                        *got.entry(f).or_insert(0) -= n;
+                    }
+                    got.retain(|_, n| *n != 0);
+                    assert_eq!(
+                        got,
+                        counts(&after[i]),
+                        "{fen}: after {m:?}, perspective {p:?}: the delta does not carry the \
+                         child set"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "only {checked} moves exercised");
+    }
 
     #[test]
     fn the_dimension_counts_are_the_ones_the_file_encodes() {
