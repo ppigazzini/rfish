@@ -15,7 +15,7 @@
 
 use core::ops::Deref;
 
-use super::attacks::{between_bb, piece_attacks};
+use super::attacks::{between_bb, sliders};
 use super::bitboard::{Bitboard, KING_ATTACKS, pawn_attacks_from, relative_rank_bb};
 use super::position::Position;
 use super::types::{
@@ -209,10 +209,14 @@ pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
     // The ORDER is the loop's and must stay: two generators that emit the same set in a
     // different sequence search different trees, because the move picker's partial sort
     // leaves equal-scored moves in generation order.
+    // One borrow of the slider tables for all four loops: the free `piece_attacks` derefs
+    // the `LazyLock` once per ATTACKER, and the check is a real load LLVM does not hoist
+    // out of the loop.
+    let sl = sliders();
     macro_rules! generate_for {
         ($pt:expr) => {{
             for from in pos.pieces_of(us, $pt) {
-                for to in piece_attacks($pt, from, pos.occupied()) & target {
+                for to in sl.piece($pt, from, pos.occupied()) & target {
                     list.push_move(Move::new(from, to));
                 }
             }

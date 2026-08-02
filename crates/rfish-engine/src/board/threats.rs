@@ -16,7 +16,7 @@
 //! the same occupancy — the one that includes the piece — and that is what makes a removal
 //! the exact mirror of an addition rather than a separate case.
 
-use crate::board::attacks::{both_attacks_bb, piece_attacks, ray_pass_bb};
+use crate::board::attacks::{ray_pass_bb, sliders as slider_tables};
 use crate::board::bitboard::{Bitboard, pawn_attacks_from};
 use crate::board::position::Position;
 use crate::board::types::{Piece, PieceType, Square};
@@ -178,7 +178,11 @@ pub fn update_piece_threats(
     let occupied = pos.occupied();
     let rook_queens = pos.pieces(PieceType::Rook) | pos.pieces(PieceType::Queen);
     let bishop_queens = pos.pieces(PieceType::Bishop) | pos.pieces(PieceType::Queen);
-    let (b_attacks, r_attacks) = both_attacks_bb(s, occupied);
+    // One borrow of the slider tables for the whole call: `both_attacks_bb` and the four
+    // `piece_attacks` arms below each re-derefed the `LazyLock`, and this function makes
+    // that call dozens of times per node.
+    let sl = slider_tables();
+    let (b_attacks, r_attacks) = sl.both(s, occupied);
     let occupied_no_k = occupied ^ pos.pieces(PieceType::King);
     let sliders = (rook_queens & r_attacks) | (bishop_queens & b_attacks);
 
@@ -220,14 +224,14 @@ pub fn update_piece_threats(
     // which is the shape `docs/03-engine-eval.md` records closing.
     let raw_threatened = match pc.piece_type() {
         PieceType::Pawn => pawn_attacks_from(pc.color(), s),
-        PieceType::Knight => piece_attacks(PieceType::Knight, s, occupied),
-        PieceType::Bishop => piece_attacks(PieceType::Bishop, s, occupied),
-        PieceType::Rook => piece_attacks(PieceType::Rook, s, occupied),
-        PieceType::Queen => piece_attacks(PieceType::Queen, s, occupied),
+        PieceType::Knight => sl.piece(PieceType::Knight, s, occupied),
+        PieceType::Bishop => sl.piece(PieceType::Bishop, s, occupied),
+        PieceType::Rook => sl.piece(PieceType::Rook, s, occupied),
+        PieceType::Queen => sl.piece(PieceType::Queen, s, occupied),
         PieceType::King | PieceType::None => Bitboard::EMPTY,
     };
     let mut threatened = raw_threatened & occupied_no_k;
-    let mut incoming = piece_attacks(PieceType::Knight, s, Bitboard::EMPTY) & knights;
+    let mut incoming = sl.piece(PieceType::Knight, s, Bitboard::EMPTY) & knights;
 
     // Restrict both directions to the (attacker, attacked) pairs the feature set encodes.
     // Upstream rejects the rest here rather than letting the indexer drop them later, and a
