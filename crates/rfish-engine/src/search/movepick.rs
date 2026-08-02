@@ -430,6 +430,17 @@ impl MovePicker {
         threat_by_lesser[PieceType::Queen.index()] =
             rook_att | threat_by_lesser[PieceType::Rook.index()];
 
+        // Resolve every row this list reads ONCE. The colour, the pawn key, the ply and the
+        // parent moves are fixed for the whole list, so re-deriving them per move is work
+        // upstream never does: its `ss->continuationHistory` is a pointer settled at the
+        // node. Planes one, two, three, four and SIX — five is deliberately absent upstream.
+        let main_row = h.main.row(us);
+        let pawn_plane = h.pawn.plane(self.pawn_row);
+        let cont =
+            [0usize, 1, 2, 3, 5].map(|s| self.continuations[s].map(|k| h.continuation.plane(k)));
+        let low_ply = ((self.ply as usize) < super::history::LOW_PLY_HISTORY_SIZE)
+            .then(|| h.low_ply.row(self.ply as usize));
+
         // The quiet list starts where the captures ended; only the new entries are scored.
         let start = self.end_captures;
         for slot in &mut buf[start..] {
@@ -439,12 +450,17 @@ impl MovePicker {
             let pc = pos.moved_piece(mv);
             let pt = pc.piece_type();
 
-            let mut score = 2 * h.main.get(us, mv.raw());
-            score += 2 * h.pawn.get(self.pawn_row, pc, to);
-            // Planes one, two, three, four and SIX — five is deliberately absent upstream.
-            for slot in [0usize, 1, 2, 3, 5] {
-                if let Some(k) = self.continuations[slot] {
-                    score += h.continuation.get(k, pc, to);
+            let mut score = 2 * i32::from(main_row[mv.raw() as usize]);
+            score += 2 * i32::from(pawn_plane[pc.index()][to.index()]);
+            // `clippy::manual_flatten` wants `cont.into_iter().flatten()` here. Both flatten
+            // forms were built and measured on `bench 16 1 8`: `iter().flatten()` costs
+            // +15.6M instructions and `into_iter().flatten()` +21.4M against this loop,
+            // because the iterator stops LLVM unrolling five fixed elements. The lint is
+            // right about the style and wrong about the code.
+            #[allow(clippy::manual_flatten)]
+            for plane in cont {
+                if let Some(p) = plane {
+                    score += i32::from(p[pc.index()][to.index()]);
                 }
             }
 
@@ -458,8 +474,8 @@ impl MovePicker {
             let v = 20 * (i32::from(lesser.contains(from)) - i32::from(lesser.contains(to)));
             score += piece_value(Piece::new(us, pt)) * v;
 
-            if (self.ply as usize) < super::history::LOW_PLY_HISTORY_SIZE {
-                score += 8 * h.low_ply.get(self.ply as usize, mv.raw()) / (1 + self.ply);
+            if let Some(row) = low_ply {
+                score += 8 * i32::from(row[mv.raw() as usize]) / (1 + self.ply);
             }
 
             slot.score = score;
@@ -468,6 +484,9 @@ impl MovePicker {
 
     fn score_evasions(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
         let us = pos.side_to_move();
+        // Both rows are fixed for the list; see `score_quiets`.
+        let main_row = h.main.row(us);
+        let cont0 = self.continuations[0].map(|k| h.continuation.plane(k));
         for sm in buf.iter_mut() {
             let to = sm.mv.to();
             let pc = pos.moved_piece(sm.mv);
@@ -476,8 +495,8 @@ impl MovePicker {
                 // offset keeps every capture above every quiet evasion.
                 sm.score = piece_value(pos.piece_on(to)) + (1 << 28);
             } else {
-                sm.score = h.main.get(us, sm.mv.raw())
-                    + self.continuations[0].map_or(0, |k| h.continuation.get(k, pc, to));
+                sm.score = i32::from(main_row[sm.mv.raw() as usize])
+                    + cont0.map_or(0, |p| i32::from(p[pc.index()][to.index()]));
             }
         }
     }
