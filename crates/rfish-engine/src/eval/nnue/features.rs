@@ -20,6 +20,8 @@
 //! Golden: `Stockfish/src/nnue/features/half_ka_v2_hm.cpp`, `full_threats.cpp`,
 //! `pp_3wide.cpp`.
 
+use std::simd::Simd;
+use std::simd::cmp::SimdPartialEq;
 use std::sync::LazyLock;
 
 use crate::board::attacks::piece_attacks;
@@ -217,9 +219,12 @@ pub fn halfka_delta(
     adds: &mut Vec<u32>,
     subs: &mut Vec<u32>,
 ) {
-    // EIGHT squares per comparison, not one. A move changes two to four squares of the
-    // sixty-four, so sixty of the byte comparisons this used to do could never fire, and a
-    // `[Piece; 8]` is eight bytes -- one machine word. Only a word that differs is opened up.
+    // The WHOLE board in one comparison, not eight. A move changes two to four squares of
+    // the sixty-four, so a word-at-a-time scan still walks eight words to find them and
+    // opens the one or two that differ; a 64-lane compare names every differing square at
+    // once, as a bitmask, and the walk is then `trailing_zeros` over its two to four bits.
+    // The copy `map` pays to build the vectors is what a `[Piece; 64]` costs without a
+    // transmute, and it is cheaper than the scan it replaces.
     // Hoist everything the king square and the perspective decide. `halfka_index` recomputes
     // all three per call, and all three are invariant across the whole delta.
     let flip = 56 * perspective as u8;
@@ -230,23 +235,20 @@ pub fn halfka_delta(
         u32::from(sq.raw() ^ orient) + u32::from(piece_index[pc.index()]) + bucket
     };
 
-    let (was_words, _) = was.as_chunks::<8>();
-    let (now_words, _) = now.as_chunks::<8>();
-    for (c, (wc, nc)) in was_words.iter().zip(now_words.iter()).enumerate() {
-        if wc == nc {
-            continue;
+    let was_v = Simd::<u8, SQUARE_NB>::from_array(was.map(Piece::raw));
+    let now_v = Simd::<u8, SQUARE_NB>::from_array(now.map(Piece::raw));
+    let mut differs = was_v.simd_ne(now_v).to_bitmask();
+    while differs != 0 {
+        let s = differs.trailing_zeros() as usize;
+        differs &= differs - 1;
+        let sq = Square::new(s);
+        let before = was[s];
+        let after = now[s];
+        if before != Piece::NONE {
+            subs.push(index(sq, before));
         }
-        for (k, (&before, &after)) in wc.iter().zip(nc.iter()).enumerate() {
-            if before == after {
-                continue;
-            }
-            let sq = Square::new(c * 8 + k);
-            if before != Piece::NONE {
-                subs.push(index(sq, before));
-            }
-            if after != Piece::NONE {
-                adds.push(index(sq, after));
-            }
+        if after != Piece::NONE {
+            adds.push(index(sq, after));
         }
     }
 }
