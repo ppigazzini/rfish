@@ -12,5 +12,6 @@ pub mod bitboard;
 pub mod cuckoo;
 pub mod movegen;
 pub mod position;
+pub mod threats;
 pub mod types;
 pub mod zobrist;
