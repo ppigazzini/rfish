@@ -26,7 +26,7 @@ use super::attacks::{aligned, between_bb, bishop_attacks, line_bb, piece_attacks
 use super::bitboard::{
     Bitboard, KING_ATTACKS, KNIGHT_ATTACKS, pawn_attacks_from, relative_rank_bb,
 };
-use super::threats::{self, DirtyThreat};
+use super::threats::{self, DirtyPawnPairs, DirtyThreat};
 use super::types::{
     COLOR_NB, CastlingRights, Color, Direction, Key, Move, MoveType, PIECE_NB, PIECE_TYPE_NB,
     Piece, PieceType, SQUARE_NB, Square, Value, piece_value,
@@ -1406,7 +1406,7 @@ impl Position {
     /// child's checkers and every generation decision below it. Callers that do not
     /// already know it should use [`Position::do_move`].
     pub fn do_move_checked(&mut self, m: Move, gives_check: bool) {
-        self.do_move_recording(m, gives_check, None);
+        let _ = self.do_move_recording(m, gives_check, None);
     }
 
     /// [`Position::do_move_checked`], recording every threat feature the move changes.
@@ -1420,8 +1420,15 @@ impl Position {
         m: Move,
         gives_check: bool,
         mut dts: Option<&mut Vec<DirtyThreat>>,
-    ) {
+    ) -> DirtyPawnPairs {
         debug_assert!(m.is_ok());
+        let mut dpp = DirtyPawnPairs {
+            before: [
+                self.pieces_of(Color::White, PieceType::Pawn),
+                self.pieces_of(Color::Black, PieceType::Pawn),
+            ],
+            after: [Bitboard::EMPTY; 2],
+        };
         let us = self.side_to_move;
         let them = !us;
         let from = m.from();
@@ -1568,6 +1575,12 @@ impl Position {
         self.states.push(st);
         self.set_check_info();
         self.set_repetition();
+
+        dpp.after = [
+            self.pieces_of(Color::White, PieceType::Pawn),
+            self.pieces_of(Color::Black, PieceType::Pawn),
+        ];
+        dpp
     }
 
     /// Make `m`, deriving the check flag from the position.

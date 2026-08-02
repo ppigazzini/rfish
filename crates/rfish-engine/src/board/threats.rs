@@ -75,6 +75,29 @@ impl DirtyThreat {
     }
 }
 
+/// The pawn placement a move started from and ended at, for the pawn-pair feature set.
+///
+/// Upstream's `DirtyPawnPairs`, and it needs none of the machinery the threat delta does:
+/// the pawn-pair set is a pure function of the two pawn bitboards, so recording them before
+/// and after is the whole delta. **The common case is that they are equal** — most moves are
+/// not pawn moves and do not capture a pawn — and equality means the pawn-pair half of the
+/// feature set is unchanged and need not be rebuilt at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct DirtyPawnPairs {
+    /// Each colour's pawns before the move.
+    pub before: [Bitboard; 2],
+    /// Each colour's pawns after it.
+    pub after: [Bitboard; 2],
+}
+
+impl DirtyPawnPairs {
+    /// True when no pawn moved, was captured, or promoted.
+    #[must_use]
+    pub fn is_unchanged(&self) -> bool {
+        self.before[0] == self.after[0] && self.before[1] == self.after[1]
+    }
+}
+
 /// Count a threatened queen only when the slider is itself a queen.
 ///
 /// Upstream's `can_slider_threat`. The pairs this rejects are exactly the ones the feature
@@ -454,5 +477,59 @@ mod tests {
             }
         }
         assert!(checked > 100, "only {checked} moves exercised");
+    }
+
+    /// The recorded pawn placement must decide whether the pawn-pair set can be reused.
+    ///
+    /// `is_unchanged` is the whole optimisation: when it holds, the pawn-pair half of the
+    /// feature set is identical and the accumulator can skip rebuilding it. The test asserts
+    /// the implication in the direction that matters — unchanged bitboards MUST mean an
+    /// identical set, or the accumulator would silently reuse a stale one.
+    #[test]
+    fn unchanged_pawns_mean_an_unchanged_pawn_pair_set() {
+        use crate::board::movegen::generate_legal;
+        use crate::eval::nnue::features::pawn_pair_active;
+
+        const FENS: [&str; 4] = [
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "2r3k1/1q1nbppp/r3p3/3pP3/pPpP4/P1Q2N2/2RN1PPP/2R4K b - b3 0 1",
+            "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1",
+        ];
+
+        let mut unchanged = 0usize;
+        let mut changed = 0usize;
+        for fen in FENS {
+            let parent = Position::from_fen(fen, false).expect("valid fen");
+            for &m in generate_legal(&parent).iter() {
+                let mut child = parent.clone();
+                let gives_check = child.gives_check(m);
+                let dpp = child.do_move_recording(m, gives_check, None);
+
+                // Both sides keep their king square in the cases counted here, so the two
+                // sets are numbered in the same orientation and compare directly.
+                if child.king_square(Color::White) != parent.king_square(Color::White)
+                    || child.king_square(Color::Black) != parent.king_square(Color::Black)
+                {
+                    continue;
+                }
+                let mut a = [Vec::new(), Vec::new()];
+                let mut b = [Vec::new(), Vec::new()];
+                pawn_pair_active(&parent, &mut a);
+                pawn_pair_active(&child, &mut b);
+                for v in a.iter_mut().chain(b.iter_mut()) {
+                    v.sort_unstable();
+                }
+
+                if dpp.is_unchanged() {
+                    unchanged += 1;
+                    assert_eq!(a, b, "{fen}: {m:?} left the pawns alone but moved the pair set");
+                } else {
+                    changed += 1;
+                }
+            }
+        }
+        assert!(unchanged > 50, "only {unchanged} moves left the pawns alone");
+        assert!(changed > 10, "only {changed} moves touched a pawn");
     }
 }
