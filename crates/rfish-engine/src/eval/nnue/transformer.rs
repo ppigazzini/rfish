@@ -543,40 +543,47 @@ impl FeatureTransformer {
     ///   table, so the lists cannot merge, but the tile they land in can be held across both;
     /// - the tile stays in registers for the whole of it, which is the reason [`TILE`] exists.
     fn fold_into(&self, src: &[i16], dst: &mut [i16], ka: (&[u32], &[u32]), tp: (&[u32], &[u32])) {
-        let ka_weights: &[i16] = &self.weights;
-        let tp_weights: &[i8] = &self.threat_and_pp_weights;
+        // Both weight tables viewed as TILE-wide ROWS, once for the whole call. `base` was
+        // `index * L1 + off` and the row was taken with a range slice, so every one of the
+        // four inner loops paid a range bounds test and then walked a `zip` iterator: 94.5M
+        // instructions of `slice::iter` and `ptr::non_null` machinery sat inside `transform`
+        // on that alone. `L1` is a whole number of tiles, so a row is just
+        // `index * ROWS_PER_FEATURE + t`, and indexing two `[i16; TILE]` arrays by
+        // `0..TILE` needs no check at either end.
+        const ROWS_PER_FEATURE: usize = L1 / TILE;
+        let ka_rows = <[i16]>::as_chunks::<TILE>(&self.weights).0;
+        let tp_rows = <[i8]>::as_chunks::<TILE>(&self.threat_and_pp_weights).0;
+        let src_rows = src.as_chunks::<TILE>().0;
         for (t, chunk) in dst.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
-            let off = t * TILE;
-            let mut tile = [0i16; TILE];
-            tile.copy_from_slice(&src[off..off + TILE]);
+            let mut tile = src_rows[t];
             for &index in ka.1 {
-                let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(ka_weights[base..base + TILE].iter()) {
+                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
                     // rather than a value to saturate.
-                    *a = a.wrapping_sub(*w);
+                    tile[j] = tile[j].wrapping_sub(w[j]);
                 }
             }
             for &index in ka.0 {
-                let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(ka_weights[base..base + TILE].iter()) {
-                    *a = a.wrapping_add(*w);
+                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_add(w[j]);
                 }
             }
             for &index in tp.1 {
-                let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(tp_weights[base..base + TILE].iter()) {
-                    *a = a.wrapping_sub(i16::from(*w));
+                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_sub(i16::from(w[j]));
                 }
             }
             for &index in tp.0 {
-                let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(tp_weights[base..base + TILE].iter()) {
-                    *a = a.wrapping_add(i16::from(*w));
+                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_add(i16::from(w[j]));
                 }
             }
-            chunk.copy_from_slice(&tile);
+            *chunk = tile;
         }
     }
 
@@ -647,26 +654,32 @@ impl FeatureTransformer {
         ka: (&[u32], &[u32]),
         tp: (&[u32], &[u32]),
     ) {
-        for (weights, (adds, subs)) in
-            [(&self.psqt_weights, ka), (&self.threat_and_pp_psqt_weights, tp)]
-        {
-            // Coerce ONCE, outside the loop. `Aligned` derefs to a subslice, so indexing it
-            // per iteration recomputes the offset and its bounds test every time: binding the
-            // slice here rather than the `Aligned` cost 12.4M instructions when it was not.
-            let weights: &[i32] = weights;
+        // The same shape as `fold_into`: both tables viewed as PSQT_BUCKETS-wide rows once,
+        // so a feature's row is `weights[index]` rather than a range slice, and the eight
+        // accumulations are an indexed loop over two fixed-size arrays rather than a `zip`.
+        // On a kernel that adds eight `i32`s, that machinery was 13.7M of the 29.1M.
+        //
+        // The head itself is held in a LOCAL for the whole call, so it is loaded and stored
+        // once rather than once per feature -- `psqt` is behind a reference the compiler
+        // must assume the weight reads could alias.
+        let ka_rows = <[i32]>::as_chunks::<PSQT_BUCKETS>(&self.psqt_weights).0;
+        let tp_rows = <[i32]>::as_chunks::<PSQT_BUCKETS>(&self.threat_and_pp_psqt_weights).0;
+        let mut acc = *psqt;
+        for (rows, (adds, subs)) in [(ka_rows, ka), (tp_rows, tp)] {
             for &index in subs {
-                let base = index as usize * PSQT_BUCKETS;
-                for (p, w) in psqt.iter_mut().zip(weights[base..base + PSQT_BUCKETS].iter()) {
-                    *p -= w;
+                let w = &rows[index as usize];
+                for k in 0..PSQT_BUCKETS {
+                    acc[k] -= w[k];
                 }
             }
             for &index in adds {
-                let base = index as usize * PSQT_BUCKETS;
-                for (p, w) in psqt.iter_mut().zip(weights[base..base + PSQT_BUCKETS].iter()) {
-                    *p += w;
+                let w = &rows[index as usize];
+                for k in 0..PSQT_BUCKETS {
+                    acc[k] += w[k];
                 }
             }
         }
+        *psqt = acc;
     }
 
     /// The active feature sets, one per perspective, in generation order.
