@@ -23,9 +23,7 @@
 use std::sync::LazyLock;
 
 use crate::board::attacks::piece_attacks;
-use crate::board::bitboard::{
-    Bitboard, KING_ATTACKS, KNIGHT_ATTACKS, RANK_1, RANK_8, file_bb, pawn_attacks_from,
-};
+use crate::board::bitboard::{Bitboard, KING_ATTACKS, KNIGHT_ATTACKS, pawn_attacks_from};
 use crate::board::position::Position;
 use crate::board::threats::{DirtyPawnPairs, DirtyThreat};
 use crate::board::types::{
@@ -425,12 +423,30 @@ pub fn threat_index(
     attacked: Piece,
     ksq: Square,
 ) -> u32 {
-    let t = &*THREATS;
     let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
-    let from_o = (from.raw() ^ orientation) as usize;
-    let to_o = (to.raw() ^ orientation) as usize;
     // Swapping the colour bit turns "White's threat" into "our threat" for either side.
     let swap = 8 * perspective as u8;
+    threat_index_oriented(&THREATS, orientation, swap, attacker, from, to, attacked)
+}
+
+/// [`threat_index`] with the table borrow, the orientation and the colour swap already
+/// resolved.
+///
+/// All three are fixed for a whole record list. Left inside, the `THREATS` deref costs a
+/// `LazyLock` state load and a branch per record, and the orientation costs a table lookup —
+/// per record, for a value the king square alone decides.
+#[inline]
+fn threat_index_oriented(
+    t: &ThreatTables,
+    orientation: u8,
+    swap: u8,
+    attacker: Piece,
+    from: Square,
+    to: Square,
+    attacked: Piece,
+) -> u32 {
+    let from_o = (from.raw() ^ orientation) as usize;
+    let to_o = (to.raw() ^ orientation) as usize;
     let attacker_o = (attacker.raw() ^ swap) as usize;
     let attacked_o = (attacked.raw() ^ swap) as usize;
 
@@ -455,11 +471,25 @@ pub fn threat_active(pos: &Position, out: &mut [Vec<u32>; COLOR_NB]) {
     // That also drops the old "own colour first" iteration order, which existed to match
     // upstream's index stream. Nothing depends on it here: the sets are sorted before they
     // are diffed, and rfish has no 256-entry cap for an order to decide the contents of.
+    // The table borrow, the orientation and the colour swap depend only on the perspective
+    // and its king square, so resolve both perspectives' before the scan rather than inside
+    // it.
+    let t = &*THREATS;
+    let orientation = [THREAT_ORIENT[ksq[0].index()], THREAT_ORIENT[ksq[1].index()] ^ 0b11_1000];
+    let swap = [0u8, 8u8];
+
     macro_rules! emit {
         ($attacker:expr, $from:expr, $to:expr, $attacked:expr) => {{
-            for p in [Color::White, Color::Black] {
-                let i = p.index();
-                let index = threat_index(p, $attacker, $from, $to, $attacked, ksq[i]);
+            for i in 0..COLOR_NB {
+                let index = threat_index_oriented(
+                    t,
+                    orientation[i],
+                    swap[i],
+                    $attacker,
+                    $from,
+                    $to,
+                    $attacked,
+                );
                 if index < THREAT_DIMENSIONS {
                     out[i].push(index);
                 }
@@ -534,15 +564,31 @@ pub const PP_INDEX_BASE: u32 = THREAT_DIMENSIONS;
 /// two adjacent ones, restricted to ranks 2..7, excluding `s`.
 ///
 /// The geometry is colour-independent, which is why one table serves both.
-static PAWN_PAIR_BB: LazyLock<[Bitboard; SQUARE_NB]> = LazyLock::new(|| {
+///
+/// A `const`, not a `LazyLock`: this is read once per pawn in the delta walk, and a lazy
+/// static pays a `Once` state load and a branch at every one of those reads. ../zfish builds
+/// the same table at comptime. The file masks are written out rather than borrowed from
+/// `file_bb`/`shift`, because those are not `const fn`.
+const PAWN_PAIR_BB: [Bitboard; SQUARE_NB] = {
+    const FILE_A_BB: u64 = 0x0101_0101_0101_0101;
+    const RANKS_2_TO_7: u64 = 0x00FF_FFFF_FFFF_FF00;
     let mut t = [Bitboard::EMPTY; SQUARE_NB];
-    for s in Square::all() {
-        let file = file_bb(s);
-        let files = file | file.shift(Direction::East) | file.shift(Direction::West);
-        t[s.index()] = files & !(RANK_1 | RANK_8) & !Bitboard::from_square(s);
+    let mut s = 0;
+    while s < SQUARE_NB {
+        let f = s % 8;
+        let file = FILE_A_BB << f;
+        let mut files = file;
+        if f < 7 {
+            files |= file << 1;
+        }
+        if f > 0 {
+            files |= file >> 1;
+        }
+        t[s] = Bitboard(files & RANKS_2_TO_7 & !(1u64 << s));
+        s += 1;
     }
     t
-});
+};
 
 /// The pawn slot for a pawn of `color` on `square`.
 #[inline]
@@ -566,10 +612,27 @@ pub fn pawn_pair_index(
     ksq: Square,
 ) -> u32 {
     let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
+    pp_index_oriented(orientation, perspective as usize, color, from, to, paired_color)
+}
+
+/// [`pawn_pair_index`] with the orientation and the perspective's colour bit already
+/// resolved.
+///
+/// Both are fixed for a whole pawn-pair walk, so a walk resolves them once rather than
+/// re-deriving a table lookup and two `Color::from_index` round trips per pair.
+#[inline]
+fn pp_index_oriented(
+    orientation: u8,
+    perspective_bit: usize,
+    color: Color,
+    from: Square,
+    to: Square,
+    paired_color: Color,
+) -> u32 {
     let from_o = from.raw() ^ orientation;
     let to_o = to.raw() ^ orientation;
-    let color_o = Color::from_index((color as usize) ^ (perspective as usize));
-    let paired_o = Color::from_index((paired_color as usize) ^ (perspective as usize));
+    let color_o = Color::from_index((color as usize) ^ perspective_bit);
+    let paired_o = Color::from_index((paired_color as usize) ^ perspective_bit);
 
     let id_a = pawn_id(color_o, from_o);
     let id_b = pawn_id(paired_o, to_o);
@@ -598,6 +661,9 @@ fn pawn_pairs_of(
     ksq: Square,
     out: &mut Vec<u32>,
 ) {
+    let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
+    let pb = perspective as usize;
+
     // Walking `bb` while popping is what deduplicates same-colour pairs: only pawns after
     // `from` in square order are considered, so each unordered pair is seen once.
     let mut bb = white;
@@ -605,10 +671,10 @@ fn pawn_pairs_of(
         let from = bb.pop_lsb();
         let band = PAWN_PAIR_BB[from.index()];
         for to in band & bb {
-            out.push(pawn_pair_index(perspective, Color::White, from, to, Color::White, ksq));
+            out.push(pp_index_oriented(orientation, pb, Color::White, from, to, Color::White));
         }
         for to in band & black {
-            out.push(pawn_pair_index(perspective, Color::White, from, to, Color::Black, ksq));
+            out.push(pp_index_oriented(orientation, pb, Color::White, from, to, Color::Black));
         }
     }
 
@@ -617,7 +683,7 @@ fn pawn_pairs_of(
         let from = bb.pop_lsb();
         let band = PAWN_PAIR_BB[from.index()];
         for to in band & bb {
-            out.push(pawn_pair_index(perspective, Color::Black, from, to, Color::Black, ksq));
+            out.push(pp_index_oriented(orientation, pb, Color::Black, from, to, Color::Black));
         }
     }
 }
@@ -640,9 +706,19 @@ pub fn threat_delta(
     adds: &mut Vec<u32>,
     subs: &mut Vec<u32>,
 ) {
+    let t = &*THREATS;
+    let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
+    let swap = 8 * perspective as u8;
     for dt in dts {
-        let index =
-            threat_index(perspective, dt.attacker(), dt.from(), dt.to(), dt.attacked(), ksq);
+        let index = threat_index_oriented(
+            t,
+            orientation,
+            swap,
+            dt.attacker(),
+            dt.from(),
+            dt.to(),
+            dt.attacked(),
+        );
         if index >= THREAT_DIMENSIONS {
             continue;
         }
@@ -678,9 +754,16 @@ pub fn pawn_pair_delta(
 
 /// The pawn-pair features of one board that involve a square in `changed`.
 ///
-/// The walk is [`pawn_pairs_of`]'s, unchanged, so each unordered pair is still visited
-/// exactly once — a pair both of whose pawns moved must not be emitted twice. What is added
-/// is the filter, and a skip for a pawn with nothing changed anywhere in its band.
+/// Walk the CHANGED pawns, not all of them. Every pair this must emit has an endpoint in
+/// `changed`, so the outer loop is the one to two squares a move touched rather than the
+/// sixteen pawns on the board — [`pawn_pairs_of`]'s walk filtered per pair tested every
+/// pawn's band against `changed` to reject fifteen of them. ../zfish's `ppGenerate` is the
+/// same shape.
+///
+/// Each unordered pair is still emitted exactly once. A partner is drawn from the UNCHANGED
+/// pawns plus the changed pawns not yet popped, so a pair whose two pawns both moved is seen
+/// only when the first of them is the origin. The index is symmetric in its two pawns, so
+/// which end is the origin does not change it.
 fn pawn_pairs_touching(
     white: Bitboard,
     black: Bitboard,
@@ -689,38 +772,35 @@ fn pawn_pairs_touching(
     ksq: Square,
     out: &mut Vec<u32>,
 ) {
-    let mut bb = white;
+    let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
+    let perspective_bit = perspective as usize;
+    let pawns = white | black;
+    let unchanged = pawns & !changed;
+
+    let mut bb = pawns & changed;
     while bb.any() {
         let from = bb.pop_lsb();
-        let band = PAWN_PAIR_BB[from.index()];
-        let touched = changed.contains(from);
-        if !touched && (band & changed).is_empty() {
-            continue;
-        }
-        for to in band & bb {
-            if touched || changed.contains(to) {
-                out.push(pawn_pair_index(perspective, Color::White, from, to, Color::White, ksq));
-            }
+        let band = PAWN_PAIR_BB[from.index()] & (unchanged | bb);
+        let color = if black.contains(from) { Color::Black } else { Color::White };
+        for to in band & white {
+            out.push(pp_index_oriented(
+                orientation,
+                perspective_bit,
+                color,
+                from,
+                to,
+                Color::White,
+            ));
         }
         for to in band & black {
-            if touched || changed.contains(to) {
-                out.push(pawn_pair_index(perspective, Color::White, from, to, Color::Black, ksq));
-            }
-        }
-    }
-
-    let mut bb = black;
-    while bb.any() {
-        let from = bb.pop_lsb();
-        let band = PAWN_PAIR_BB[from.index()];
-        let touched = changed.contains(from);
-        if !touched && (band & changed).is_empty() {
-            continue;
-        }
-        for to in band & bb {
-            if touched || changed.contains(to) {
-                out.push(pawn_pair_index(perspective, Color::Black, from, to, Color::Black, ksq));
-            }
+            out.push(pp_index_oriented(
+                orientation,
+                perspective_bit,
+                color,
+                from,
+                to,
+                Color::Black,
+            ));
         }
     }
 }
