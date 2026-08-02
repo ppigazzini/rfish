@@ -377,6 +377,14 @@ this toolchain will not emit.
 
 ### The ceiling, and where it comes from
 
+**Upstream's first affine layer is NOT `vpdpbusd` at avx2 — this section had it wrong.**
+Disassembled, the avx2 oracle holds zero `vpdpbusd`; that instruction is VNNI and appears only
+at `x86-64-vnni512`. At avx2 upstream runs 72 `vpmaddubsw` and 76 `vpmaddwd`, and rfish runs
+42 `vpmaddwd` and no `vpmaddubsw`. Neither needs `unsafe`. What rfish is missing is the
+`u8`x`i8` form: its kernel widens the weights to `i16` first, so it moves half the lanes per
+instruction and pays the widening. See `docs/03-engine-eval.md`. The paragraph below is kept
+because its measurements stand, but read its premise as false at the tier measured here.
+
 Upstream's first affine layer is one `vpdpbusd` per four input bytes. There is no way to
 reach that instruction from this project's constraints, and three separate attempts to
 recover its arithmetic in scalar form all lost (above). This is not a limit of Rust the
@@ -397,7 +405,8 @@ The sibling ports are not doing something cleverer with the same tools. ../zfish
 upstream's kernels directly — 173 `@Vector` uses across ten NNUE files, plus per-ISA files
 like `nnue_affine_vnni.zig` — because Zig has portable SIMD vectors in the *safe, stable*
 language. Rust's equivalent needs no `unsafe` either and is now in use here; what it costs is
-the nightly channel rather than the constraint. What remains out of reach is `vpdpbusd`
+the nightly channel rather than the constraint. What remains out of reach is `vpdpbusd`, and
+at avx2 that is IRRELEVANT -- the oracle holds none. What remains out of reach is `vpdpbusd`
 specifically, which `std::simd` has no operation for.
 
 **Do not read that as the reason this port is slow.** Measured head to head at the same pin,
