@@ -417,6 +417,9 @@ impl SearchWorker {
     /// entered, and the two differ: a node that returns before its move loop — a
     /// transposition cutoff, a draw, a stand-pat — costs nothing. Counting entries instead
     /// would inflate the bench by every such node.
+    // Always: zfish has no separate wrapper here at all -- the work is inline in
+    // `searchImpl`, where the stack entry being written is already addressed.
+    #[inline(always)]
     fn do_move(&mut self, mv: Move, gives_check: bool, si: usize) {
         let capture = self.pos.is_capture_stage(mv);
         let moved = self.pos.moved_piece(mv);
@@ -475,7 +478,9 @@ impl SearchWorker {
     /// to key on. That constant is not a neutral zero: it is what the sum looks like when
     /// the other four terms have nothing to say, and it biases the correction the same way
     /// a typical continuation entry would.
-    #[inline]
+    // Always, not a hint: zfish folds its correction read into `searchImpl`, and the caller
+    // already holds the state this walks.
+    #[inline(always)]
     fn correction_value(&self, si: usize) -> i32 {
         let us = self.pos.side_to_move();
         let st = self.pos.st();

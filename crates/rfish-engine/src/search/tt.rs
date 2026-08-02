@@ -192,6 +192,8 @@ impl TranspositionTable {
     /// takes it and writes to the slot the replacement policy already chose, so the policy
     /// runs once per position rather than once per probe and once per store.
     #[must_use]
+    // Always: zfish inlines its probe and save into the node body.
+    #[inline(always)]
     pub fn probe(&self, key: Key) -> TTProbe {
         let cluster = self.cluster_of(key);
         let key16 = key as u16;
@@ -247,6 +249,8 @@ impl TranspositionTable {
     /// wins, and any entry from an older generation wins. When none holds, the entry
     /// survives — but a decisive score at a useful depth is aged down a ply, which is what
     /// keeps a stale forced mate from blocking the slot forever.
+    // Always: zfish inlines its probe and save into the node body.
+    #[inline(always)]
     pub fn store(
         &self,
         probe: TTProbe,
