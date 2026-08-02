@@ -555,6 +555,50 @@ wrong regime and does not hold.** What has to change with the stack, and what no
 attempt changed, is `Side::threats` and `EvalScratch::next_threats`: the delta path must not
 build a set at all, and `active_sets` must run only where the accumulator refreshes.
 
+### The refactor, and the four things that decided it
+
+Built. **The per-move delta is now 38.4M cheaper than the rebuild**, at avx2 over the same
+163,081 nodes with startup subtracted, bit-exact throughout and `cargo xtask parity` green.
+
+| | search Ir | vs rebuild |
+|---|---|---|
+| rebuild, single slot (was kept) | 2,063,764,878 | — |
+| delta, chains uncapped | 3,330,344,924 | +1,267M |
+| the same, pawn pairs filtered | 2,318,621,552 | +255M |
+| the same, hop cap 3 | 2,247,130,947 | +183M |
+| the same, no-copy combined fold | 2,101,249,794 | +37M |
+| **the same, `active_sets` hoisted, hop cap 2** | **2,025,331,895** | **−38.4M** |
+
+Every row after the first is the SAME architecture. What separated a 61% loss from a win was
+four things, none of them the delta itself:
+
+- **Chains must be bounded.** Records do not cancel before they are folded, so a piece that
+  moved twice contributes four rows rather than two. Uncapped chains cost 843M. The cap is
+  not a constant of the design: it sat at three with the copying fold and at two with the
+  no-copy one, and it must be re-measured after any change to the fold.
+- **`pawn_pair_delta` must not rebuild the set.** Recording the two pawn bitboards and taking
+  the difference of their full pair sets is exact — cancellation handles it — and it cost
+  96.5M over 144,412 walks. Only a pair with a pawn on a square the move CHANGED can differ.
+- **The fold must not copy, and must sweep once.** Seeding the destination from the source
+  and folding in place moves 1024 entries the fold is about to overwrite; applying the two
+  feature kinds in separate passes sweeps the accumulator twice. Together, 146M.
+- **A set must be built at most once per evaluation.** `active_sets` fills BOTH perspectives
+  and `refresh` asked for it per perspective, so a double refresh built every set twice and a
+  single one built the other perspective's for nothing. 75M — larger than the whole remaining
+  margin.
+
+**One bug, and no value gate could have caught it.** Ply zero is the only slot no `do_move`
+stamps, so a root left by a PREVIOUS search read as self-consistent and was rolled forward
+from. `nnue-check` passed throughout, because it evaluates at ply zero and always refreshes;
+only the bench signature moved. The stack is dropped per search; the refresh cache survives,
+being exact for any position that reaches it.
+
+**So the conclusion this page reached twice was a measurement artefact, not a property of the
+port.** The stack did not lose because a stack is wrong here; it lost because it was measured
+with `active_sets` still running on the delta path, with a copying fold, and with the pawn
+pairs rebuilt whole. The sentences below are kept as the record of how the wrong answer was
+reached, and they are WITHDRAWN.
+
 **The accumulator half must NOT be a per-ply stack, and that is already settled above.** A
 delta needs the parent's accumulator, and the obvious way to guarantee one is a slot per ply —
 which "One slot, not a stack" records losing twice, by 428M and then by 278M. It does not need
