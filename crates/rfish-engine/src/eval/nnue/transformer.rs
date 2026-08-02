@@ -580,6 +580,63 @@ impl FeatureTransformer {
         }
     }
 
+    /// Fold in place, and MIRROR each finished tile to a second destination.
+    ///
+    /// The refresh path has two consumers for the same 1024 values: the ply slot the search
+    /// reads, and the cache slot the next refresh for this king square starts from. Folding
+    /// into one and then copying to the other re-reads and re-writes the whole 2 KiB row that
+    /// was just written; mirroring the tile while it is still in registers writes each entry
+    /// to both places once and reads it back never.
+    ///
+    /// `acc` is the cache slot's own row, so it is both the source and the first destination
+    /// — a refresh's base is by definition the entry it is about to replace.
+    fn fold_mirror(
+        &self,
+        acc: &mut [i16],
+        mirror: &mut [i16],
+        ka: (&[u32], &[u32]),
+        tp: (&[u32], &[u32]),
+    ) {
+        let ka_weights: &[i16] = &self.weights;
+        let tp_weights: &[i8] = &self.threat_and_pp_weights;
+        let mirror_tiles = mirror.as_chunks_mut::<TILE>().0;
+        for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
+            let off = t * TILE;
+            let mut tile = *chunk;
+            for &index in ka.1 {
+                let base = index as usize * L1 + off;
+                for (a, w) in tile.iter_mut().zip(ka_weights[base..base + TILE].iter()) {
+                    // Wrapping is upstream's behaviour: the accumulator is `i16` and the
+                    // trainer keeps the sum in range, so a wrap here means a corrupt net
+                    // rather than a value to saturate.
+                    *a = a.wrapping_sub(*w);
+                }
+            }
+            for &index in ka.0 {
+                let base = index as usize * L1 + off;
+                for (a, w) in tile.iter_mut().zip(ka_weights[base..base + TILE].iter()) {
+                    *a = a.wrapping_add(*w);
+                }
+            }
+            for &index in tp.1 {
+                let base = index as usize * L1 + off;
+                for (a, w) in tile.iter_mut().zip(tp_weights[base..base + TILE].iter()) {
+                    *a = a.wrapping_sub(i16::from(*w));
+                }
+            }
+            for &index in tp.0 {
+                let base = index as usize * L1 + off;
+                for (a, w) in tile.iter_mut().zip(tp_weights[base..base + TILE].iter()) {
+                    *a = a.wrapping_add(i16::from(*w));
+                }
+            }
+            *chunk = tile;
+            if let Some(m) = mirror_tiles.get_mut(t) {
+                *m = tile;
+            }
+        }
+    }
+
     /// The PSQT head's half of [`FeatureTransformer::fold_into`].
     ///
     /// Separate because it is eight values against 1024 and shares nothing with the sweep
@@ -750,28 +807,42 @@ impl FeatureTransformer {
             &mut scratch.mark,
         );
 
-        let ka = (&scratch.adds[i][..], &scratch.subs[i][..]);
-        let tp = (&scratch.tp_adds[i][..], &scratch.tp_subs[i][..]);
-        // Split the borrow by FIELD: the cache and the biases are read while the ply slot is
-        // written, and no two of them are the same field.
-        let dst = &mut scratch.plies[ply].side[i];
+        // The fold runs IN the cache slot and mirrors each tile out to the ply slot, so this
+        // king square's entry becomes what was just computed without a second sweep. Seed the
+        // slot first: an unseeded one starts from the biases, which is the from-scratch case.
+        let cache_slot = &mut scratch.cache[i][ksq.index()];
+        if !seeded {
+            cache_slot.side.acc.clear();
+            cache_slot.side.acc.extend_from_slice(&self.biases);
+        }
+        cache_slot.side.psqt = base_psqt;
+        cache_slot.side.king = Some(ksq);
+        cache_slot.side.board = *pos.board();
+
+        // Split the borrow by FIELD: the collected lists are read while the cache and the ply
+        // slot are written, and no two of them are the same field.
+        let (plies, cache, adds, subs, tp_adds, tp_subs) = (
+            &mut scratch.plies,
+            &mut scratch.cache[i],
+            &scratch.adds[i],
+            &scratch.subs[i],
+            &scratch.tp_adds[i],
+            &scratch.tp_subs[i],
+        );
+        let ka = (&adds[..], &subs[..]);
+        let tp = (&tp_adds[..], &tp_subs[..]);
+        let slot = &mut cache[ksq.index()];
+        self.fold_psqt(&mut slot.side.psqt, ka, tp);
+        let dst = &mut plies[ply].side[i];
         dst.acc.resize(L1, 0);
-        dst.psqt = base_psqt;
+        dst.psqt = slot.side.psqt;
         dst.king = Some(ksq);
         dst.board = *pos.board();
-        self.fold_psqt(&mut dst.psqt, ka, tp);
-        let seed: &[i16] =
-            if seeded { &scratch.cache[i][ksq.index()].side.acc } else { &self.biases };
-        self.fold_into(seed, &mut scratch.plies[ply].side[i].acc, ka, tp);
+        self.fold_mirror(&mut slot.side.acc, &mut dst.acc, ka, tp);
 
-        // This king square's entry becomes what was just computed, set and all. Written only
-        // here, so the set never touches the per-node path.
-        let (plies, cache, next) =
-            (&scratch.plies, &mut scratch.cache[i], &scratch.next_threats[i]);
-        let slot = &mut cache[ksq.index()];
-        slot.side.clone_from(&plies[ply].side[i]);
+        // The set lives only here, so it never touches the per-node path.
         slot.threats.clear();
-        slot.threats.extend_from_slice(next);
+        slot.threats.extend_from_slice(&scratch.next_threats[i]);
     }
 
     /// Fill the scratch's transformed features and return the PSQT score.
