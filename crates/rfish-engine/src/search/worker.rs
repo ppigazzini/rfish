@@ -545,22 +545,31 @@ impl SearchWorker {
 
         let in_check = self.stack[si].in_check;
         let mut positive_count = 0usize;
+        // The six plies read below are exactly `si - 6 ..= si - 1`, and `si >= STACK_BASE`
+        // makes that window whole -- which is what the sentinel entries below ply zero are
+        // there to guarantee. Slice it ONCE: `self.stack[si - i]` re-checks against the
+        // whole stack on each of the six, and the window's length is a constant six that
+        // the compiler can see, so `back[6 - i]` needs no check at all. Borrow the two
+        // fields separately so the history stays writable while the window is live.
+        let back = &self.stack[si - 6..si];
+        let histories = &mut self.histories;
         for (i, weight) in CONTHIST_BONUSES {
             // In check only the two nearest plies are updated: the rest of the line was
             // forced, so crediting it teaches the ordering nothing.
             if in_check && i > 2 {
                 break;
             }
-            if !self.stack[si - i].current_move.is_ok() {
+            let entry = &back[6 - i];
+            if !entry.current_move.is_ok() {
                 continue;
             }
-            let plane = self.stack[si - i].continuation;
-            if self.histories.continuation.get(plane, pc, to) > 0 {
+            let plane = entry.continuation;
+            if histories.continuation.get(plane, pc, to) > 0 {
                 positive_count += 1;
             }
             let multiplier = CMHC_MULTIPLIERS[positive_count];
             let delta = (bonus * weight * multiplier / 131_072) + 73 * i32::from(i < 2);
-            self.histories.continuation.update(plane, pc, to, delta);
+            histories.continuation.update(plane, pc, to, delta);
         }
     }
 

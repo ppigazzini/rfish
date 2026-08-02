@@ -287,12 +287,27 @@ impl EvalScratch {
     /// has left cannot be mistaken for one it stands on. Ply ZERO has no such stamp — it is
     /// written only by the evaluation itself — so a root that changes without ply zero being
     /// re-evaluated would leave a slot that agrees with itself about the wrong position.
-    /// Clearing per search is what closes that, and it costs one `Vec` truncation.
+    /// Invalidating every slot per search is what closes that.
+    ///
+    /// Invalidated IN PLACE, not by `clear()`. A slot owns three heap buffers — an
+    /// accumulator per perspective and a threat-record list — so clearing drops them all and
+    /// the next descent re-allocates every one on its way down. Resetting the validity
+    /// fields is exactly as strong, because it leaves each slot saying precisely what
+    /// `PlySlot::empty` says: no key, no king, nothing recorded.
     ///
     /// The refresh cache survives on purpose: its entries are keyed by king square and are
     /// exact for any position that reaches them, so a new search inherits them.
     pub fn new_search(&mut self) {
-        self.plies.clear();
+        for slot in &mut self.plies {
+            slot.reached = EMPTY_KEY;
+            slot.recorded = false;
+            slot.dts.clear();
+            slot.dpp = DirtyPawnPairs::default();
+            for side in &mut slot.side {
+                side.computed_for = EMPTY_KEY;
+                side.king = None;
+            }
+        }
         self.key = EMPTY_KEY;
     }
 
