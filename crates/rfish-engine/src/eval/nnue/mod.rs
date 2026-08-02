@@ -280,9 +280,9 @@ impl Network {
     /// get different heads. Both scores come back separately, because the search blends
     /// them by their disagreement.
     #[must_use]
-    pub fn evaluate(&self, pos: &Position, scratch: &mut EvalScratch) -> NetworkOutput {
+    pub fn evaluate(&self, pos: &Position, ply: usize, scratch: &mut EvalScratch) -> NetworkOutput {
         let bucket = (pos.piece_total() as usize - 1) / 4;
-        let psqt = self.transformer.transform(pos, bucket, scratch);
+        let psqt = self.transformer.transform(pos, bucket, ply, scratch);
         let positional = self.stacks[bucket].propagate(scratch.transformed());
         NetworkOutput {
             psqt: (i64::from(psqt) / OUTPUT_SCALE) as Value,
@@ -303,7 +303,7 @@ impl Network {
             correct_bucket: (pos.piece_total() as usize - 1) / 4,
         };
         for bucket in 0..LAYER_STACKS {
-            let psqt = self.transformer.transform(pos, bucket, scratch);
+            let psqt = self.transformer.transform(pos, bucket, 0, scratch);
             let positional = self.stacks[bucket].propagate(scratch.transformed());
             trace.psqt[bucket] = (i64::from(psqt) / OUTPUT_SCALE) as Value;
             trace.positional[bucket] = (i64::from(positional) / OUTPUT_SCALE) as Value;

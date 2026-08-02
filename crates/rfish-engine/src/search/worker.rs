@@ -379,9 +379,10 @@ impl SearchWorker {
 
     /// The static evaluation of the worker's current position.
     #[inline]
-    fn evaluate(&mut self) -> Value {
+    fn evaluate(&mut self, ply: i32) -> Value {
         let optimism = self.optimism[self.pos.side_to_move().index()];
-        eval::evaluate(&self.pos, self.network.as_deref(), &mut self.scratch, optimism)
+        let ply = ply.max(0) as usize;
+        eval::evaluate(&self.pos, self.network.as_deref(), ply, &mut self.scratch, optimism)
     }
 
     // -- the stack ---------------------------------------------------------
@@ -405,7 +406,12 @@ impl SearchWorker {
         if self.nodes.is_multiple_of(1024) {
             self.publish_counters();
         }
-        self.pos.do_move_checked(mv, gives_check);
+        // Record what the child's accumulator will roll forward from. Split the borrow by
+        // FIELD: the record list belongs to the scratch and the pieces to the position.
+        let ply = si - STACK_BASE + 1;
+        let dts = self.scratch.record_threats(ply);
+        let dpp = self.pos.do_move_recording(mv, gives_check, Some(dts));
+        self.scratch.record(ply, self.pos.raw_key(), dpp);
         self.stack[si].current_move = mv;
         self.stack[si].continuation = cont_plane_index(in_check, capture, moved, mv.to());
         self.stack[si].continuation_correction = corr_plane_index(moved, mv.to());
@@ -419,6 +425,9 @@ impl SearchWorker {
     /// move can select and which is therefore never written.
     fn do_null_move(&mut self, si: usize) {
         self.pos.do_null_move();
+        // A null move moves no piece, so it changes no threat and no pawn pair: the child
+        // rolls forward from the parent with an EMPTY delta rather than refreshing.
+        self.scratch.record_null(si - STACK_BASE + 1, self.pos.raw_key());
         self.stack[si].current_move = Move::NULL;
         self.stack[si].continuation = cont_plane_index(false, false, Piece::NONE, Square::A1);
         self.stack[si].continuation_correction = corr_plane_index(Piece::NONE, Square::A1);
@@ -826,6 +835,10 @@ impl SearchWorker {
         for e in &mut self.stack {
             *e = StackEntry::default();
         }
+        // The accumulator stack describes plies of the PREVIOUS root. Ply zero is the one
+        // slot no `do_move` stamps, so a stale entry there reads as self-consistent and
+        // would be rolled forward from -- against a position the search never stood on.
+        self.scratch.new_search();
         // The seven entries below ply zero are sentinels, so a node near the root can look
         // back without a bounds test. Their static evaluation must read as "unknown"
         // rather than as a number, or the improving test at ply 0 and 1 would compare
@@ -1307,7 +1320,7 @@ impl SearchWorker {
             // Step 2. Check for aborted search and immediate draw
             if self.shared.stopped() || self.pos.is_draw(ply) || ply >= MAX_PLY as i32 {
                 return if ply >= MAX_PLY as i32 && !in_check {
-                    self.evaluate()
+                    self.evaluate(ply)
                 } else {
                     value_draw(self.nodes)
                 };
@@ -1379,7 +1392,7 @@ impl SearchWorker {
         } else if tt_hit {
             unadjusted_static_eval = probe.data.eval;
             if !is_valid(unadjusted_static_eval) {
-                unadjusted_static_eval = self.evaluate();
+                unadjusted_static_eval = self.evaluate(ply);
             }
             self.stack[si].static_eval =
                 Self::to_corrected_static_eval(unadjusted_static_eval, correction_value);
@@ -1398,7 +1411,7 @@ impl SearchWorker {
                 eval = tt_value;
             }
         } else {
-            unadjusted_static_eval = self.evaluate();
+            unadjusted_static_eval = self.evaluate(ply);
             self.stack[si].static_eval =
                 Self::to_corrected_static_eval(unadjusted_static_eval, correction_value);
             eval = self.stack[si].static_eval;
@@ -2345,7 +2358,11 @@ impl SearchWorker {
 
         // Step 2. Check for an immediate draw or maximum ply reached
         if self.pos.is_draw(ply) || ply >= MAX_PLY as i32 {
-            return if ply >= MAX_PLY as i32 && !in_check { self.evaluate() } else { VALUE_DRAW };
+            return if ply >= MAX_PLY as i32 && !in_check {
+                self.evaluate(ply)
+            } else {
+                VALUE_DRAW
+            };
         }
 
         // Step 3. Transposition table lookup
@@ -2389,7 +2406,7 @@ impl SearchWorker {
             if tt_hit {
                 unadjusted_static_eval = probe.data.eval;
                 if !is_valid(unadjusted_static_eval) {
-                    unadjusted_static_eval = self.evaluate();
+                    unadjusted_static_eval = self.evaluate(ply);
                 }
                 self.stack[si].static_eval =
                     Self::to_corrected_static_eval(unadjusted_static_eval, correction_value);
@@ -2407,7 +2424,7 @@ impl SearchWorker {
                     best_value = tt_value;
                 }
             } else {
-                unadjusted_static_eval = self.evaluate();
+                unadjusted_static_eval = self.evaluate(ply);
                 self.stack[si].static_eval =
                     Self::to_corrected_static_eval(unadjusted_static_eval, correction_value);
                 best_value = self.stack[si].static_eval;
