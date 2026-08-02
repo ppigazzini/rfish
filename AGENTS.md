@@ -200,10 +200,17 @@ blind spots) before proposing any optimisation. Four rules that outrank intuitio
   [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) section 9.
 - **NPS cannot settle a few per cent on this box.** One unchanged binary read 240k-275k,
   and a cold run read 103k. Use callgrind for anything under ~10%.
-- **A bounds check is not automatically the cost.** Rust elides most of them, and the ones
-  it does not are usually not on the hot path. Find the check in the disassembly before
-  reshaping code around it — and if reshaping is needed, it is still not a licence for
-  `unsafe`; restructure so the bound is provable instead.
+- **A bounds check is not automatically the cost, and when it is, the cost is the LENGTH
+  LOAD rather than the comparison.** Rust elides most of them. Find the check in the
+  disassembly before reshaping code around it — and if reshaping is needed, it is still not
+  a licence for `unsafe`; restructure so the bound is provable instead. Measured here:
+  moving the search stack from `Vec<T>` to `Box<[T; N]>` was worth 16.0M instructions, while
+  masking a square index to drop `piece_on`'s comparison COST 2.0M.
+- **The largest wins are constructs that read as free.** A `LazyLock` deref, an `Option` no
+  caller can make `None`, a `Vec` whose length never changes, a loop that will not unroll
+  because of a `break`. [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) section 14
+  records the four shapes, what each was worth, and the six of the same shape that measured
+  WORSE — read it before hand-optimising anything in the spine or the search.
 
 ## Fleets and subagents
 

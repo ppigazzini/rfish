@@ -119,8 +119,7 @@ per scoring pass instead of once per node, which is a handful of index operation
 static initialiser has to be ordered around the fact that reading them before `init()` runs
 is undefined.
 
-**rfish.** `static SLIDERS: LazyLock<SliderTables>`. First access builds them; every access
-after is one already-resolved branch the predictor gets for free.
+**rfish.** `static SLIDERS: LazyLock<SliderTables>`. First access builds them.
 
 The Zobrist tables go further and are **`const`-evaluated**: `static TABLES: Tables =
 build();`. They exist before `main`, cost nothing at startup, and cannot be read half
@@ -128,8 +127,31 @@ built. The magic tables are not const-evaluated because the magic *search* is a 
 88 772 table entries with a subset enumeration inside it, which is more const-eval than is
 comfortable; the ray tables are `LazyLock` for symmetry with them.
 
-**What it cost.** `&*SLIDERS` per lookup. Hoisting it out of a generation loop — `let t =
-&*SLIDERS;` once, then index — is available if a measurement ever asks for it.
+**What it cost — measured, after this page claimed otherwise.** This section used to say
+that every access after the first is "one already-resolved branch the predictor gets for
+free". It is not free. A `LazyLock` pays its check per **deref**, not once per program: the
+acquire load of the `Once` state is a real load that LLVM will not always hoist across the
+loads around it. On `bench 16 1 8` the profile put **17.7M instructions — 0.9% of the whole
+run — inside `Once`**, reached from `rook_attacks` and `bishop_attacks`.
+`update_piece_threats` alone paid 3.3M of it, because it derefs dozens of times per call.
+
+`attacks::Sliders` is the fix: a borrow taken once and read many times, with the free
+functions kept for callers that ask once. Converting the callers that ask **in a loop** —
+the four movegen piece loops deref once per attacker — was worth **12.1M**.
+
+Two rules came out of doing it, and both cost a measurement to learn:
+
+- **Convert a caller that derefs in a LOOP; measure the rest rather than assuming it
+  follows.** The same handle for the RAY tables was written and measured three times, at
+  three different baselines, and lost every time: **+1.76M, +2.96M, +1.05M**. `between_bb`
+  and `ray_pass_bb` are read once or twice per caller, LLVM already CSEs those, and holding
+  the extra pointer live costs a register.
+- **Do not take the borrow above an early return.** Taking it at the top of `gives_check`,
+  `legal` and `see_ge` ran the initialisation check on every call including the ones that
+  never read a slider — and those are the dominant paths. mcfish carries the same point in
+  its own comment on `pos_gives_check`: *"the dominant paths … need none of them, and the
+  hoisted loads do not sink past the early returns on their own."* Sinking them into the
+  branches that consume them was worth 1.5M.
 
 ---
 
@@ -264,10 +286,16 @@ Every one of these was paid for in a sibling port. They are not Rust-specific.
   instead (the bench's own total contains no startup by construction).
 - **Isolate the component instead of attributing it.** `go perft` is the board zone alone.
   Attribution across two differently-inlined binaries is void by construction.
-- **A bounds check is not automatically the cost.** Rust elides most of them. Find the
-  check in the disassembly before reshaping code around it — and if reshaping is needed, it
-  is still not a licence for `unsafe`: restructure so the bound is *provable* (iterate a
-  slice, use a fixed-size array, bind a subslice once) instead.
+- **A bounds check is not automatically the cost — and when it is, it is the LENGTH LOAD,
+  not the comparison.** Rust elides most of them. Find the check in the disassembly before
+  reshaping code around it, and if reshaping is needed it is still not a licence for
+  `unsafe`: restructure so the bound is *provable* instead. Two measurements on the same
+  bench separate the two halves. Moving the search stack from `Vec<StackEntry>` to
+  `Box<[StackEntry; STACK_SIZE]>` — which turns the length into an immediate and lets LLVM
+  fold the checks of a node's several accesses together — was worth **−16.0M**. Masking
+  `Square::index()` to `& 63` at `piece_on`, which removes the comparison but leaves the
+  load, cost **+2.0M**: the check folds into the addressing, the AND is a dependent
+  instruction in the address chain. See §14.
 - **Gate on the clock, and validate any counter before believing it.** A change can be
   instruction-neutral, cache-better and branch-level and still cost cycles.
 - **Size an Elo run before starting it.** The 70-Elo-per-doubling figure is a LONG time
@@ -292,7 +320,10 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | Optimising the classical evaluation | **Pointless.** It runs only when no net is on disk, and it has a deletion date. |
 | `memmap2` for the Syzygy tables | **Rejected.** The crate's soundness contract cannot be met (a table file can be truncated under the map), and positioned reads behind a block cache give what the mapping actually provides. |
 | Const-evaluating the magic tables | **Not attempted.** 88 772 entries with a subset enumeration each is far more const-eval than the Zobrist tables' ~800 draws; `LazyLock` costs one predicted branch per lookup. Measure before changing. |
-| An inline `[ScoredMove; MAX_MOVES]` in the move picker, mirroring upstream's field | **Falsified, with a measurement.** Removes 97 M of allocator traffic, adds 473 M of per-node initialisation — worse than the `Vec` it replaced. Safe Rust cannot leave a buffer uninitialised; reuse one instead (§9). |
+| An inline `[ScoredMove; MAX_MOVES]` in the move picker, mirroring upstream's field | **Falsified, with a measurement.** Removes 97 M of allocator traffic, adds 473 M of per-node initialisation — worse than the `Vec` it replaced. Safe Rust cannot leave a buffer uninitialised; reuse one instead (§9). This is about a PICKER-owned buffer built per node. A WORKER-owned `Box<[ScoredMove; MAX_MOVES]>` initialised once is a different thing and it wins — see §14. |
+| A fixed `[DirtyThreat; 96]` for the threat records, mirroring upstream's `ValueList<DirtyThreat, 96>` | **Falsified, with a measurement**, though the bound is upstream's own proven one. Inline in `PlySlot` it cost **+2.83M** — 388 bytes widened the stride of an array of 256 that is indexed per node — and boxed it still cost **+1.96M**. The list is short, so the `Vec`'s capacity check was already cheap. Copying an oracle's data structure is not automatically right; see §14. |
+| Const-generic `GenType` on the move generator, mirroring upstream's `template<GenType Type>` | **Falsified, with a measurement.** Every picker call site passes a literal kind, and the generator tests it ten times, so the fold looked certain. It cost **+2.14M**, rising to **+14.4M** with the pawn generator forced inline alongside it: four specialised copies of the generator execute MORE instructions than one shared body. |
+| A borrow handle for the RAY tables, mirroring the one that works for the sliders | **Falsified three times, at three baselines** (+1.76M, +2.96M, +1.05M). See §5. |
 | Making `Bitboard::iter` borrow instead of copy | **Rejected by design.** Iterating by value is what lets a loop mutate the board it came from, which is upstream's `while (b) pop_lsb(b)` over a local with the local made explicit. |
 | Rewriting the feature transformer's fold and transform in `std::simd` | **Not worth attempting, from the disassembly.** Both already emit upstream's kernel shape — `vpaddw`/`vpsubw`/`vpmovsxbw` in the fold, `vpminsw`/`vpmullw`/`vpsrlw`/`vpackuswb` in the transform — over 136 and 156 `%ymm` operands. Explicit vectors would transcribe what LLVM emits. See §12. |
 | Upstream's per-move accumulator delta | **Falsified, with a measurement, after being BUILT.** Bit-exact (signature 2508687, nnue-check 109/109) and it loses: recording costs 85.7M on every `do_move` and the fast path fires on **11%** of evaluations, so it saves 0.47M. The board-zone half is kept and tested; see `docs/03-engine-eval.md`. |
@@ -481,3 +512,119 @@ minority transitions. Branchless trades a rare store for a certain one, which on
 the predicate really is balanced. **Measure the taken/not-taken RATIO, not the mispredict
 count, before removing a branch:** `Bc` against `Bcm` per line is what distinguishes a coin
 flip from a biased test, and only the first is worth the unconditional write.
+
+---
+
+## 14. Cost that is not in the source: four shapes, and what each was worth
+
+Everything in this section came out of one campaign: closing the spine-and-search gap
+against `../zfish` and `../mcfish` at a matched tier, a matched net and an identical 163 081
+nodes, with startup subtracted. It moved that zone from **1.31x zfish** to **1.14x**, and the
+whole bench from 2 019 M instructions to 1 909 M, at a bit-identical signature throughout.
+
+What makes these worth writing down is that **none of them is visible in the source as
+work**. Each is a construct that reads as free and is not. Grouped by the lever, largest
+first within each.
+
+### 14.1 Fold the constants the caller already has
+
+`#[inline(always)]` pays where it **specialises**, and costs where it only removes a call.
+The test is whether the caller passes something the callee branches on.
+
+| change | why it folds | Ir |
+|---|---|---|
+| `update_piece_threats` | all six call sites pass `put` and `compute_ray` as literals | **−17.3M** |
+| `process_sliders` | its two call sites pass `add_direct` as literal `true` and `false` | **−9.8M** |
+| `correction_value`, the `do_move` wrapper, TT probe and store | the caller already holds the stack index, the state, the cluster | **−9.5M** |
+| `attackers_to_occ` | was `#[inline]`, which the compiler declined; zfish and mcfish both fold `attackersTo` into `legal`, `gives_check` and `see_ge` | **−1.1M** |
+| `generate_into` | `GenType` is a RUNTIME value at both call sites — nothing folds | +235K |
+| `slider_blockers` | already inlined | −47 |
+| `update_continuation_histories` | nothing to specialise | +219K |
+
+### 14.2 Make the length an immediate
+
+A `Vec` carries its length and capacity in memory, so every index LOADS the length before
+comparing, and LLVM can fold nothing across a function's several accesses because the length
+is, as far as it knows, free to change between them. `Box<[T; N]>` makes it an immediate.
+
+| change | Ir |
+|---|---|
+| the search stack | **−16.0M** |
+| the NNUE ply stack and the move-buffer pool | **−8.3M** |
+| `MoveBuf` to a boxed array and a count (21 calls to `RawVec::grow_one` sat in `generate_append` alone, for a buffer that cannot grow) | **−2.4M** |
+| the reduction table | **−0.6M** |
+
+Not everything of this shape qualifies. The transposition table's cluster array is sized by
+the `Hash` option and `Position::states` grows with the game; both stay vectors. And the
+threat-record list measured WORSE either way (§11) — it is short, so the capacity check was
+already cheap, and inline it widened a struct that is indexed per node.
+
+**One of these reversed itself inside a single session.** The `MoveBuf` array measured
+**+28K — neutral** early on, was reverted as churn, and measured **−2.4M** later. Same diff,
+different answer: it only pays once the push loop is inlined into a caller that can hold the
+count in a register. A neutral result is a result *at that baseline*, not a permanent one.
+
+### 14.3 Delete the case the call graph excludes
+
+A type that carries a state the callers cannot produce costs a branch at every use.
+
+- **`ContKeys` was `[Option<ContKey>; 6]`**, so `score_quiets` tested five `Option`s per
+  quiet move on the picker's hottest line — 17.2M instructions sit at that read. The branch
+  could never be taken from there: the main search fills all six with `Some`, and the only
+  constructors that pass `None` are quiescence and `ProbCut`, which reach `score_evasions` at
+  most and never `QuietInit`. Replacing them with a named `UNREAD_PLANE` index: **−11.3M**.
+- **`EvalScratch::grow_to`** ran twice per `do_move` and again per `transform`, and could not
+  resize after the first descent to a given depth. Sizing the vector to `PLY_SLOTS` once:
+  **−9.8M**.
+- **`PieceType::from_index`'s out-of-range arm** sat on every `piece_type()` call, although
+  the low three bits of a `Piece` are 0..=6 by construction. A table indexed by a value the
+  mask proves is in range is what mcfish's `type_of_piece` and zfish's `pc & 7` cost:
+  **−0.5M**.
+- **`EvalScratch::new_search` cleared the ply vector**, dropping three heap buffers per slot
+  so the next descent re-allocated all of them on the way down. Resetting the validity fields
+  instead says exactly the same thing: **−2.5M**.
+
+### 14.4 Resolve once what does not vary, and not one line earlier
+
+Two opposite failure modes, and the boundary between them is an early return.
+
+**Resolve once per list.** `score_quiets` re-derived the butterfly row, the pawn plane, the
+five continuation planes and the low-ply row for every move, although the colour, the pawn
+key, the ply and the parent moves are fixed for the whole list. Upstream's
+`ss->continuationHistory` is a POINTER settled at the node, and zfish's `pawnHistoryBlock`
+says it outright — *"resolve it ONCE per move list"*. Worth **−2.9M**, and the disassembly
+confirms the per-move read became `shl $0x7; add base; movswl (%rax,%r12,2)` with no bounds
+check at all.
+
+**But not above an early return.** The same instinct applied to the slider-table borrow in
+`gives_check`, `legal` and `see_ge` put an initialisation check on every call, including the
+majority that never read a slider. Sinking them into the consuming branches: **−1.5M**. §5
+has the rule.
+
+**And unroll where the index has to be a constant.** `update_continuation_histories` cost
+262.8 instructions per call against mcfish's 117.7, at an identical 58 435 calls. Its loop
+over the six `(ply, weight)` pairs did not unroll — the `break` and `continue` kept the ply a
+runtime value — so the frame lookup stayed a bounds-checked slice index worth 33 instructions
+per call on its own, where both siblings reach the frame by constant pointer arithmetic.
+Written out per ply with literal offsets: **−4.8M**.
+
+### 14.5 How to find these
+
+The disassembly and the per-function profile, not intuition. Three checks earned their keep:
+
+- **Compare CALL COUNTS before comparing costs.** `next_move` is called 380 931 times in all
+  three ports; `see_ge` 202 943. With the counts matched, a cost difference is a per-call
+  difference and nothing else — which is what turned "history is at parity" into "history is
+  1.79x mcfish".
+- **Count the calls a hot function still makes.** `objdump` over `generate_append` showed 21
+  calls to `RawVec::grow_one` for a buffer that cannot grow. That is what pointed at §14.2.
+- **Attribute std's cost back to the caller.** A per-function, per-file split put 15.7M of
+  `slice::last` and 6.5M of `Once` inside the spine and search zones. Neither appears in
+  rfish's own source as anything.
+
+**One thing this campaign did NOT get to, and it is the largest identified item left.**
+`Position::st()` is `states.last().expect(..)`, and that walk costs **15.7M** inside spine
+and search. Upstream and both siblings hold the current state directly. The refactor was
+traced and stopped: `set_repetition`, `upcoming_repetition` and `has_repeated` index
+arbitrary positions in the chain, so moving the current state out of the vector puts a branch
+in all three. It needs the state chain restructured, not a local edit.
