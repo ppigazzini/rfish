@@ -281,6 +281,7 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | Const-evaluating the magic tables | **Not attempted.** 88 772 entries with a subset enumeration each is far more const-eval than the Zobrist tables' ~800 draws; `LazyLock` costs one predicted branch per lookup. Measure before changing. |
 | An inline `[ScoredMove; MAX_MOVES]` in the move picker, mirroring upstream's field | **Falsified, with a measurement.** Removes 97 M of allocator traffic, adds 473 M of per-node initialisation — worse than the `Vec` it replaced. Safe Rust cannot leave a buffer uninitialised; reuse one instead (§9). |
 | Making `Bitboard::iter` borrow instead of copy | **Rejected by design.** Iterating by value is what lets a loop mutate the board it came from, which is upstream's `while (b) pop_lsb(b)` over a local with the local made explicit. |
+| Rewriting the feature transformer's fold and transform in `std::simd` | **Not worth attempting, from the disassembly.** Both already emit upstream's kernel shape — `vpaddw`/`vpsubw`/`vpmovsxbw` in the fold, `vpminsw`/`vpmullw`/`vpsrlw`/`vpackuswb` in the transform — over 136 and 156 `%ymm` operands. Explicit vectors would transcribe what LLVM emits. See §12. |
 
 ---
 
@@ -369,16 +370,31 @@ language — it is a limit of the intersection this port has chosen:
 | route to explicit SIMD | safe? | stable? | usable here |
 |---|---|---|---|
 | `std::arch` intrinsics | **no** — every intrinsic is an `unsafe fn` | yes | no, `unsafe_code = "forbid"` |
-| `std::simd` (`portable_simd`) | **yes** — no `unsafe` needed | **no** — nightly only | no, `rust-toolchain.toml` pins stable |
-| autovectorised scalar loops | yes | yes | **this is what rfish uses** |
+| `std::simd` (`portable_simd`) | **yes** — no `unsafe` needed | **no** — nightly only | **yes**, at the cost of the dated nightly `rust-toolchain.toml` pins |
+| autovectorised scalar loops | yes | yes | yes, and it is still what most of the NNUE uses |
+
+The `std::simd` row said "no, `rust-toolchain.toml` pins stable" for longer than it was true.
+The pin was bought precisely to lift that restriction, `eval/nnue/layers.rs` has used it since,
+and the row survived as the reason not to look anywhere else. **It is not the reason the
+transformer is scalar.** The reason is measured, and it is below.
 
 The sibling ports are not doing something cleverer with the same tools. ../zfish writes
 upstream's kernels directly — 173 `@Vector` uses across ten NNUE files, plus per-ISA files
 like `nnue_affine_vnni.zig` — because Zig has portable SIMD vectors in the *safe, stable*
-language. Rust's equivalent exists and needs no `unsafe`, but is nightly. That single
-difference, not code quality, is why a Zig port sits near upstream on the evaluation while
-this one sits at 1.8x. Anyone comparing the two engines' NNUE throughput should read that
-table first.
+language. Rust's equivalent needs no `unsafe` either and is now in use here; what it costs is
+the nightly channel rather than the constraint. What remains out of reach is `vpdpbusd`
+specifically, which `std::simd` has no operation for — so the affine layer, and not the
+toolchain, is where the evaluation's ratio is decided.
+
+**Explicit `std::simd` in the feature transformer is NOT an open lead.** It is the largest
+search-time block in the engine — `fold_changed` at 190M and `transform` at 148M over
+`bench 16 1 8` — and it is scalar source, so it reads like the obvious next target. The
+disassembly of the PGO build says it is already there: `fold_changed` emits 136 `%ymm`
+operands, 16 `vpaddw`, 16 `vpsubw` and 16 `vpmovsxbw`, and `transform` emits the clamp,
+pairwise multiply, shift and pack as 16 `vpminsw` / 16 `vpmaxsw` / 8 `vpmullw` / 8 `vpsrlw` /
+8 `vpackuswb` — upstream's own kernel shape, reached from `as_chunks_mut` and a `zip`. Writing
+those two functions in `std::simd` would be a transcription of what LLVM already emits. Count
+the vector operands in the symbol before spending a session on this.
 
 **What is deliberately NOT on this list:** `smallvec`, `arrayvec`, `bumpalo` and every other
 allocation crate. They are the standard answer to §9 and rfish cannot use any of them — the
