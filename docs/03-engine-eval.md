@@ -514,6 +514,47 @@ measurement. **The board-zone half is kept** (`board/threats.rs`, `do_move_recor
 its differential tests: it is the expensive, error-prone part, it is proven correct, and
 anything that revisits this needs it. Nothing calls it.
 
+### The ablation that reframes all of the above
+
+../zfish ran the ablation this page never did: the SAME port, built three ways, bit-exact on
+one 163,081-node tree (`f876cb5b`, `bench 16 1 8` at `x86-64-sse41-popcnt`, box spread
+0.00063%).
+
+| ../zfish build | instructions | vs shipped |
+|---|---|---|
+| incremental + recording (shipped) | 2,756,229,512 | 1.0000 |
+| rebuild every eval + recording | 3,785,329,102 | 1.3734 |
+| rebuild every eval, no recording — rfish's shape | 3,731,454,159 | 1.3538 |
+
+The recording costs 53.9M there, 1.44% of its own rebuild baseline, and the delta is worth
+975.2M — the incremental build is 26.1% CHEAPER than the rebuild. rfish measured the same
+architecture 7.1% DEARER than its rebuild. Same design, opposite sign, a 33-point swing.
+
+**The recording was never the variable.** 53.9M there and 85.7M here sit in the same band as
+upstream's ~65M. What differs is what the delta gets to SKIP. ../zfish applies its dirty
+records straight into accumulator rows and materialises a feature set only on a refresh.
+rfish's threat and pawn-pair sets are a materialised `Vec<u32>` that `diff_apply` needs as the
+"old" side, so even on the delta path it must build the child's set to leave one behind for
+the next ply — it pays the rebuild's dominant cost either way and is left contesting the fold
+alone. That is why the rows above move by tens of millions when the prize is in the hundreds,
+and why multi-hop could not rescue it: multi-hop buys more hops, and the cost that cannot be
+escaped is per-ply set derivation.
+
+**What the set construction actually costs here, measured.** `threat_active` and
+`pawn_pair_active` inline wholly into `transform`, so callgrind attributes them by SOURCE FILE
+rather than by symbol. Summing the rows a `--profile profiling` build charges to `transform`
+from the files only the set walk touches — `features.rs` 126.0M, `board/types.rs` 27.4M,
+`board/bitboard.rs` 22.2M, `board/attacks.rs` 5.8M — plus the `Vec` push traffic that builds
+the sets — `alloc/vec/mod.rs` 36.6M, `ptr/non_null.rs` 30.8M, `raw_vec` 8.7M — gives **~257M**.
+The earlier estimate on this page was ~158M and it was low.
+
+So the prize is ~257M against 85.7M of recording, and the earlier build measured +146.6M
+instead of about −170M. The 316M swing is the set construction it never stopped paying. **The
+conclusion below — that the architecture wins on its own measurement — was reached in the
+wrong regime and does not hold.** What has to change with the stack, and what no previous
+attempt changed, is `Side::threats` and `EvalScratch::next_threats`: the delta path must not
+build a set at all, and `active_sets` must run only where the accumulator refreshes.
+
 **The accumulator half must NOT be a per-ply stack, and that is already settled above.** A
 delta needs the parent's accumulator, and the obvious way to guarantee one is a slot per ply —
 which "One slot, not a stack" records losing twice, by 428M and then by 278M. It does not need
