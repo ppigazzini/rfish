@@ -18,7 +18,9 @@
 
 use crate::board::movegen::{GenType, MoveSink, generate_into};
 use crate::board::position::Position;
-use crate::board::types::{Move, MoveType, Piece, PieceType, Square, Value, piece_value};
+use crate::board::types::{
+    MAX_MOVES, Move, MoveType, Piece, PieceType, Square, Value, piece_value,
+};
 
 use super::history::{Histories, PawnHistory};
 
@@ -93,14 +95,71 @@ pub struct ScoredMove {
 /// The workhorse-collection pattern from the Rust Performance Book gets both: `clear()`
 /// keeps the capacity, so after the first visit to a slot there is neither an allocation
 /// nor an initialisation.
-pub type MoveBuf = Vec<ScoredMove>;
+pub struct MoveBuf {
+    /// Boxed so a `SearchWorker` stays movable: the pool holds one of these per ply slot.
+    moves: Box<[ScoredMove; MAX_MOVES]>,
+    len: usize,
+}
+
+impl MoveBuf {
+    /// An empty buffer over a fully initialised array.
+    ///
+    /// The array is written once, here, and never again -- which is the whole difference
+    /// from the `Vec` this replaced. A `Vec` carries its capacity in memory, so every
+    /// `push` LOADS it, compares, and keeps a call to `RawVec::grow_one` on the cold side:
+    /// 21 such calls sat in `generate_append` alone, for a buffer that was created at
+    /// `MAX_MOVES` and can never grow. Here the bound is an immediate.
+    #[must_use]
+    pub fn new() -> MoveBuf {
+        MoveBuf { moves: Box::new([ScoredMove { mv: Move::NONE, score: 0 }; MAX_MOVES]), len: 0 }
+    }
+
+    /// Drop every move, keeping the storage.
+    #[inline(always)]
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+impl Default for MoveBuf {
+    fn default() -> MoveBuf {
+        MoveBuf::new()
+    }
+}
+
+impl core::fmt::Debug for MoveBuf {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl core::ops::Deref for MoveBuf {
+    type Target = [ScoredMove];
+
+    #[inline(always)]
+    fn deref(&self) -> &[ScoredMove] {
+        &self.moves[..self.len]
+    }
+}
+
+impl core::ops::DerefMut for MoveBuf {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut [ScoredMove] {
+        &mut self.moves[..self.len]
+    }
+}
 
 impl MoveSink for MoveBuf {
     /// Scored zero: every entry gets its real score from the scoring pass that follows,
     /// which walks exactly the range this generation appended.
+    ///
+    /// # Panics
+    /// Panics when the buffer is full. `MAX_MOVES` is a property of chess, not a guess, so
+    /// that means the generator emitted a move twice.
     #[inline(always)]
     fn push_move(&mut self, m: Move) {
-        self.push(ScoredMove { mv: m, score: 0 });
+        self.moves[self.len] = ScoredMove { mv: m, score: 0 };
+        self.len += 1;
     }
 }
 

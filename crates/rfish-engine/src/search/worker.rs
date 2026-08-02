@@ -310,7 +310,7 @@ impl SearchWorker {
                 Err(_) => unreachable!("the vec was built with exactly MAX_MOVES items"),
             },
             move_pool: match (0..SLOTS_PER_PLY * STACK_SIZE)
-                .map(|_| MoveBuf::with_capacity(crate::board::types::MAX_MOVES))
+                .map(|_| MoveBuf::new())
                 .collect::<Vec<_>>()
                 .into_boxed_slice()
                 .try_into()
