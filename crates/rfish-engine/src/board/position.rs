@@ -262,9 +262,13 @@ pub struct Position {
     /// The squares the king and rook must find EMPTY for each right, minus the two movers
     /// themselves. Precomputed so the test is one AND against the occupancy.
     castling_path: [Bitboard; 16],
-    /// The state chain. Upstream holds a `StateInfo*` here; rfish owns the chain and walks
-    /// it by index, which is what removes the pointer without removing the history.
-    states: Vec<StateInfo>,
+    /// The CURRENT state, held directly the way upstream's `StateInfo*` is. Reading it is
+    /// a field offset, not a walk to the end of a chain.
+    st: StateInfo,
+    /// Every state BEFORE the current one, oldest first. `prev.len()` is the current state's
+    /// own index, so a backwards walk starts inside `prev` and never asks which half of the
+    /// chain an index falls in.
+    prev: Vec<StateInfo>,
     game_ply: i32,
     side_to_move: Color,
     chess960: bool,
@@ -294,7 +298,8 @@ impl Position {
             castling_path: [Bitboard::EMPTY; 16],
             castling_rights_mask: [CastlingRights::NONE; SQUARE_NB],
             chess960: false,
-            states: vec![StateInfo::empty()],
+            st: StateInfo::empty(),
+            prev: Vec::new(),
         }
     }
 
@@ -317,12 +322,12 @@ impl Position {
     #[inline(always)]
     #[must_use]
     pub fn st(&self) -> &StateInfo {
-        self.states.last().expect("the state chain is never empty")
+        &self.st
     }
 
     #[inline(always)]
     fn st_mut(&mut self) -> &mut StateInfo {
-        self.states.last_mut().expect("the state chain is never empty")
+        &mut self.st
     }
 
     /// The whole placement, for a caller that compares two of them square by square.
@@ -939,7 +944,7 @@ impl Position {
         let cr =
             if king_side { CastlingRights::king_side(c) } else { CastlingRights::queen_side(c) };
 
-        self.states[0].castling_rights = self.states[0].castling_rights.union(cr);
+        self.st.castling_rights = self.st.castling_rights.union(cr);
         self.castling_rights_mask[ksq.index()] = self.castling_rights_mask[ksq.index()].union(cr);
         self.castling_rights_mask[rook_from.index()] =
             self.castling_rights_mask[rook_from.index()].union(cr);
@@ -1158,8 +1163,8 @@ impl Position {
     #[must_use]
     #[inline]
     pub fn upcoming_repetition(&self, ply: i32) -> bool {
-        let top = self.states.len() - 1;
-        let st = &self.states[top];
+        let top = self.prev.len();
+        let st = &self.st;
         let end = st.rule50.min(st.plies_from_null);
         if end < 3 || top < 3 {
             return false;
@@ -1168,7 +1173,7 @@ impl Position {
         let original_key = st.key;
         // `stp` walks back; it starts one ply behind, exactly as upstream's `st->previous`.
         let mut stp = top - 1;
-        let mut other = original_key ^ self.states[stp].key ^ zobrist::side();
+        let mut other = original_key ^ self.prev[stp].key ^ zobrist::side();
 
         let mut i = 3;
         while i <= end {
@@ -1177,7 +1182,7 @@ impl Position {
                 break;
             }
             stp -= 1;
-            other ^= self.states[stp].key ^ self.states[stp - 1].key ^ zobrist::side();
+            other ^= self.prev[stp].key ^ self.prev[stp - 1].key ^ zobrist::side();
             stp -= 1;
 
             if other != 0 {
@@ -1185,7 +1190,7 @@ impl Position {
                 continue;
             }
 
-            let move_key = original_key ^ self.states[stp].key;
+            let move_key = original_key ^ self.prev[stp].key;
             if let Some(mv) = super::cuckoo::lookup(move_key) {
                 let (s1, s2) = (mv.from(), mv.to());
                 // The move must be unobstructed. `between_bb` excludes both ends here by
@@ -1197,7 +1202,7 @@ impl Position {
                     }
                     // At or above the root the position must already have repeated once:
                     // otherwise this is a first visit, not a draw.
-                    if self.states[stp].repetition != 0 {
+                    if self.prev[stp].repetition != 0 {
                         return true;
                     }
                 }
@@ -1589,7 +1594,7 @@ impl Position {
             Bitboard::EMPTY
         };
 
-        self.states.push(st);
+        self.prev.push(core::mem::replace(&mut self.st, st));
         self.set_check_info();
         self.set_repetition();
 
@@ -1612,23 +1617,25 @@ impl Position {
     /// repetition (so this is the threefold), 0 when never repeated. The sign is the whole
     /// encoding.
     fn set_repetition(&mut self) {
-        let st_index = self.states.len() - 1;
-        let key = self.states[st_index].key;
+        let st_index = self.prev.len();
+        let key = self.st.key;
         // Only positions with the same side to move can repeat, so step back two at a
-        // time; nothing before the last irreversible move can match.
-        let end = self.states[st_index].rule50.min(self.states[st_index].plies_from_null);
+        // time; nothing before the last irreversible move can match. The walk starts four
+        // plies back, so every index it reads lies in `prev` and none of them is the
+        // current state.
+        let end = self.st.rule50.min(self.st.plies_from_null);
         let mut repetition = 0;
         let mut i = 4;
         while i <= end {
             let idx = st_index.checked_sub(i as usize);
             let Some(idx) = idx else { break };
-            if self.states[idx].key == key {
-                repetition = if self.states[idx].repetition != 0 { -i } else { i };
+            if self.prev[idx].key == key {
+                repetition = if self.prev[idx].repetition != 0 { -i } else { i };
                 break;
             }
             i += 2;
         }
-        self.states[st_index].repetition = repetition;
+        self.st.repetition = repetition;
     }
 
     /// Undo the last move.
@@ -1638,7 +1645,7 @@ impl Position {
     /// always a bug in the caller.
     pub fn undo_move(&mut self, m: Move) {
         debug_assert!(m.is_ok());
-        assert!(self.states.len() > 1, "undo past the root of the state chain");
+        assert!(!self.prev.is_empty(), "undo past the root of the state chain");
 
         self.side_to_move = !self.side_to_move;
         let us = self.side_to_move;
@@ -1674,7 +1681,7 @@ impl Position {
             }
         }
 
-        self.states.pop();
+        self.st = self.prev.pop().expect("the chain was checked non-empty above");
         self.game_ply -= 1;
     }
 
@@ -1700,9 +1707,9 @@ impl Position {
         st.checkers = Bitboard::EMPTY;
 
         self.side_to_move = !self.side_to_move;
-        self.states.push(st);
+        self.prev.push(core::mem::replace(&mut self.st, st));
         self.set_check_info();
-        self.st_mut().repetition = 0;
+        self.st.repetition = 0;
     }
 
     /// Undo the last null move.
@@ -1710,8 +1717,8 @@ impl Position {
     /// # Panics
     /// Panics when the chain holds only the root state.
     pub fn undo_null_move(&mut self) {
-        assert!(self.states.len() > 1, "undo past the root of the state chain");
-        self.states.pop();
+        assert!(!self.prev.is_empty(), "undo past the root of the state chain");
+        self.st = self.prev.pop().expect("the chain was checked non-empty above");
         self.side_to_move = !self.side_to_move;
     }
 
@@ -1830,20 +1837,21 @@ impl Position {
     /// `has_game_cycle`, used to prune positions that are already drawable.
     #[must_use]
     pub fn has_repeated(&self) -> bool {
-        let mut i = self.states.len() - 1;
-        loop {
-            let end = self.states[i].rule50.min(self.states[i].plies_from_null);
-            if end < 4 {
+        if self.st.rule50.min(self.st.plies_from_null) < 4 {
+            return false;
+        }
+        if self.st.repetition != 0 {
+            return true;
+        }
+        for s in self.prev.iter().rev() {
+            if s.rule50.min(s.plies_from_null) < 4 {
                 return false;
             }
-            if self.states[i].repetition != 0 {
+            if s.repetition != 0 {
                 return true;
             }
-            if i == 0 {
-                return false;
-            }
-            i -= 1;
         }
+        false
     }
 
     // -- static exchange evaluation ----------------------------------------
