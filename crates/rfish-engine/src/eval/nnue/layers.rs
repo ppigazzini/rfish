@@ -16,7 +16,7 @@
 //! `sqr_clipped_relu.h`.
 
 use core::simd::Simd;
-use core::simd::cmp::SimdPartialEq;
+use core::simd::cmp::{SimdOrd, SimdPartialEq};
 use core::simd::num::SimdInt;
 
 use super::common::{Aligned, NetError, NetReader, NetWriter, ceil_to_multiple};
@@ -192,12 +192,25 @@ impl AffineLayer {
     }
 }
 
+/// The lane count both activations narrow in one step.
+///
+/// Sixteen `i32` is two AVX2 registers in and one byte store out, which is the widest
+/// narrowing the tier can retire without a second pack. Every caller passes a multiple of
+/// it, so the scalar tail below exists only to keep the function total.
+const RELU_LANES: usize = 16;
+
 /// `output[i] = clamp(input[i] >> shift, 0, 127)`.
 ///
 /// The shift is where the accumulator's quantisation scale drops back to the activation's.
 pub fn clipped_relu(input: &[i32], shift: u32, output: &mut [u8]) {
     debug_assert_eq!(input.len(), output.len());
-    for (o, &x) in output.iter_mut().zip(input.iter()) {
+    let (blocks, tail) = input.as_chunks::<RELU_LANES>();
+    let (outs, out_tail) = output.as_chunks_mut::<RELU_LANES>();
+    for (o, block) in outs.iter_mut().zip(blocks.iter()) {
+        let x = Simd::<i32, RELU_LANES>::from_array(*block) >> Simd::splat(shift as i32);
+        *o = x.simd_clamp(Simd::splat(0), Simd::splat(127)).cast::<u8>().to_array();
+    }
+    for (o, &x) in out_tail.iter_mut().zip(tail.iter()) {
         *o = (x >> shift).clamp(0, 127) as u8;
     }
 }
@@ -209,11 +222,29 @@ pub fn clipped_relu(input: &[i32], shift: u32, output: &mut [u8]) {
 /// and compensates — which is why this cannot be "corrected".
 ///
 /// No lower clamp is needed: a square is never negative.
+///
+/// The vector body squares in `i32` after saturating the input into `i16`, where the scalar
+/// tail squares in `i64`. The two agree for every input this network produces, and the
+/// reason is the cap rather than the arithmetic: an operand outside `i16` has a square of at
+/// least `2^30`, and `2^30` shifted right by the largest shift a caller passes is still far
+/// above 127, so both forms saturate. Inside `i16` nothing is lost — the largest square is
+/// `2^30`, which is an `i32`. The assert below is what pins the "largest shift a caller
+/// passes"; widen the clamp, not the shift, if a future layer breaks it.
 pub fn sqr_clipped_relu(input: &[i32], shift: u32, output: &mut [u8]) {
     debug_assert_eq!(input.len(), output.len());
-    for (o, &x) in output.iter_mut().zip(input.iter()) {
+    let total = 2 * shift + 7;
+    debug_assert!(total <= 23, "an i16-saturated square must still exceed the 127 cap");
+    let (blocks, tail) = input.as_chunks::<RELU_LANES>();
+    let (outs, out_tail) = output.as_chunks_mut::<RELU_LANES>();
+    for (o, block) in outs.iter_mut().zip(blocks.iter()) {
+        let x = Simd::<i32, RELU_LANES>::from_array(*block)
+            .simd_clamp(Simd::splat(-32768), Simd::splat(32767));
+        let q = (x * x) >> Simd::splat(total as i32);
+        *o = q.simd_min(Simd::splat(127)).cast::<u8>().to_array();
+    }
+    for (o, &x) in out_tail.iter_mut().zip(tail.iter()) {
         let squared = i64::from(x) * i64::from(x);
-        *o = (squared >> (2 * shift + 7)).min(127) as u8;
+        *o = (squared >> total).min(127) as u8;
     }
 }
 
