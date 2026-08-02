@@ -313,20 +313,39 @@ fn pseudo_attacks(pc: Piece, from: Square) -> Bitboard {
 
 /// Everything derived from the empty-board attack sets, built once.
 struct ThreatTables {
-    /// For each piece, origin and destination, the destination's slot within the piece's
+    /// One block per attacker, holding EVERYTHING a threat index reads for it.
+    ///
+    /// The two tables were separately based — one a boxed array, one inline — so an index
+    /// computed two bases and loaded from two allocations. ../mcfish's `ThreatIndexBlocks`
+    /// colocates them behind a single per-attacker base and measured −1.16% for it; this is
+    /// that. The block is a whole number of cache lines (8320 bytes = 130), so the
+    /// alignment carries forward to every attacker's rows rather than stopping at the first.
+    blocks: Box<[ThreatBlock; PIECE_NB]>,
+}
+
+/// Everything one attacker contributes to a threat index, behind one base.
+#[repr(C, align(64))]
+#[derive(Clone)]
+struct ThreatBlock {
+    /// For each attacked piece and whether `from < to`, the class base — or
+    /// [`THREAT_DIMENSIONS`] when the pair is not encoded, which the caller drops.
+    class_base: [[u32; 2]; PIECE_NB],
+    /// For each origin and destination, the destination's slot within this attacker's
     /// block: how many attack slots every earlier origin used, PLUS the destination's rank
     /// within this origin's empty-board attack set.
     ///
     /// The two were separate tables, and a threat index added one to the other at every
-    /// lookup — three loads behind three separately scaled bases. They are constants of each
-    /// other, so they are summed once here instead. ../zfish 662d82ef made the same merge.
-    /// `u16` holds it comfortably: the largest sum is a queen's, around 1400 against a
-    /// ceiling of 65535, and the builder asserts it rather than trusting the arithmetic.
-    slot: Box<[[[u16; SQUARE_NB]; SQUARE_NB]; PIECE_NB]>,
-    /// For each (attacker, attacked) and whether `from < to`, the class base — or
-    /// [`THREAT_DIMENSIONS`] when the pair is not encoded, which the caller drops.
-    class_base: [[[u32; 2]; PIECE_NB]; PIECE_NB],
+    /// lookup. They are constants of each other, so they are summed once here instead.
+    /// ../zfish 662d82ef made the same merge. `u16` holds it comfortably: the largest sum
+    /// is a queen's, around 1400 against a ceiling of 65535, and the builder asserts it
+    /// rather than trusting the arithmetic.
+    slot: [[u16; SQUARE_NB]; SQUARE_NB],
 }
+
+const _: () = assert!(
+    size_of::<ThreatBlock>().is_multiple_of(64),
+    "the block stride must carry the alignment forward to every attacker"
+);
 
 /// The pieces the tables are built for, in the order that decides their cumulative offsets.
 const ALL_PIECES: [Piece; 12] = [
@@ -346,7 +365,14 @@ const ALL_PIECES: [Piece; 12] = [
 
 impl ThreatTables {
     fn build() -> ThreatTables {
-        let mut slot = vec![[[0u16; SQUARE_NB]; SQUARE_NB]; PIECE_NB].into_boxed_slice();
+        let mut blocks = vec![
+            ThreatBlock {
+                class_base: [[0u32; 2]; PIECE_NB],
+                slot: [[0u16; SQUARE_NB]; SQUARE_NB],
+            };
+            PIECE_NB
+        ]
+        .into_boxed_slice();
         // Per piece: how many attack slots it uses in total, and where its block starts.
         let mut slots_per_piece = [0u32; PIECE_NB];
         let mut block_start = [0u32; PIECE_NB];
@@ -363,7 +389,7 @@ impl ThreatTables {
                     let below = Bitboard((1u64 << to.index()) - 1);
                     let rank = (attacks & below).count();
                     let combined = u16::try_from(used + rank).expect("a threat slot fits u16");
-                    slot[i][from.index()][to.index()] = combined;
+                    blocks[i].slot[from.index()][to.index()] = combined;
                 }
                 // A pawn on the first or last rank cannot exist, so it contributes nothing
                 // and its slots are not reserved.
@@ -379,7 +405,6 @@ impl ThreatTables {
         }
         debug_assert_eq!(cumulative, THREAT_DIMENSIONS);
 
-        let mut class_base = [[[0u32; 2]; PIECE_NB]; PIECE_NB];
         for attacker in ALL_PIECES {
             for attacked in ALL_PIECES {
                 let a = attacker.index();
@@ -399,13 +424,18 @@ impl ThreatTables {
                         + class.max(0) as u32)
                         * slots_per_piece[a];
 
-                class_base[a][d][0] = if excluded { THREAT_DIMENSIONS } else { base };
-                class_base[a][d][1] =
+                blocks[a].class_base[d][0] = if excluded { THREAT_DIMENSIONS } else { base };
+                blocks[a].class_base[d][1] =
                     if excluded || semi_excluded { THREAT_DIMENSIONS } else { base };
             }
         }
 
-        ThreatTables { slot: slot.try_into().expect("PIECE_NB rows"), class_base }
+        match blocks.try_into() {
+            Ok(blocks) => ThreatTables { blocks },
+            // Built with exactly PIECE_NB blocks, so this cannot fail. A match rather than
+            // `expect`, because the error type is the boxed slice itself.
+            Err(_) => unreachable!("the vec was built with exactly PIECE_NB blocks"),
+        }
     }
 }
 
@@ -452,8 +482,9 @@ fn threat_index_oriented(
     let attacker_o = (attacker.raw() ^ swap) as usize;
     let attacked_o = (attacked.raw() ^ swap) as usize;
 
-    t.class_base[attacker_o][attacked_o][usize::from(from_o < to_o)]
-        + u32::from(t.slot[attacker_o][from_o][to_o])
+    // One base, two loads: mcfish's `nnue_full_make_index` shape.
+    let block = &t.blocks[attacker_o];
+    block.class_base[attacked_o][usize::from(from_o < to_o)] + u32::from(block.slot[from_o][to_o])
 }
 
 /// Every active threat feature, for one perspective.
