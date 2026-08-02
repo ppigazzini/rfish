@@ -378,8 +378,25 @@ Closing this properly needs upstream's actual per-move delta, which knows exactl
 threats change without rescanning anything — that is the case analysis this design has always
 declined, and it is bounded by the ~230M the whole threat machinery costs.
 
-Below that: the first affine layer would have to match `vpdpbusd`, which `std::simd` has no
-operation for, so a further constraint would have to go before parity is even the right word.
+**Below that is the affine layer, and this page had the reason WRONG.** It said the layer
+"would have to match `vpdpbusd`, which `std::simd` has no operation for". Disassembled, the
+avx2 oracle contains **zero** `vpdpbusd` — that instruction is VNNI and appears only at
+`x86-64-vnni512`. At the tier every measurement here is taken at, upstream's affine layer is:
+
+| | `vpdpbusd` | `vpmaddubsw` | `vpmaddwd` |
+|---|---|---|---|
+| upstream, avx2 | 0 | **72** | 76 |
+| rfish, avx2 | 0 | **0** | 42 |
+
+Neither instruction needs `unsafe`, and rfish already emits 42 `vpmaddwd`. What it emits none
+of is `vpmaddubsw`, which does 32 `u8`x`i8` multiply-adds per issue. rfish's kernel widens the
+`i8` weights to `i16` and works in the i16 domain, so it moves half the lanes per instruction
+and pays for the widening — the `vpmovsxbw` in the fold is the same tax. That is a
+representation choice in the kernel, not a missing instruction, and the `vpmaddwd` LLVM
+already matches is the harder pattern of the two.
+
+Do not repeat the `vpdpbusd` line. It is only true at a tier nothing here measures, and it
+stopped a search for the real difference.
 
 ### What remains, measured per symbol rather than estimated
 
