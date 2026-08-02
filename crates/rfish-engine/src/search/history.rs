@@ -21,6 +21,18 @@
 
 use crate::board::types::{COLOR_NB, Color, PIECE_NB, Piece, PieceType, SQUARE_NB, Square};
 
+/// One `(piece, square)` plane, as the continuation and pawn tables store it.
+///
+/// Named so a caller can hold a plane across a whole move list. Resolving the plane is the
+/// part of a read that does not vary with the move: the colour, the pawn key and the parent
+/// moves are fixed for the list, and upstream's `ss->continuationHistory` is a POINTER
+/// resolved once at the node for exactly that reason. Reading through `get` instead pays the
+/// outer index — and its bounds check — once per move.
+pub type PieceToPlane = [[i16; SQUARE_NB]; PIECE_NB];
+
+/// One raw-move-indexed row, as the butterfly and low-ply tables store it.
+pub type MoveRow = [i16; MOVE_HISTORY_SIZE];
+
 /// A `Box<[T; N]>` filled with `fill`, built on the heap rather than through a stack
 /// temporary.
 ///
@@ -140,6 +152,13 @@ impl ButterflyHistory {
         i32::from(self.table[c.index()][mv as usize])
     }
 
+    /// The whole row for `c`, for a caller that reads many moves at one colour.
+    #[inline(always)]
+    #[must_use]
+    pub fn row(&self, c: Color) -> &MoveRow {
+        &self.table[c.index()]
+    }
+
     /// Move the stored score toward `bonus`.
     #[inline(always)]
     pub fn update(&mut self, c: Color, mv: u16, bonus: i32) {
@@ -179,6 +198,13 @@ impl LowPlyHistory {
     #[must_use]
     pub fn get(&self, ply: usize, mv: u16) -> i32 {
         i32::from(self.table[ply][mv as usize])
+    }
+
+    /// The whole row for `ply`, for a caller that reads many moves at one ply.
+    #[inline(always)]
+    #[must_use]
+    pub fn row(&self, ply: usize) -> &MoveRow {
+        &self.table[ply]
     }
 
     #[inline(always)]
@@ -309,6 +335,13 @@ impl ContinuationHistory {
         i32::from(self.table[idx][pc.index()][to.index()])
     }
 
+    /// The whole plane `idx` selects, for a caller that reads many moves at one plane.
+    #[inline(always)]
+    #[must_use]
+    pub fn plane(&self, idx: usize) -> &PieceToPlane {
+        &self.table[idx]
+    }
+
     #[inline(always)]
     pub fn update(&mut self, idx: usize, pc: Piece, to: Square, bonus: i32) {
         apply_gravity(&mut self.table[idx][pc.index()][to.index()], bonus, CONTINUATION_LIMIT);
@@ -394,6 +427,13 @@ impl PawnHistory {
     #[must_use]
     pub fn get(&self, row: usize, pc: Piece, to: Square) -> i32 {
         i32::from(self.table[row][pc.index()][to.index()])
+    }
+
+    /// The whole plane `row` selects, for a caller that reads many moves at one pawn key.
+    #[inline(always)]
+    #[must_use]
+    pub fn plane(&self, row: usize) -> &PieceToPlane {
+        &self.table[row]
     }
 
     #[inline(always)]
