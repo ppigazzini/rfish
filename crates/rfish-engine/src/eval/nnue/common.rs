@@ -12,6 +12,104 @@ use std::io::{self, Read, Write};
 /// The format version word every Stockfish net begins with.
 pub const VERSION: u32 = 0x6A44_8AFA;
 
+/// The cache line every NNUE weight table starts on.
+///
+/// Upstream's own `nnue_common.h` constant, and the alignment it puts on every array in the
+/// feature transformer and the affine layers.
+pub const CACHE_LINE: usize = 64;
+
+/// A heap buffer of `T` whose first element sits on a cache-line boundary.
+///
+/// **`vec![0; n]` does not give this, and the difference is invisible to an instruction
+/// counter.** A `Vec<i16>` is aligned for an `i16` — two bytes — and glibc hands these tables
+/// back sixteen bytes past a cache line. A 32-byte vector load splits a line whenever its
+/// address is not 32-byte aligned, so at a sixteen-byte offset every second load in the
+/// weight sweep costs two line fills instead of one. Callgrind counts the load either way,
+/// which is why this survived a ledger full of instruction ratios.
+///
+/// Upstream declares every one of these arrays `alignas(CacheLineSize)`. `../zfish` and
+/// `../mcfish` each built an allocator whose stated contract is the same 64 bytes —
+/// `../mcfish`'s says "alignment is load-bearing" in as many words. This is that guarantee
+/// with no dependency and no `unsafe`: over-allocate by one line and start the slice at the
+/// first aligned element. Reading an address as an integer is safe; nothing here
+/// dereferences a raw pointer or reinterprets bytes.
+///
+/// The buffer is sized once and never grown. A reallocation would move the base and strand
+/// `off`, so there is deliberately no API that can resize it.
+pub struct Aligned<T> {
+    buf: Vec<T>,
+    off: usize,
+    len: usize,
+}
+
+impl<T: Copy + Default> Aligned<T> {
+    /// `len` default-valued elements, the first on a cache-line boundary.
+    #[must_use]
+    pub fn new(len: usize) -> Aligned<T> {
+        let stride = size_of::<T>();
+        // One spare line of elements, so an aligned start always exists inside the buffer.
+        let buf = vec![T::default(); len + CACHE_LINE / stride];
+        let misalign = (buf.as_ptr() as usize) % CACHE_LINE;
+        let off = if misalign == 0 { 0 } else { (CACHE_LINE - misalign) / stride };
+        let aligned = Aligned { buf, off, len };
+        debug_assert_eq!(
+            aligned.as_slice().as_ptr() as usize % CACHE_LINE,
+            0,
+            "the aligned start was not reachable: the allocation is not a multiple of \
+             size_of::<T>() away from a cache line"
+        );
+        aligned
+    }
+
+    /// A copy of `src`, aligned.
+    #[must_use]
+    pub fn from_slice(src: &[T]) -> Aligned<T> {
+        let mut out = Aligned::new(src.len());
+        out.as_mut_slice().copy_from_slice(src);
+        out
+    }
+
+    /// The aligned elements, and only those: the padding is never visible.
+    #[must_use]
+    pub fn as_slice(&self) -> &[T] {
+        &self.buf[self.off..self.off + self.len]
+    }
+
+    /// [`Aligned::as_slice`], mutably.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.buf[self.off..self.off + self.len]
+    }
+}
+
+impl<T: Copy + Default> Clone for Aligned<T> {
+    /// Re-align rather than copy the offset: a cloned `Vec` has its own base address, and
+    /// carrying the original's `off` across would point the slice at a different place in
+    /// the line.
+    fn clone(&self) -> Aligned<T> {
+        Aligned::from_slice(self.as_slice())
+    }
+}
+
+impl<T: Copy + Default> std::ops::Deref for Aligned<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<T: Copy + Default> std::ops::DerefMut for Aligned<T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        self.as_mut_slice()
+    }
+}
+
+impl<T: Copy + Default + std::fmt::Debug> std::fmt::Debug for Aligned<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Aligned").field("len", &self.len).finish_non_exhaustive()
+    }
+}
+
 /// Transformed feature dimensions for one side.
 pub const L1: usize = 1024;
 /// Outputs of the first fully connected layer.
@@ -465,5 +563,36 @@ mod tests {
         assert_eq!(LAYER_STACKS, 8);
         assert_eq!(ceil_to_multiple(1024, 32), 1024);
         assert_eq!(ceil_to_multiple(60, 32), 64);
+    }
+
+    /// The property the NNUE weight tables depend on and `vec![0; n]` does not provide.
+    #[test]
+    fn an_aligned_buffer_starts_on_a_cache_line() {
+        for len in [1usize, 7, 63, L1, L1 * 33] {
+            let a: Aligned<i16> = Aligned::new(len);
+            assert_eq!(a.as_slice().as_ptr() as usize % CACHE_LINE, 0, "i16 len {len}");
+            assert_eq!(a.len(), len);
+        }
+        for len in [1usize, 1023, L1 * 17] {
+            let a: Aligned<i8> = Aligned::new(len);
+            assert_eq!(a.as_slice().as_ptr() as usize % CACHE_LINE, 0, "i8 len {len}");
+        }
+        for len in [1usize, 999, PSQT_BUCKETS * 3072] {
+            let a: Aligned<i32> = Aligned::new(len);
+            assert_eq!(a.as_slice().as_ptr() as usize % CACHE_LINE, 0, "i32 len {len}");
+        }
+    }
+
+    /// A clone re-aligns: carrying the source's offset to a new base would point the slice
+    /// somewhere else in the line.
+    #[test]
+    fn a_clone_is_realigned_and_equal() {
+        let mut a: Aligned<i16> = Aligned::new(300);
+        for (i, v) in a.as_mut_slice().iter_mut().enumerate() {
+            *v = i as i16;
+        }
+        let b = a.clone();
+        assert_eq!(a.as_slice(), b.as_slice());
+        assert_eq!(b.as_slice().as_ptr() as usize % CACHE_LINE, 0);
     }
 }

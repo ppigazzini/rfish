@@ -33,7 +33,7 @@
 use crate::board::position::Position;
 use crate::board::types::{COLOR_NB, Color, Key, Piece, SQUARE_NB, Square};
 
-use super::common::{FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
+use super::common::{Aligned, FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
 use super::features::{
     HALFKA_DIMENSIONS, THREAT_AND_PP_DIMENSIONS, halfka_delta, pawn_pair_active, threat_active,
 };
@@ -44,16 +44,16 @@ use super::features::{
 /// cannot be a `static` without making the binary that size.
 pub struct FeatureTransformer {
     /// One bias per output, shared by both perspectives.
-    biases: Vec<i16>,
+    biases: Aligned<i16>,
     /// `weights[index * L1 + j]` for the king-piece features.
-    weights: Vec<i16>,
+    weights: Aligned<i16>,
     /// `threat_and_pp_weights[index * L1 + j]`, `i8` because these features are many and
     /// their individual contributions small.
-    threat_and_pp_weights: Vec<i8>,
+    threat_and_pp_weights: Aligned<i8>,
     /// `psqt_weights[index * PSQT_BUCKETS + k]` for the king-piece features.
-    psqt_weights: Vec<i32>,
+    psqt_weights: Aligned<i32>,
     /// The same, for the threat and pawn-pair features.
-    threat_and_pp_psqt_weights: Vec<i32>,
+    threat_and_pp_psqt_weights: Aligned<i32>,
 }
 
 impl std::fmt::Debug for FeatureTransformer {
@@ -143,6 +143,14 @@ pub struct EvalScratch {
     /// The features one diff adds and removes, collected before either is applied.
     adds: Vec<u32>,
     subs: Vec<u32>,
+    /// The transformed features this evaluation produced, reused across evaluations.
+    ///
+    /// Held here rather than allocated in `Network::evaluate` because that is the per-node
+    /// path: a `vec![0u8; L1]` there is a malloc, a 1 KiB zero-fill and a free per
+    /// evaluation, and `transform` overwrites every one of those bytes before anything
+    /// reads them. Aligned because it is the input side of the affine layer's vector loads,
+    /// which is what upstream's `alignas(CacheLineSize)` on the same buffer is for.
+    transformed: Aligned<u8>,
     /// One bit per threat-and-pawn-pair feature, used to diff two sets by MEMBERSHIP.
     ///
     /// Every pass leaves it all-zero, so it never has to be cleared in bulk: the walk that
@@ -167,11 +175,18 @@ impl Default for EvalScratch {
             adds: Vec::new(),
             subs: Vec::new(),
             mark: Vec::new(),
+            transformed: Aligned::new(L1),
         }
     }
 }
 
 impl EvalScratch {
+    /// The transformed features the last [`FeatureTransformer::transform`] wrote.
+    #[must_use]
+    pub fn transformed(&self) -> &[u8] {
+        &self.transformed
+    }
+
     /// Forget every cached accumulator.
     ///
     /// Not needed for correctness — a diff against any position is still exact — but a
@@ -204,11 +219,11 @@ impl FeatureTransformer {
     #[must_use]
     pub fn new() -> FeatureTransformer {
         FeatureTransformer {
-            biases: vec![0; L1],
-            weights: vec![0; L1 * HALFKA_DIMENSIONS],
-            threat_and_pp_weights: vec![0; L1 * THREAT_AND_PP_DIMENSIONS],
-            psqt_weights: vec![0; PSQT_BUCKETS * HALFKA_DIMENSIONS],
-            threat_and_pp_psqt_weights: vec![0; PSQT_BUCKETS * THREAT_AND_PP_DIMENSIONS],
+            biases: Aligned::new(L1),
+            weights: Aligned::new(L1 * HALFKA_DIMENSIONS),
+            threat_and_pp_weights: Aligned::new(L1 * THREAT_AND_PP_DIMENSIONS),
+            psqt_weights: Aligned::new(PSQT_BUCKETS * HALFKA_DIMENSIONS),
+            threat_and_pp_psqt_weights: Aligned::new(PSQT_BUCKETS * THREAT_AND_PP_DIMENSIONS),
         }
     }
 
@@ -363,7 +378,10 @@ impl FeatureTransformer {
             return;
         }
 
-        let psqt_weights =
+        // Coerce ONCE, outside the loop. `Aligned` derefs to a subslice, so indexing it per
+        // iteration recomputes the offset and its bounds test every time: binding the slice
+        // here rather than the `Aligned` cost 12.4M instructions when it was not done.
+        let psqt_weights: &[i32] =
             if halfka { &self.psqt_weights } else { &self.threat_and_pp_psqt_weights };
         for &index in subs {
             let base = index as usize * PSQT_BUCKETS;
@@ -379,9 +397,11 @@ impl FeatureTransformer {
         }
 
         if halfka {
-            Self::fold_rows_i16(&self.weights, adds, subs, acc);
+            let weights: &[i16] = &self.weights;
+            Self::fold_rows_i16(weights, adds, subs, acc);
         } else {
-            Self::fold_rows_i8(&self.threat_and_pp_weights, adds, subs, acc);
+            let weights: &[i8] = &self.threat_and_pp_weights;
+            Self::fold_rows_i8(weights, adds, subs, acc);
         }
     }
 
@@ -450,20 +470,13 @@ impl FeatureTransformer {
         pawn_pair_active(pos, threats);
     }
 
-    /// Fill `output` with the transformed features and return the PSQT score.
+    /// Fill the scratch's transformed features and return the PSQT score.
     ///
     /// The output is a pairwise product, not an activation: the 1024 accumulated values are
     /// split in half and multiplied element-wise, which is what gives the first hidden layer
     /// a quadratic term without a second matrix. Both halves are clamped to `[0, 255]`
     /// first, so the product fits `u8` after the shift.
-    pub fn transform(
-        &self,
-        pos: &Position,
-        bucket: usize,
-        scratch: &mut EvalScratch,
-        output: &mut [u8],
-    ) -> i32 {
-        debug_assert_eq!(output.len(), L1);
+    pub fn transform(&self, pos: &Position, bucket: usize, scratch: &mut EvalScratch) -> i32 {
         // The RAW key, not the table key: the accumulator depends on the pieces alone, and
         // mixing the halfmove clock in would miss the cache every time the clock ticked
         // past fourteen without a single feature having changed.
@@ -569,8 +582,11 @@ impl FeatureTransformer {
         // `i32` form allowed, for identical values. The `/ 512` is a shift for the same
         // reason: the product is never negative, so there is no rounding direction to get
         // wrong.
+        // Split the borrow by FIELD: the accumulators are read while the output is written,
+        // and the two are distinct fields of the same scratch.
+        let (live, output) = (&scratch.live, scratch.transformed.as_mut_slice());
         for (p, side) in perspectives.iter().enumerate() {
-            let (lo, hi) = scratch.live[side.index()].acc.split_at(half);
+            let (lo, hi) = live[side.index()].acc.split_at(half);
             let out = &mut output[half * p..half * (p + 1)];
             for ((o, &a), &b) in out.iter_mut().zip(lo.iter()).zip(hi.iter()) {
                 let sum0 = a.clamp(0, FT_MAX) as u16;
@@ -640,13 +656,13 @@ mod tests {
             let pos = Position::from_fen(fen, false).expect("valid");
             let bucket = (pos.piece_total() as usize - 1) / 4;
 
-            let mut a = vec![0u8; L1];
-            let pa = ft.transform(&pos, bucket, &mut shared, &mut a);
+            let pa = ft.transform(&pos, bucket, &mut shared);
+            let a = shared.transformed().to_vec();
 
             // A fresh scratch has nothing to diff against, so it computes from scratch.
             let mut fresh = EvalScratch::default();
-            let mut b = vec![0u8; L1];
-            let pb = ft.transform(&pos, bucket, &mut fresh, &mut b);
+            let pb = ft.transform(&pos, bucket, &mut fresh);
+            let b = fresh.transformed().to_vec();
 
             assert_eq!(a, b, "{fen}: diffed features differ from a fresh computation");
             assert_eq!(pa, pb, "{fen}: diffed PSQT differs from a fresh computation");
@@ -659,10 +675,9 @@ mod tests {
         let ft = FeatureTransformer::new();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let mut out = vec![0u8; L1];
-        let first = ft.transform(&pos, 7, &mut scratch, &mut out);
+        let first = ft.transform(&pos, 7, &mut scratch);
         scratch.reset();
-        let second = ft.transform(&pos, 7, &mut scratch, &mut out);
+        let second = ft.transform(&pos, 7, &mut scratch);
         assert_eq!(first, second);
     }
 
@@ -671,10 +686,9 @@ mod tests {
         let ft = FeatureTransformer::new();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let mut out = vec![0u8; L1];
-        let psqt = ft.transform(&pos, 7, &mut scratch, &mut out);
+        let psqt = ft.transform(&pos, 7, &mut scratch);
         assert_eq!(psqt, 0);
-        assert!(out.iter().all(|&x| x == 0));
+        assert!(scratch.transformed().iter().all(|&x| x == 0));
     }
 
     /// A positive bias in both halves must survive to the output as their scaled product,
@@ -690,13 +704,12 @@ mod tests {
 
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let mut out = vec![0u8; L1];
-        ft.transform(&pos, 7, &mut scratch, &mut out);
+        ft.transform(&pos, 7, &mut scratch);
 
         // 300 clamps to 255: 255 * 100 / 512 = 49.
-        assert_eq!(out[0], 49);
+        assert_eq!(scratch.transformed()[0], 49);
         // -5 clamps to 0, so the product is zero however large the other half is.
-        assert_eq!(out[1], 0);
+        assert_eq!(scratch.transformed()[1], 0);
     }
 
     /// The PSQT head is a difference between the two perspectives, halved. A network
@@ -711,8 +724,7 @@ mod tests {
         }
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let mut out = vec![0u8; L1];
-        assert_eq!(ft.transform(&pos, 3, &mut scratch, &mut out), 0);
+        assert_eq!(ft.transform(&pos, 3, &mut scratch), 0);
     }
 
     /// The scratch buffers must be reusable: a second call has to produce the same answer
@@ -724,10 +736,10 @@ mod tests {
         ft.biases[L1 / 2] = 200;
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let mut a = vec![0u8; L1];
-        let mut b = vec![0u8; L1];
-        let pa = ft.transform(&pos, 7, &mut scratch, &mut a);
-        let pb = ft.transform(&pos, 7, &mut scratch, &mut b);
+        let pa = ft.transform(&pos, 7, &mut scratch);
+        let a = scratch.transformed().to_vec();
+        let pb = ft.transform(&pos, 7, &mut scratch);
+        let b = scratch.transformed().to_vec();
         assert_eq!(a, b);
         assert_eq!(pa, pb);
     }

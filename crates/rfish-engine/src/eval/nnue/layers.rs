@@ -19,7 +19,7 @@ use core::simd::Simd;
 use core::simd::cmp::SimdPartialEq;
 use core::simd::num::SimdInt;
 
-use super::common::{NetError, NetReader, NetWriter, ceil_to_multiple};
+use super::common::{Aligned, NetError, NetReader, NetWriter, ceil_to_multiple};
 
 /// Inputs whose non-zero test is answered by one vector compare.
 ///
@@ -49,11 +49,11 @@ pub struct AffineLayer {
     input_dims: usize,
     padded_dims: usize,
     output_dims: usize,
-    biases: Vec<i32>,
-    weights: Vec<i8>,
+    biases: Aligned<i32>,
+    weights: Aligned<i8>,
     /// The same weights in the order [`AffineLayer::propagate_sparse`] walks them, or empty
     /// when that path is not enabled for this layer. See [`AffineLayer::enable_sparse`].
-    sparse: Vec<i8>,
+    sparse: Aligned<i8>,
 }
 
 impl AffineLayer {
@@ -65,9 +65,9 @@ impl AffineLayer {
             input_dims,
             padded_dims,
             output_dims,
-            biases: vec![0; output_dims],
-            weights: vec![0; output_dims * padded_dims],
-            sparse: vec![0; input_dims * output_dims],
+            biases: Aligned::new(output_dims),
+            weights: Aligned::new(output_dims * padded_dims),
+            sparse: Aligned::new(input_dims * output_dims),
         }
     }
 
@@ -233,9 +233,9 @@ mod tests {
     #[test]
     fn an_affine_layer_computes_bias_plus_the_dot_product() {
         let mut l = AffineLayer::new(4, 2);
-        l.biases = vec![10, -10];
+        l.biases = Aligned::from_slice(&[10, -10]);
         // Row 0 is [1, 2, 3, 4] then padding; row 1 is [-1, -1, -1, -1].
-        l.weights = vec![0; 2 * 32];
+        l.weights = Aligned::new(2 * 32);
         l.weights[0..4].copy_from_slice(&[1, 2, 3, 4]);
         l.weights[32..36].copy_from_slice(&[-1, -1, -1, -1]);
 
@@ -260,7 +260,7 @@ mod tests {
         bytes.extend_from_slice(&w);
 
         l.read(&mut NetReader::new(bytes.as_slice())).expect("reads");
-        assert_eq!(l.biases, vec![7, -7]);
+        assert_eq!(l.biases.as_slice(), &[7, -7]);
         assert_eq!(l.weights[0], 1);
         assert_eq!(l.weights[32], 2);
     }

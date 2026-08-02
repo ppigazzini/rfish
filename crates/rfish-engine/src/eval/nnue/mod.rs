@@ -282,9 +282,8 @@ impl Network {
     #[must_use]
     pub fn evaluate(&self, pos: &Position, scratch: &mut EvalScratch) -> NetworkOutput {
         let bucket = (pos.piece_total() as usize - 1) / 4;
-        let mut transformed = vec![0u8; L1];
-        let psqt = self.transformer.transform(pos, bucket, scratch, &mut transformed);
-        let positional = self.stacks[bucket].propagate(&transformed);
+        let psqt = self.transformer.transform(pos, bucket, scratch);
+        let positional = self.stacks[bucket].propagate(scratch.transformed());
         NetworkOutput {
             psqt: (i64::from(psqt) / OUTPUT_SCALE) as Value,
             positional: (i64::from(positional) / OUTPUT_SCALE) as Value,
@@ -303,10 +302,9 @@ impl Network {
             positional: [0; LAYER_STACKS],
             correct_bucket: (pos.piece_total() as usize - 1) / 4,
         };
-        let mut transformed = vec![0u8; L1];
         for bucket in 0..LAYER_STACKS {
-            let psqt = self.transformer.transform(pos, bucket, scratch, &mut transformed);
-            let positional = self.stacks[bucket].propagate(&transformed);
+            let psqt = self.transformer.transform(pos, bucket, scratch);
+            let positional = self.stacks[bucket].propagate(scratch.transformed());
             trace.psqt[bucket] = (i64::from(psqt) / OUTPUT_SCALE) as Value;
             trace.positional[bucket] = (i64::from(positional) / OUTPUT_SCALE) as Value;
         }
