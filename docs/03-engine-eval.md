@@ -462,10 +462,27 @@ bit-exact throughout. One copy remains — the working slot is saved back into t
 fold, because the tail of `transform` reads the live slot — and on the 31.8M the first copy
 cost, removing it is worth roughly another 30M. That still lands near +115M.
 
-So the gap is not the copies. It is that the recording costs 85.7M on every `do_move` while
-the roll-forward is admissible only when the PARENT WAS ITSELF EVALUATED — pruning and qsearch
-skip most parents — and on top of that only when no pawn and neither king moved. The delta is
-cheap once it applies; what it cannot buy is the right to apply.
+Then the parent-was-evaluated restriction was lifted too, which was the last thing separating
+this from upstream's `AccumulatorStack::evaluate`: walk back to the nearest COMPUTED ancestor,
+concatenate every hop's records, and roll forward in one fold. Netting over the whole chain is
+what makes it legal — a feature created at one ply and destroyed at a later one cancels in
+either order, and the king square is constant across the chain by construction.
+
+| | search Ir | vs rebuild |
+|---|---|---|
+| stack + delta, combined no-copy fold, one hop | 2,214,297,204 | +146.6M |
+| **the same, multi-hop walk-back (cap 8)** | **2,219,315,470** | **+151.7M** |
+
+**Multi-hop is 5M WORSE than single-hop.** The extra evaluations it makes eligible do not pay
+for concatenating the chain and netting over it, and chains break early anyway because every
+hop must be pawn-quiet. That closes the argument that the 11% hit rate was the problem: it was
+not, and lifting it changes nothing.
+
+So the gap is not the copies and not the hit rate. The recording costs 85.7M on every
+`do_move` — 163,081 of them — against a rebuild worth ~158M that only 61,341 evaluations ever
+pay, and rfish's existing diff already applies the same 36.5 feature rows per evaluation that
+upstream's delta does. The delta is buying the SET CONSTRUCTION only, on a design that had
+already made the expensive half cheap.
 
 **Raising that hit rate is the twice-lost stack.** The only way the parent's accumulator is
 always available is a slot per ply, which "One slot, not a stack" measured losing twice. A
