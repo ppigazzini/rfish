@@ -1217,8 +1217,9 @@ impl Position {
     /// generation.
     #[must_use]
     pub fn legal(&self, m: Move) -> bool {
-        // One borrow of the slider tables; see `attacks::Sliders`.
-        let sl = sliders();
+        // The slider tables are borrowed inside the two branches that read them, never here:
+        // the dominant path is the pin test at the end, which reads none. See
+        // `gives_check` for the same point.
         debug_assert!(m.is_ok());
         let us = self.side_to_move;
         let from = m.from();
@@ -1234,6 +1235,7 @@ impl Position {
             let occ =
                 (self.occupied() ^ Bitboard::from_square(from) ^ Bitboard::from_square(capsq))
                     | Bitboard::from_square(to);
+            let sl = sliders();
             return (sl.rook(ksq, occ) & self.pieces_of2(!us, PieceType::Rook, PieceType::Queen))
                 .is_empty()
                 && (sl.bishop(ksq, occ)
@@ -1264,7 +1266,7 @@ impl Position {
             if self.chess960 {
                 let occ = (self.occupied() ^ Bitboard::from_square(rook_from))
                     | Bitboard::from_square(king_to);
-                return (sl.rook(king_to, occ)
+                return (sliders().rook(king_to, occ)
                     & self.pieces_of2(!us, PieceType::Rook, PieceType::Queen))
                 .is_empty();
             }
@@ -1357,19 +1359,24 @@ impl Position {
     /// scan, so it is derived from the cached check squares rather than by making the move.
     #[must_use]
     pub fn gives_check(&self, m: Move) -> bool {
-        // One borrow of the slider tables; see `attacks::Sliders`.
-        let sl = sliders();
         debug_assert!(m.is_ok());
         let from = m.from();
         let to = m.to();
         let us = self.side_to_move;
-        let ksq = self.king_square(!us);
 
         // Direct check: the mover lands on a square that attacks the enemy king.
+        //
+        // Nothing is read before this that this does not need. The enemy king square and the
+        // slider tables are taken INSIDE the branches that consume them, as mcfish's
+        // `pos_gives_check` says in its own comment: the two dominant paths -- this hit and
+        // the `Normal` fall-through -- need neither, and a hoisted load does not sink past an
+        // early return on its own. Here the hoist also ran the slider tables'
+        // initialisation check on every call.
         if self.check_squares(self.piece_on(from).piece_type()).contains(to) {
             return true;
         }
 
+        let ksq = self.king_square(!us);
         // Discovered check: the mover was a blocker and leaves the line.
         if self.blockers_for_king(!us).contains(from) && !aligned(from, to, ksq) {
             return true;
@@ -1377,7 +1384,7 @@ impl Position {
 
         match m.move_type() {
             MoveType::Normal => false,
-            MoveType::Promotion => sl
+            MoveType::Promotion => sliders()
                 .piece(m.promotion_type(), to, self.occupied() ^ Bitboard::from_square(from))
                 .contains(ksq),
             MoveType::EnPassant => {
@@ -1387,6 +1394,7 @@ impl Position {
                 let occ =
                     (self.occupied() ^ Bitboard::from_square(from) ^ Bitboard::from_square(capsq))
                         | Bitboard::from_square(to);
+                let sl = sliders();
                 (sl.rook(ksq, occ) & self.pieces_of2(us, PieceType::Rook, PieceType::Queen)).any()
                     || (sl.bishop(ksq, occ)
                         & self.pieces_of2(us, PieceType::Bishop, PieceType::Queen))
@@ -1401,7 +1409,7 @@ impl Position {
                     (self.occupied() ^ Bitboard::from_square(from) ^ Bitboard::from_square(to))
                         | Bitboard::from_square(rook_to)
                         | Bitboard::from_square(king_to);
-                sl.rook(rook_to, occ).contains(ksq)
+                sliders().rook(rook_to, occ).contains(ksq)
             }
         }
     }
@@ -1847,8 +1855,9 @@ impl Position {
     /// material only — no king safety, no tactics beyond the one square.
     #[must_use]
     pub fn see_ge(&self, m: Move, threshold: Value) -> bool {
-        // One borrow of the slider tables; see `attacks::Sliders`.
-        let sl = sliders();
+        // The slider tables are borrowed below, after the three early returns: a special
+        // move type, a capture that cannot reach the threshold and one that trivially does
+        // all leave before any slider is read. See `gives_check`.
         debug_assert!(m.is_ok());
         // The special move types are given upstream's fixed answers rather than being
         // replayed: their material effect is not a simple exchange on one square.
@@ -1867,6 +1876,7 @@ impl Position {
             return true;
         }
 
+        let sl = sliders();
         let mut occupied =
             self.occupied() ^ Bitboard::from_square(from) ^ Bitboard::from_square(to);
         let mut stm = self.side_to_move;

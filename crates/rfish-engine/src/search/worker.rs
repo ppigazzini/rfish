@@ -568,38 +568,45 @@ impl SearchWorker {
     /// positively: a move several previous contexts agree about is stronger evidence than
     /// one only the immediate parent likes.
     fn update_continuation_histories(&mut self, si: usize, pc: Piece, to: Square, bonus: i32) {
-        const CONTHIST_BONUSES: [(usize, i32); 6] =
-            [(1, 1040), (2, 780), (3, 290), (4, 502), (5, 132), (6, 418)];
         const CMHC_MULTIPLIERS: [i32; 7] = [94, 103, 110, 106, 119, 126, 121];
 
         let in_check = self.stack[si].in_check;
         let mut positive_count = 0usize;
-        // The six plies read below are exactly `si - 6 ..= si - 1`, and `si >= STACK_BASE`
-        // makes that window whole -- which is what the sentinel entries below ply zero are
-        // there to guarantee. Slice it ONCE: `self.stack[si - i]` re-checks against the
-        // whole stack on each of the six, and the window's length is a constant six that
-        // the compiler can see, so `back[6 - i]` needs no check at all. Borrow the two
-        // fields separately so the history stays writable while the window is live.
-        let back = &self.stack[si - 6..si];
         let histories = &mut self.histories;
-        for (i, weight) in CONTHIST_BONUSES {
-            // In check only the two nearest plies are updated: the rest of the line was
-            // forced, so crediting it teaches the ordering nothing.
-            if in_check && i > 2 {
-                break;
-            }
-            let entry = &back[6 - i];
-            if !entry.current_move.is_ok() {
-                continue;
-            }
-            let plane = entry.continuation;
-            if histories.continuation.get(plane, pc, to) > 0 {
-                positive_count += 1;
-            }
-            let multiplier = CMHC_MULTIPLIERS[positive_count];
-            let delta = (bonus * weight * multiplier / 131_072) + 73 * i32::from(i < 2);
-            histories.continuation.update(plane, pc, to, delta);
+        // Written out per ply rather than looped over the table above. The loop did not
+        // unroll -- its `break` and `continue` kept `i` a runtime value -- so the frame
+        // lookup stayed a bounds-checked index and cost 33 instructions per call on its own,
+        // where mcfish and zfish both reach the frame by constant pointer arithmetic. With
+        // the ply a literal, `si - $i` is a constant offset and `in_check && $i > 2` folds
+        // to `in_check` or to `false`.
+        //
+        // Skipping each late ply individually is the same thing as breaking out of the loop
+        // at the first one: `in_check` does not change within a call.
+        macro_rules! ply_back {
+            ($i:literal, $weight:literal) => {{
+                if !(in_check && $i > 2) {
+                    let entry = &self.stack[si - $i];
+                    if entry.current_move.is_ok() {
+                        let plane = entry.continuation;
+                        if histories.continuation.get(plane, pc, to) > 0 {
+                            positive_count += 1;
+                        }
+                        let multiplier = CMHC_MULTIPLIERS[positive_count];
+                        let delta =
+                            (bonus * $weight * multiplier / 131_072) + 73 * i32::from($i < 2);
+                        histories.continuation.update(plane, pc, to, delta);
+                    }
+                }
+            }};
         }
+        // In check only the two nearest plies are updated: the rest of the line was forced,
+        // so crediting it teaches the ordering nothing.
+        ply_back!(1, 1040);
+        ply_back!(2, 780);
+        ply_back!(3, 290);
+        ply_back!(4, 502);
+        ply_back!(5, 132);
+        ply_back!(6, 418);
     }
 
     /// Reward or punish a quiet move across every table that orders quiet moves.
