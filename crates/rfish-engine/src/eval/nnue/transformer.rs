@@ -32,7 +32,7 @@
 
 use crate::board::position::Position;
 use crate::board::threats::{DirtyPawnPairs, DirtyThreat};
-use crate::board::types::{COLOR_NB, Color, Key, Piece, SQUARE_NB, Square};
+use crate::board::types::{COLOR_NB, Color, Key, MAX_PLY, Piece, SQUARE_NB, Square};
 
 use super::common::{Aligned, FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
 use super::features::{
@@ -173,6 +173,15 @@ impl PlySlot {
     }
 }
 
+/// Ply slots held, sized so the search can never need one that is not already there.
+///
+/// The search's ply is `si - STACK_BASE + 1` and its stack is `MAX_PLY + 10` deep, so this
+/// bound covers every ply reachable. Sizing once removes the grow check from `record` and
+/// `record_threats`, which sit on the per-node `do_move` path; an unused slot holds three
+/// EMPTY `Vec`s and costs no allocation, so the whole array is a few hundred KiB of plain
+/// fields per worker whether the search descends that far or not.
+const PLY_SLOTS: usize = MAX_PLY + 10;
+
 /// Scratch buffers an evaluation reuses, so a search does not allocate per node.
 #[derive(Debug)]
 pub struct EvalScratch {
@@ -249,7 +258,7 @@ impl Default for EvalScratch {
     fn default() -> EvalScratch {
         EvalScratch {
             key: EMPTY_KEY,
-            plies: Vec::new(),
+            plies: (0..PLY_SLOTS).map(|_| PlySlot::empty()).collect(),
             cache: [Vec::new(), Vec::new()],
             next_threats: [Vec::new(), Vec::new()],
             adds: [Vec::new(), Vec::new()],
@@ -278,7 +287,30 @@ impl EvalScratch {
         for i in 0..COLOR_NB {
             self.cache[i].clear();
         }
-        self.plies.clear();
+        self.invalidate_plies();
+    }
+
+    /// Mark every ply slot as holding nothing, keeping its buffers.
+    ///
+    /// Invalidated IN PLACE, never by `clear()`. A slot owns three heap buffers — an
+    /// accumulator per perspective and a threat-record list — so clearing drops them all and
+    /// the next descent re-allocates every one on its way down. It is also what sizes the
+    /// vector, and `PLY_SLOTS` is the promise that every ply the search can reach is already
+    /// there: emptying it breaks that promise as well as the allocations.
+    ///
+    /// Resetting the validity fields is exactly as strong, because it leaves each slot saying
+    /// precisely what `PlySlot::empty` says: no key, no king, nothing recorded.
+    fn invalidate_plies(&mut self) {
+        for slot in &mut self.plies {
+            slot.reached = EMPTY_KEY;
+            slot.recorded = false;
+            slot.dts.clear();
+            slot.dpp = DirtyPawnPairs::default();
+            for side in &mut slot.side {
+                side.computed_for = EMPTY_KEY;
+                side.king = None;
+            }
+        }
     }
 
     /// Drop the ply stack, keeping the refresh cache.
@@ -298,16 +330,7 @@ impl EvalScratch {
     /// The refresh cache survives on purpose: its entries are keyed by king square and are
     /// exact for any position that reaches them, so a new search inherits them.
     pub fn new_search(&mut self) {
-        for slot in &mut self.plies {
-            slot.reached = EMPTY_KEY;
-            slot.recorded = false;
-            slot.dts.clear();
-            slot.dpp = DirtyPawnPairs::default();
-            for side in &mut slot.side {
-                side.computed_for = EMPTY_KEY;
-                side.king = None;
-            }
-        }
+        self.invalidate_plies();
         self.key = EMPTY_KEY;
     }
 
@@ -317,7 +340,6 @@ impl EvalScratch {
     /// [`FeatureTransformer::transform`] at that ply and at any ply below it that walks back
     /// through this one.
     pub fn record(&mut self, ply: usize, key: Key, dpp: DirtyPawnPairs) {
-        self.grow_to(ply);
         let slot = &mut self.plies[ply];
         slot.reached = key;
         slot.dpp = dpp;
@@ -329,7 +351,6 @@ impl EvalScratch {
     /// Handed out before the move is made, because `do_move_recording` fills it as it moves
     /// the pieces. Cleared here so the caller never has to remember to.
     pub fn record_threats(&mut self, ply: usize) -> &mut Vec<DirtyThreat> {
-        self.grow_to(ply);
         self.plies[ply].dts.clear();
         &mut self.plies[ply].dts
     }
@@ -340,18 +361,11 @@ impl EvalScratch {
     /// but anything else that advances a ply without recording must say so, or the roll
     /// forward would skip a move.
     pub fn record_null(&mut self, ply: usize, key: Key) {
-        self.grow_to(ply);
         let slot = &mut self.plies[ply];
         slot.reached = key;
         slot.dts.clear();
         slot.dpp = DirtyPawnPairs::default();
         slot.recorded = true;
-    }
-
-    fn grow_to(&mut self, ply: usize) {
-        if self.plies.len() <= ply {
-            self.plies.resize(ply + 1, PlySlot::empty());
-        }
     }
 }
 
@@ -728,7 +742,6 @@ impl FeatureTransformer {
             &mut scratch.mark,
         );
 
-        scratch.grow_to(ply);
         let ka = (&scratch.adds[i][..], &scratch.subs[i][..]);
         let tp = (&scratch.tp_adds[i][..], &scratch.tp_subs[i][..]);
         // Split the borrow by FIELD: the cache and the biases are read while the ply slot is
@@ -781,7 +794,6 @@ impl FeatureTransformer {
             if scratch.mark.is_empty() {
                 scratch.mark = vec![0; MARK_WORDS];
             }
-            scratch.grow_to(ply);
             // The root stamps its own arrival; every other ply's is written by `do_move`.
             if ply == 0 {
                 scratch.plies[0].reached = key;
