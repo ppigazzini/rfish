@@ -116,6 +116,10 @@ fn can_slider_threat(pc: Piece, slider: Piece) -> bool {
 ///   `!put`. `ray_pass_bb` is what names the man beyond `s`.
 /// - **Direct.** The slider threatens the placed piece itself, which follows `put`.
 #[allow(clippy::too_many_arguments)]
+// Always, not a hint: zfish inlines its slider walk into `updatePieceThreats`, and here the
+// two call sites pass `add_direct` as a literal `true` and `false`, so inlining folds that
+// branch out of the loop entirely.
+#[inline(always)]
 fn process_sliders(
     pos: &Position,
     out: &mut Vec<DirtyThreat>,
@@ -166,6 +170,9 @@ fn process_sliders(
 /// subset of every ray, so passing `EMPTY` silently suppresses EVERY discovered threat rather
 /// than none of them. That reads as a delta that is merely incomplete, and the differential
 /// test below caught it as one extra surviving feature.
+// Always, not a hint: every one of the six call sites passes `put` and `compute_ray` as
+// LITERALS, so inlining specialises both branches away at each of them.
+#[inline(always)]
 pub fn update_piece_threats(
     pos: &Position,
     pc: Piece,

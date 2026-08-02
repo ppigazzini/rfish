@@ -1057,7 +1057,10 @@ impl Position {
     /// The `occ` argument is what lets the static exchange evaluation replay a capture
     /// sequence by removing pieces from a local occupancy rather than from the board.
     #[must_use]
-    #[inline]
+    // Always, not a hint: zfish and upstream both inline this into `legal`, `gives_check`
+    // and `see_ge`, where the caller already holds most of the bitboards it reads. Left as
+    // `#[inline]` it stayed a real call, 13.4M instructions of one on a bench.
+    #[inline(always)]
     pub fn attackers_to_occ(&self, sq: Square, occ: Bitboard) -> Bitboard {
         // One borrow of the slider tables; see `attacks::Sliders`.
         let sl = sliders();
