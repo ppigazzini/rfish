@@ -31,10 +31,10 @@ use std::time::Instant;
 use crate::board::movegen::{generate_legal, has_legal_move, move_to_uci};
 use crate::board::position::Position;
 use crate::board::types::{
-    Bound, Color, MAX_PLY, Move, Piece, PieceType, Square, VALUE_DRAW, VALUE_INFINITE, VALUE_MATE,
-    VALUE_MATE_IN_MAX_PLY, VALUE_NONE, VALUE_TB, VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY,
-    VALUE_ZERO, Value, is_decisive, is_loss, is_mate_or_mated, is_valid, is_win, mate_in, mated_in,
-    piece_value,
+    Bound, Color, MAX_MOVES, MAX_PLY, Move, Piece, PieceType, Square, VALUE_DRAW, VALUE_INFINITE,
+    VALUE_MATE, VALUE_MATE_IN_MAX_PLY, VALUE_NONE, VALUE_TB, VALUE_TB_LOSS_IN_MAX_PLY,
+    VALUE_TB_WIN_IN_MAX_PLY, VALUE_ZERO, Value, is_decisive, is_loss, is_mate_or_mated, is_valid,
+    is_win, mate_in, mated_in, piece_value,
 };
 use crate::eval;
 use crate::eval::nnue::{Network, Scratch};
@@ -181,7 +181,11 @@ pub struct SearchWorker {
     pub id: usize,
     pos: Position,
     histories: Box<Histories>,
-    stack: Vec<StackEntry>,
+    /// A boxed ARRAY, not a `Vec`. The length is then a compile-time constant, so every
+    /// `self.stack[si - k]` bounds check compares against an immediate instead of loading
+    /// the length -- and LLVM can fold the checks of a node's several accesses into one. The
+    /// profile put 12.8M instructions of slice-index machinery inside `node` alone.
+    stack: Box<[StackEntry; STACK_SIZE]>,
     root_moves: Vec<RootMove>,
     shared: Arc<SharedState>,
     limits: Limits,
@@ -214,7 +218,9 @@ pub struct SearchWorker {
     /// How often this thread's root best move changed, pooled by the time manager.
     best_move_changes: f64,
     /// The log-scaled reduction table, indexed by depth and by move number.
-    reductions: Vec<i32>,
+    /// A boxed ARRAY: `reduction` reads it twice per move searched, and a `Vec` makes each
+    /// read load a length. `MAX_MOVES` is the bound upstream sizes it to.
+    reductions: Box<[i32; MAX_MOVES]>,
     /// One reusable move buffer per (ply, kind) slot, allocated once and never freed.
     ///
     /// Keyed by kind as well as ply because the search RE-ENTERS a ply twice over: a
@@ -223,7 +229,9 @@ pub struct SearchWorker {
     /// from inside that singular search. One buffer per ply would let the inner picker
     /// overwrite the outer's list mid-iteration. Neither re-entry can nest further --
     /// singular search requires no excluded move -- so three slots per ply are enough.
-    move_pool: Vec<MoveBuf>,
+    /// A boxed ARRAY, for the same reason as `stack`: the slot count is a constant, so the
+    /// per-node lookup compares against an immediate.
+    move_pool: Box<[MoveBuf; SLOTS_PER_PLY * STACK_SIZE]>,
     /// How many nodes remain before the next clock check.
     calls_cnt: i32,
     /// How many threads share the root, for the pooled instability term.
@@ -273,7 +281,12 @@ impl SearchWorker {
             id,
             pos: Position::startpos(),
             histories: Box::default(),
-            stack: vec![StackEntry::default(); STACK_SIZE],
+            stack: match vec![StackEntry::default(); STACK_SIZE].into_boxed_slice().try_into() {
+                Ok(b) => b,
+                // Built with exactly STACK_SIZE elements, so the conversion cannot fail.
+                // A match rather than `expect`, because the error type is the boxed slice.
+                Err(_) => unreachable!("the vec was built with exactly STACK_SIZE items"),
+            },
             root_moves: Vec::new(),
             shared,
             limits: Limits::default(),
@@ -291,10 +304,21 @@ impl SearchWorker {
             nmp_min_ply: 0,
             last_iteration_pv: Vec::new(),
             best_move_changes: 0.0,
-            reductions: vec![0; crate::board::types::MAX_MOVES],
-            move_pool: (0..SLOTS_PER_PLY * STACK_SIZE)
+            reductions: match vec![0; MAX_MOVES].into_boxed_slice().try_into() {
+                Ok(b) => b,
+                // Built with exactly MAX_MOVES elements, so this cannot fail.
+                Err(_) => unreachable!("the vec was built with exactly MAX_MOVES items"),
+            },
+            move_pool: match (0..SLOTS_PER_PLY * STACK_SIZE)
                 .map(|_| MoveBuf::with_capacity(crate::board::types::MAX_MOVES))
-                .collect(),
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
+                .try_into()
+            {
+                Ok(b) => b,
+                // Built with exactly that many elements, so this cannot fail.
+                Err(_) => unreachable!("the vec was built with exactly the slot count"),
+            },
             calls_cnt: 0,
             published_nodes: 0,
             published_tb_hits: 0,

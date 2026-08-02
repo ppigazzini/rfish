@@ -195,7 +195,10 @@ pub struct EvalScratch {
     /// the delta from "sometimes applicable" into the steady state.
     ///
     /// Grown on demand, so a worker that never evaluates does not pay for it.
-    plies: Vec<PlySlot>,
+    /// A boxed ARRAY, not a `Vec`: `PLY_SLOTS` is a constant, so every `plies[ply]` bounds
+    /// check compares against an immediate rather than loading a length. The same change on
+    /// the search stack was worth 16.0M instructions on a bench.
+    plies: Box<[PlySlot; PLY_SLOTS]>,
     /// One slot per king square per perspective — upstream's accumulator refresh cache.
     ///
     /// A king move re-indexes EVERY feature that perspective sees, both orientations being
@@ -258,7 +261,12 @@ impl Default for EvalScratch {
     fn default() -> EvalScratch {
         EvalScratch {
             key: EMPTY_KEY,
-            plies: (0..PLY_SLOTS).map(|_| PlySlot::empty()).collect(),
+            plies: match vec![PlySlot::empty(); PLY_SLOTS].into_boxed_slice().try_into() {
+                Ok(b) => b,
+                // Built with exactly PLY_SLOTS elements, so this cannot fail. A match rather
+                // than `expect`, because the error type is the boxed slice itself.
+                Err(_) => unreachable!("the vec was built with exactly PLY_SLOTS items"),
+            },
             cache: [Vec::new(), Vec::new()],
             next_threats: [Vec::new(), Vec::new()],
             adds: [Vec::new(), Vec::new()],
