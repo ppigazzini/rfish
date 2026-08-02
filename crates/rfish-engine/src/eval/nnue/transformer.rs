@@ -31,11 +31,13 @@
 //! `Stockfish/src/nnue/nnue_accumulator.cpp`.
 
 use crate::board::position::Position;
+use crate::board::threats::{DirtyPawnPairs, DirtyThreat};
 use crate::board::types::{COLOR_NB, Color, Key, Piece, SQUARE_NB, Square};
 
 use super::common::{Aligned, FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
 use super::features::{
-    HALFKA_DIMENSIONS, THREAT_AND_PP_DIMENSIONS, halfka_delta, pawn_pair_active, threat_active,
+    HALFKA_DIMENSIONS, THREAT_AND_PP_DIMENSIONS, halfka_delta, pawn_pair_active, pawn_pair_delta,
+    threat_active, threat_delta,
 };
 
 /// The transformer's weights.
@@ -100,12 +102,12 @@ struct Side {
     /// The placement that produced the above. The king-piece features are diffed straight
     /// off this rather than recomputed and merged, so the set itself is never materialised.
     board: [Piece; SQUARE_NB],
-    /// The active threat and pawn-pair set, in whatever order it was generated. These have
-    /// no equivalent board diff: one square changing moves many threats at once.
+    /// The position key this was computed for, or [`EMPTY_KEY`] when it holds nothing.
     ///
-    /// **Unordered on purpose.** The diff is a membership test against a bitmap rather than
-    /// a merge walk, so nothing downstream reads an order and sorting would buy nothing.
-    threats: Vec<u32>,
+    /// A ply slot is only a legal base for a roll-forward when this still matches the key
+    /// the search reached that ply with — the search may have left and returned, and the
+    /// slot would then hold a cousin.
+    computed_for: Key,
 }
 
 impl Side {
@@ -115,7 +117,58 @@ impl Side {
             acc: Vec::new(),
             psqt: [0; PSQT_BUCKETS],
             board: [Piece::NONE; SQUARE_NB],
-            threats: Vec::new(),
+            computed_for: EMPTY_KEY,
+        }
+    }
+}
+
+/// One refresh-cache entry: an accumulator AND the threat set that produced it.
+///
+/// The set lives here and nowhere else. A ply slot never carries one, because the per-move
+/// delta reaches it from records; a cache entry is reached by a DIFF, which needs the other
+/// side of the comparison. Confining it to the 64 slots per perspective that a refresh
+/// writes is what keeps set construction off the per-node path.
+#[derive(Clone, Debug)]
+struct CacheSlot {
+    side: Side,
+    /// The active threat and pawn-pair set, in whatever order it was generated.
+    ///
+    /// **Unordered on purpose.** The diff is a membership test against a bitmap rather than
+    /// a merge walk, so nothing downstream reads an order and sorting would buy nothing.
+    threats: Vec<u32>,
+}
+
+impl CacheSlot {
+    fn empty() -> CacheSlot {
+        CacheSlot { side: Side::empty(), threats: Vec::new() }
+    }
+}
+
+/// One ply of the accumulator stack: the state, and the move that reached it.
+#[derive(Clone, Debug)]
+struct PlySlot {
+    /// This ply's accumulator, per perspective.
+    side: [Side; COLOR_NB],
+    /// The position key the search reached this ply with, written by `do_move`.
+    reached: Key,
+    /// The threat records of the move that reached this ply from the one below.
+    dts: Vec<DirtyThreat>,
+    /// The pawn placement that move changed.
+    dpp: DirtyPawnPairs,
+    /// Whether the two above describe the hop from the ply below.
+    ///
+    /// False at the root, and after any path that moved the position without recording.
+    recorded: bool,
+}
+
+impl PlySlot {
+    fn empty() -> PlySlot {
+        PlySlot {
+            side: [Side::empty(), Side::empty()],
+            reached: EMPTY_KEY,
+            dts: Vec::new(),
+            dpp: DirtyPawnPairs::default(),
+            recorded: false,
         }
     }
 }
@@ -127,6 +180,15 @@ pub struct EvalScratch {
     key: Key,
     /// The accumulator the search is walking, one per perspective.
     live: [Side; COLOR_NB],
+    /// One accumulator per ply, upstream's `AccumulatorStack`.
+    ///
+    /// A single slot cannot serve a delta: after a subtree returns it holds a COUSIN, and no
+    /// chain of recorded moves connects a cousin to the current position. Measured at an 11%
+    /// one-hop rate. A slot per ply makes the parent always available, which is what turns
+    /// the delta from "sometimes applicable" into the steady state.
+    ///
+    /// Grown on demand, so a worker that never evaluates does not pay for it.
+    plies: Vec<PlySlot>,
     /// One slot per king square per perspective — upstream's accumulator refresh cache.
     ///
     /// A king move re-indexes EVERY feature that perspective sees, both orientations being
@@ -137,12 +199,16 @@ pub struct EvalScratch {
     ///
     /// Grown to 64 slots on first use rather than allocated up front, because a worker that
     /// never evaluates should not pay for it.
-    cache: [Vec<Side>; COLOR_NB],
+    cache: [Vec<CacheSlot>; COLOR_NB],
     /// Freshly computed sets, reused between calls to avoid reallocating.
+    ///
+    /// Written ONLY on the refresh path. The delta path never builds a set, which is the
+    /// whole of what this architecture buys — see [`FeatureTransformer::transform`].
     next_threats: [Vec<u32>; COLOR_NB],
-    /// The features one diff adds and removes, collected before either is applied.
-    adds: Vec<u32>,
-    subs: Vec<u32>,
+    /// The features one diff or one delta adds and removes, collected before either is
+    /// applied. Per perspective, because a delta is indexed for both at once.
+    adds: [Vec<u32>; COLOR_NB],
+    subs: [Vec<u32>; COLOR_NB],
     /// The transformed features this evaluation produced, reused across evaluations.
     ///
     /// Held here rather than allocated in `Network::evaluate` because that is the per-node
@@ -159,6 +225,15 @@ pub struct EvalScratch {
     mark: Vec<u64>,
 }
 
+/// How many hops a roll-forward will walk back through.
+///
+/// Every hop adds its whole record list to the fold, and records do not cancel before they
+/// are applied: a piece that moved twice contributes four rows rather than two. Past a point
+/// a longer chain costs more than the refresh it saves, and the point is MEASURED, not
+/// reasoned about — search instructions at avx2 over the same 163,081 nodes were 2,319M at
+/// one hop, 2,261M at two, 2,247M at three, 2,253M at four, 2,312M at six and 2,421M at ten.
+const HOP_CAP: usize = 3;
+
 /// How many `u64` words cover the threat-and-pawn-pair feature space.
 const MARK_WORDS: usize = THREAT_AND_PP_DIMENSIONS.div_ceil(64);
 
@@ -170,10 +245,11 @@ impl Default for EvalScratch {
         EvalScratch {
             key: EMPTY_KEY,
             live: [Side::empty(), Side::empty()],
+            plies: Vec::new(),
             cache: [Vec::new(), Vec::new()],
             next_threats: [Vec::new(), Vec::new()],
-            adds: Vec::new(),
-            subs: Vec::new(),
+            adds: [Vec::new(), Vec::new()],
+            subs: [Vec::new(), Vec::new()],
             mark: Vec::new(),
             transformed: Aligned::new(L1),
         }
@@ -196,6 +272,65 @@ impl EvalScratch {
         for i in 0..COLOR_NB {
             self.live[i] = Side::empty();
             self.cache[i].clear();
+        }
+        self.plies.clear();
+    }
+
+    /// Drop the ply stack, keeping the refresh cache.
+    ///
+    /// Every ply from one is stamped by the `do_move` that reached it, so a slot the search
+    /// has left cannot be mistaken for one it stands on. Ply ZERO has no such stamp — it is
+    /// written only by the evaluation itself — so a root that changes without ply zero being
+    /// re-evaluated would leave a slot that agrees with itself about the wrong position.
+    /// Clearing per search is what closes that, and it costs one `Vec` truncation.
+    ///
+    /// The refresh cache survives on purpose: its entries are keyed by king square and are
+    /// exact for any position that reaches them, so a new search inherits them.
+    pub fn new_search(&mut self) {
+        self.plies.clear();
+        self.key = EMPTY_KEY;
+    }
+
+    /// Record the hop that reached `ply`, so the accumulator there can roll forward.
+    ///
+    /// Called from the search's own `do_move`. The records are consumed by
+    /// [`FeatureTransformer::transform`] at that ply and at any ply below it that walks back
+    /// through this one.
+    pub fn record(&mut self, ply: usize, key: Key, dpp: DirtyPawnPairs) {
+        self.grow_to(ply);
+        let slot = &mut self.plies[ply];
+        slot.reached = key;
+        slot.dpp = dpp;
+        slot.recorded = true;
+    }
+
+    /// The list [`EvalScratch::record`] appends this hop's threat records to.
+    ///
+    /// Handed out before the move is made, because `do_move_recording` fills it as it moves
+    /// the pieces. Cleared here so the caller never has to remember to.
+    pub fn record_threats(&mut self, ply: usize) -> &mut Vec<DirtyThreat> {
+        self.grow_to(ply);
+        self.plies[ply].dts.clear();
+        &mut self.plies[ply].dts
+    }
+
+    /// Mark the hop that reached `ply` as one no records describe.
+    ///
+    /// A null move needs none — it moves no piece, so no threat and no pawn pair changes —
+    /// but anything else that advances a ply without recording must say so, or the roll
+    /// forward would skip a move.
+    pub fn record_null(&mut self, ply: usize, key: Key) {
+        self.grow_to(ply);
+        let slot = &mut self.plies[ply];
+        slot.reached = key;
+        slot.dts.clear();
+        slot.dpp = DirtyPawnPairs::default();
+        slot.recorded = true;
+    }
+
+    fn grow_to(&mut self, ply: usize) {
+        if self.plies.len() <= ply {
+            self.plies.resize(ply + 1, PlySlot::empty());
         }
     }
 }
@@ -318,13 +453,9 @@ impl FeatureTransformer {
     /// Order does not matter to the result: the accumulator is wrapping `i16` and the PSQT
     /// head is `i32`, and both are associative and commutative under the additions applied
     /// here, so collecting first changes nothing about the value.
-    fn diff_apply(
-        &self,
+    fn collect_diff(
         old: &[u32],
         new: &[u32],
-        halfka: bool,
-        acc: &mut [i16],
-        psqt: &mut [i32; PSQT_BUCKETS],
         adds: &mut Vec<u32>,
         subs: &mut Vec<u32>,
         mark: &mut [u64],
@@ -357,8 +488,6 @@ impl FeatureTransformer {
                 mark[w] &= !b;
             }
         }
-
-        self.fold_changed(halfka, adds, subs, acc, psqt);
     }
 
     /// Apply a set of added and removed features to the accumulator and the PSQT head.
@@ -470,13 +599,158 @@ impl FeatureTransformer {
         pawn_pair_active(pos, threats);
     }
 
+    /// The nearest ancestor ply whose accumulator this one can roll forward from.
+    ///
+    /// Three conditions, and all three are cheap. The base must have been COMPUTED for the
+    /// position the search actually reached that ply with — the search leaves and returns,
+    /// and a slot it left behind holds a cousin. It must have been computed against the SAME
+    /// king square, because every index a perspective sees is keyed off it. And every hop
+    /// between must be recorded, or the chain has a gap no records describe.
+    ///
+    /// The king squares BETWEEN do not matter. A record is a geometric tuple, not an index,
+    /// so the whole chain is indexed against the current square when it is applied.
+    fn rollforward_base(scratch: &EvalScratch, p: Color, ply: usize, ksq: Square) -> Option<usize> {
+        let i = p.index();
+        let mut at = ply;
+        loop {
+            let slot = &scratch.plies[at];
+            let side = &slot.side[i];
+            if side.computed_for != EMPTY_KEY
+                && side.computed_for == slot.reached
+                && side.king == Some(ksq)
+            {
+                return Some(at);
+            }
+            // Step below only through a hop whose records exist.
+            if at == 0 || !slot.recorded || ply - at >= HOP_CAP {
+                return None;
+            }
+            at -= 1;
+        }
+    }
+
+    /// Roll `base`'s accumulator forward to this position, from records alone.
+    ///
+    /// **No feature set is built here, and that is the point.** The king-piece half comes
+    /// from a board diff, as it always has; the threat and pawn-pair half comes from the
+    /// hops' own records, where it used to come from rebuilding both sets and diffing them.
+    /// Building the set was ~257M of the search, and it was being paid on the delta path too
+    /// because the diff needed a set to compare against.
+    ///
+    /// Concatenating a chain is legal for the same reason a single hop is: the fold applies
+    /// the sum of the adds less the sum of the subs, so a feature one hop creates and a
+    /// later hop destroys cancels exactly, in either order.
+    fn roll_forward(
+        &self,
+        pos: &Position,
+        p: Color,
+        ply: usize,
+        base: usize,
+        ksq: Square,
+        scratch: &mut EvalScratch,
+    ) {
+        let i = p.index();
+        scratch.live[i].clone_from(&scratch.plies[base].side[i]);
+
+        scratch.adds[i].clear();
+        scratch.subs[i].clear();
+        // The board diff spans the whole chain at once: it compares placements, not moves.
+        halfka_delta(
+            &scratch.live[i].board,
+            pos.board(),
+            p,
+            ksq,
+            &mut scratch.adds[i],
+            &mut scratch.subs[i],
+        );
+        let live = &mut scratch.live[i];
+        self.fold_changed(true, &scratch.adds[i], &scratch.subs[i], &mut live.acc, &mut live.psqt);
+        live.board = *pos.board();
+
+        scratch.adds[i].clear();
+        scratch.subs[i].clear();
+        for hop in base + 1..=ply {
+            // Split the borrow by FIELD: the hop's records are read while this perspective's
+            // add and subtract lists are written, and the two are distinct fields.
+            let (plies, adds, subs) = (&scratch.plies, &mut scratch.adds[i], &mut scratch.subs[i]);
+            threat_delta(&plies[hop].dts, p, ksq, adds, subs);
+            pawn_pair_delta(&plies[hop].dpp, p, ksq, adds, subs);
+        }
+        let live = &mut scratch.live[i];
+        self.fold_changed(false, &scratch.adds[i], &scratch.subs[i], &mut live.acc, &mut live.psqt);
+    }
+
+    /// Rebuild this perspective's accumulator against the refresh cache.
+    ///
+    /// The ONLY path that materialises a feature set, and the only one that needs to: a
+    /// cache entry is reached by a DIFF rather than by records, so the other side of the
+    /// comparison has to exist. Taken when the king has moved, when the search has jumped,
+    /// or when a hop went unrecorded.
+    fn refresh(&self, pos: &Position, p: Color, ksq: Square, scratch: &mut EvalScratch) {
+        let i = p.index();
+        if scratch.cache[i].is_empty() {
+            scratch.cache[i].resize(SQUARE_NB, CacheSlot::empty());
+        }
+        Self::active_sets(pos, &mut scratch.next_threats);
+
+        // With no entry for this king square the base is the biases and an empty active set,
+        // so the "diff" is every feature -- which is exactly the from-scratch computation.
+        // One code path serves both, so there is no second implementation to disagree.
+        let src = &scratch.cache[i][ksq.index()];
+        let live = &mut scratch.live[i];
+        if src.side.king.is_some() {
+            live.clone_from(&src.side);
+        } else {
+            live.acc.clear();
+            live.acc.extend_from_slice(&self.biases);
+            live.psqt = [0; PSQT_BUCKETS];
+            live.board = [Piece::NONE; SQUARE_NB];
+        }
+        live.king = Some(ksq);
+
+        scratch.adds[i].clear();
+        scratch.subs[i].clear();
+        halfka_delta(
+            &scratch.live[i].board,
+            pos.board(),
+            p,
+            ksq,
+            &mut scratch.adds[i],
+            &mut scratch.subs[i],
+        );
+        let live = &mut scratch.live[i];
+        self.fold_changed(true, &scratch.adds[i], &scratch.subs[i], &mut live.acc, &mut live.psqt);
+        live.board = *pos.board();
+
+        // Split the borrow by FIELD: the cached set is read while the accumulator, the
+        // collection buffers and the membership bitmap are written.
+        let old: &[u32] = &scratch.cache[i][ksq.index()].threats;
+        let new: &[u32] = &scratch.next_threats[i];
+        let live = &mut scratch.live[i];
+        Self::collect_diff(old, new, &mut scratch.adds[i], &mut scratch.subs[i], &mut scratch.mark);
+        self.fold_changed(false, &scratch.adds[i], &scratch.subs[i], &mut live.acc, &mut live.psqt);
+
+        // This king square's entry becomes what was just computed, set and all. Written only
+        // here, so the set never touches the per-node path.
+        let slot = &mut scratch.cache[i][ksq.index()];
+        slot.side.clone_from(&scratch.live[i]);
+        slot.threats.clear();
+        slot.threats.extend_from_slice(&scratch.next_threats[i]);
+    }
+
     /// Fill the scratch's transformed features and return the PSQT score.
     ///
     /// The output is a pairwise product, not an activation: the 1024 accumulated values are
     /// split in half and multiplied element-wise, which is what gives the first hidden layer
     /// a quadratic term without a second matrix. Both halves are clamped to `[0, 255]`
     /// first, so the product fits `u8` after the shift.
-    pub fn transform(&self, pos: &Position, bucket: usize, scratch: &mut EvalScratch) -> i32 {
+    pub fn transform(
+        &self,
+        pos: &Position,
+        bucket: usize,
+        ply: usize,
+        scratch: &mut EvalScratch,
+    ) -> i32 {
         // The RAW key, not the table key: the accumulator depends on the pieces alone, and
         // mixing the halfmove clock in would miss the cache every time the clock ticked
         // past fourteen without a single feature having changed.
@@ -485,88 +759,32 @@ impl FeatureTransformer {
         // The same position twice in a row -- a quiescence stand-pat after a main-search
         // evaluation, say -- needs no work at all.
         if scratch.key != key {
-            Self::active_sets(pos, &mut scratch.next_threats);
             if scratch.mark.is_empty() {
                 scratch.mark = vec![0; MARK_WORDS];
+            }
+            scratch.grow_to(ply);
+            // The root stamps its own arrival; every other ply's is written by `do_move`.
+            if ply == 0 {
+                scratch.plies[0].reached = key;
+                scratch.plies[0].recorded = false;
             }
 
             for p in Color::ALL {
                 let i = p.index();
                 let ksq = pos.king_square(p);
-
-                let refreshed = scratch.live[i].king != Some(ksq);
-                if refreshed {
-                    // This perspective's king has moved, so every feature it sees has been
-                    // re-indexed and the live slot is no longer a useful base. Take the last
-                    // accumulator computed for THIS king square instead. With none -- the
-                    // first evaluation from this square -- the base is the biases and an
-                    // empty active set, so the "diff" is every feature, which is exactly the
-                    // from-scratch computation. One code path serves both, so there is no
-                    // second implementation to disagree.
-                    if scratch.cache[i].is_empty() {
-                        scratch.cache[i].resize(SQUARE_NB, Side::empty());
-                    }
-                    let src = &scratch.cache[i][ksq.index()];
-                    let live = &mut scratch.live[i];
-                    if src.king.is_some() {
-                        live.acc.clone_from(&src.acc);
-                        live.psqt = src.psqt;
-                        live.board = src.board;
-                        live.threats.clone_from(&src.threats);
-                    } else {
-                        live.acc.clear();
-                        live.acc.extend_from_slice(&self.biases);
-                        live.psqt = [0; PSQT_BUCKETS];
-                        live.board = [Piece::NONE; SQUARE_NB];
-                        live.threats.clear();
-                    }
-                    live.king = Some(ksq);
+                match Self::rollforward_base(scratch, p, ply, ksq) {
+                    Some(base) => self.roll_forward(pos, p, ply, base, ksq, scratch),
+                    None => self.refresh(pos, p, ksq, scratch),
                 }
-
+                // The ply slot takes the state the two paths above left in `live`. Held in
+                // `live` rather than read out of the stack because the pairwise step below
+                // reads one accumulator per perspective and does not care which ply it came
+                // from.
                 let live = &mut scratch.live[i];
-                // The king-piece features come straight off a board diff: no set to build,
-                // no sort, no merge walk. The fold does not care what order they arrive in.
-                scratch.adds.clear();
-                scratch.subs.clear();
-                halfka_delta(
-                    &live.board,
-                    pos.board(),
-                    p,
-                    ksq,
-                    &mut scratch.adds,
-                    &mut scratch.subs,
-                );
-                self.fold_changed(
-                    true,
-                    &scratch.adds,
-                    &scratch.subs,
-                    &mut live.acc,
-                    &mut live.psqt,
-                );
-                live.board = *pos.board();
-                self.diff_apply(
-                    &live.threats,
-                    &scratch.next_threats[i],
-                    false,
-                    &mut live.acc,
-                    &mut live.psqt,
-                    &mut scratch.adds,
-                    &mut scratch.subs,
-                    &mut scratch.mark,
-                );
-                // SWAP rather than copy: the freshly computed set becomes the live one, and
-                // the set it replaces goes back to the scratch slot, whose first act next
-                // evaluation is to clear it. A copy here would move the same bytes for the
-                // same result and keep a buffer nobody reads.
-                core::mem::swap(&mut live.threats, &mut scratch.next_threats[i]);
-
-                // Refresh this king square's slot only when the refresh path was taken.
-                // Writing it on every evaluation costs a copy per evaluation to make a rare
-                // case cheaper, which is the trade the per-ply stack already lost twice.
-                if refreshed {
-                    scratch.cache[i][ksq.index()].clone_from(live);
-                }
+                live.computed_for = key;
+                scratch.plies[ply].side[i].clone_from(live);
             }
+            scratch.plies[ply].reached = key;
             scratch.key = key;
         }
 
@@ -627,6 +845,66 @@ mod tests {
     /// sequence of unrelated positions through ONE scratch and comparing each against a
     /// fresh scratch is what proves it — a diff that drifts would show up on the second
     /// position, not the first.
+    /// Rolling a line forward from records reaches the same accumulator as refreshing.
+    ///
+    /// Walks a real line, driving the scratch exactly as the search's `do_move` does, and
+    /// compares each ply against a scratch that has seen nothing. A delta that drifts shows
+    /// up at the ply it drifts on, with the move that caused it.
+    #[test]
+    fn rolling_a_line_forward_reaches_what_a_refresh_reaches() {
+        use crate::board::movegen::generate_legal;
+
+        let mut ft = FeatureTransformer::new();
+        for (i, w) in ft.weights.iter_mut().enumerate() {
+            *w = ((i * 7919) % 61) as i16 - 30;
+        }
+        for (i, w) in ft.threat_and_pp_weights.iter_mut().enumerate() {
+            *w = ((i * 104_729) % 41) as i8 - 20;
+        }
+        for (i, w) in ft.psqt_weights.iter_mut().enumerate() {
+            *w = ((i * 31) % 97) as i32 - 48;
+        }
+        for (i, w) in ft.threat_and_pp_psqt_weights.iter_mut().enumerate() {
+            *w = ((i * 17) % 53) as i32 - 26;
+        }
+
+        // A deterministic walk: take the n-th legal move at each ply, for several n, so the
+        // line covers captures, promotions and king moves rather than one narrow path.
+        for pick in 0..7usize {
+            let mut pos = Position::from_fen(
+                "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+                false,
+            )
+            .expect("valid fen");
+            let mut walk = EvalScratch::default();
+            let _ = ft.transform(&pos, 0, 0, &mut walk);
+
+            for ply in 1..12usize {
+                let list = generate_legal(&pos);
+                if list.is_empty() {
+                    break;
+                }
+                let m = list.get(pick % list.len()).copied().expect("in range");
+                let gives_check = pos.gives_check(m);
+                let dts = walk.record_threats(ply);
+                let dpp = pos.do_move_recording(m, gives_check, Some(dts));
+                walk.record(ply, pos.raw_key(), dpp);
+
+                let rolled = ft.transform(&pos, 0, ply, &mut walk);
+                let rolled_out = walk.transformed().to_vec();
+
+                let mut fresh = EvalScratch::default();
+                let refreshed = ft.transform(&pos, 0, 0, &mut fresh);
+                assert_eq!(rolled, refreshed, "pick {pick}, ply {ply}, after {m:?}: PSQT differs");
+                assert_eq!(
+                    rolled_out,
+                    fresh.transformed().to_vec(),
+                    "pick {pick}, ply {ply}, after {m:?}: accumulator differs"
+                );
+            }
+        }
+    }
+
     #[test]
     fn diffing_reaches_the_same_state_as_starting_over() {
         let mut ft = FeatureTransformer::new();
@@ -656,12 +934,12 @@ mod tests {
             let pos = Position::from_fen(fen, false).expect("valid");
             let bucket = (pos.piece_total() as usize - 1) / 4;
 
-            let pa = ft.transform(&pos, bucket, &mut shared);
+            let pa = ft.transform(&pos, bucket, 0, &mut shared);
             let a = shared.transformed().to_vec();
 
             // A fresh scratch has nothing to diff against, so it computes from scratch.
             let mut fresh = EvalScratch::default();
-            let pb = ft.transform(&pos, bucket, &mut fresh);
+            let pb = ft.transform(&pos, bucket, 0, &mut fresh);
             let b = fresh.transformed().to_vec();
 
             assert_eq!(a, b, "{fen}: diffed features differ from a fresh computation");
@@ -675,9 +953,9 @@ mod tests {
         let ft = FeatureTransformer::new();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let first = ft.transform(&pos, 7, &mut scratch);
+        let first = ft.transform(&pos, 7, 0, &mut scratch);
         scratch.reset();
-        let second = ft.transform(&pos, 7, &mut scratch);
+        let second = ft.transform(&pos, 7, 0, &mut scratch);
         assert_eq!(first, second);
     }
 
@@ -686,7 +964,7 @@ mod tests {
         let ft = FeatureTransformer::new();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let psqt = ft.transform(&pos, 7, &mut scratch);
+        let psqt = ft.transform(&pos, 7, 0, &mut scratch);
         assert_eq!(psqt, 0);
         assert!(scratch.transformed().iter().all(|&x| x == 0));
     }
@@ -704,7 +982,7 @@ mod tests {
 
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        ft.transform(&pos, 7, &mut scratch);
+        ft.transform(&pos, 7, 0, &mut scratch);
 
         // 300 clamps to 255: 255 * 100 / 512 = 49.
         assert_eq!(scratch.transformed()[0], 49);
@@ -724,7 +1002,7 @@ mod tests {
         }
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        assert_eq!(ft.transform(&pos, 3, &mut scratch), 0);
+        assert_eq!(ft.transform(&pos, 3, 0, &mut scratch), 0);
     }
 
     /// The scratch buffers must be reusable: a second call has to produce the same answer
@@ -736,9 +1014,9 @@ mod tests {
         ft.biases[L1 / 2] = 200;
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let pa = ft.transform(&pos, 7, &mut scratch);
+        let pa = ft.transform(&pos, 7, 0, &mut scratch);
         let a = scratch.transformed().to_vec();
-        let pb = ft.transform(&pos, 7, &mut scratch);
+        let pb = ft.transform(&pos, 7, 0, &mut scratch);
         let b = scratch.transformed().to_vec();
         assert_eq!(a, b);
         assert_eq!(pa, pb);

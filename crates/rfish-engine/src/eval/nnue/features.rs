@@ -559,16 +559,14 @@ pub fn pawn_pair_index(
 
 /// Every active pawn-pair feature, for one perspective.
 pub fn pawn_pair_active(pos: &Position, out: &mut [Vec<u32>; COLOR_NB]) {
-    let ksq = [pos.king_square(Color::White), pos.king_square(Color::Black)];
-    pawn_pairs_of(
-        pos.pieces_of(Color::White, PieceType::Pawn),
-        pos.pieces_of(Color::Black, PieceType::Pawn),
-        ksq,
-        out,
-    );
+    let white = pos.pieces_of(Color::White, PieceType::Pawn);
+    let black = pos.pieces_of(Color::Black, PieceType::Pawn);
+    for p in Color::ALL {
+        pawn_pairs_of(white, black, p, pos.king_square(p), &mut out[p.index()]);
+    }
 }
 
-/// Every pawn-pair feature of one pair of pawn bitboards, for both perspectives.
+/// Every pawn-pair feature of one pair of pawn bitboards, for one perspective.
 ///
 /// Split out of [`pawn_pair_active`] because the per-move delta has the two bitboards and
 /// no position: [`DirtyPawnPairs`] records them before and after, and the pawn-pair set is
@@ -576,8 +574,9 @@ pub fn pawn_pair_active(pos: &Position, out: &mut [Vec<u32>; COLOR_NB]) {
 fn pawn_pairs_of(
     white: Bitboard,
     black: Bitboard,
-    ksq: [Square; COLOR_NB],
-    out: &mut [Vec<u32>; COLOR_NB],
+    perspective: Color,
+    ksq: Square,
+    out: &mut Vec<u32>,
 ) {
     // Walking `bb` while popping is what deduplicates same-colour pairs: only pawns after
     // `from` in square order are considered, so each unordered pair is seen once.
@@ -586,16 +585,10 @@ fn pawn_pairs_of(
         let from = bb.pop_lsb();
         let band = PAWN_PAIR_BB[from.index()];
         for to in band & bb {
-            for p in [Color::White, Color::Black] {
-                let i = p.index();
-                out[i].push(pawn_pair_index(p, Color::White, from, to, Color::White, ksq[i]));
-            }
+            out.push(pawn_pair_index(perspective, Color::White, from, to, Color::White, ksq));
         }
         for to in band & black {
-            for p in [Color::White, Color::Black] {
-                let i = p.index();
-                out[i].push(pawn_pair_index(p, Color::White, from, to, Color::Black, ksq[i]));
-            }
+            out.push(pawn_pair_index(perspective, Color::White, from, to, Color::Black, ksq));
         }
     }
 
@@ -604,10 +597,7 @@ fn pawn_pairs_of(
         let from = bb.pop_lsb();
         let band = PAWN_PAIR_BB[from.index()];
         for to in band & bb {
-            for p in [Color::White, Color::Black] {
-                let i = p.index();
-                out[i].push(pawn_pair_index(p, Color::Black, from, to, Color::Black, ksq[i]));
-            }
+            out.push(pawn_pair_index(perspective, Color::Black, from, to, Color::Black, ksq));
         }
     }
 }
@@ -625,20 +615,18 @@ fn pawn_pairs_of(
 /// exactly. It would matter only to a materialised set, which is what this replaces.
 pub fn threat_delta(
     dts: &[DirtyThreat],
-    ksq: [Square; COLOR_NB],
-    adds: &mut [Vec<u32>; COLOR_NB],
-    subs: &mut [Vec<u32>; COLOR_NB],
+    perspective: Color,
+    ksq: Square,
+    adds: &mut Vec<u32>,
+    subs: &mut Vec<u32>,
 ) {
     for dt in dts {
-        let (attacker, attacked, from, to) = (dt.attacker(), dt.attacked(), dt.from(), dt.to());
-        for p in Color::ALL {
-            let i = p.index();
-            let index = threat_index(p, attacker, from, to, attacked, ksq[i]);
-            if index >= THREAT_DIMENSIONS {
-                continue;
-            }
-            if dt.is_add() { adds[i].push(index) } else { subs[i].push(index) }
+        let index =
+            threat_index(perspective, dt.attacker(), dt.from(), dt.to(), dt.attacked(), ksq);
+        if index >= THREAT_DIMENSIONS {
+            continue;
         }
+        if dt.is_add() { adds.push(index) } else { subs.push(index) }
     }
 }
 
@@ -651,15 +639,70 @@ pub fn threat_delta(
 /// most moves leave the pawns alone and [`DirtyPawnPairs::is_unchanged`] returns early.
 pub fn pawn_pair_delta(
     dpp: &DirtyPawnPairs,
-    ksq: [Square; COLOR_NB],
-    adds: &mut [Vec<u32>; COLOR_NB],
-    subs: &mut [Vec<u32>; COLOR_NB],
+    perspective: Color,
+    ksq: Square,
+    adds: &mut Vec<u32>,
+    subs: &mut Vec<u32>,
 ) {
     if dpp.is_unchanged() {
         return;
     }
-    pawn_pairs_of(dpp.before[0], dpp.before[1], ksq, subs);
-    pawn_pairs_of(dpp.after[0], dpp.after[1], ksq, adds);
+    // Only a pair with a pawn on a square the move CHANGED can differ between the two
+    // boards; every other pair is in both sets and would cancel. Rebuilding both sets whole
+    // and letting them cancel is exact too, and it measured 96.5M — 144,412 walks of the
+    // full pawn-pair set, where a move touches two squares.
+    let changed = (dpp.before[0] ^ dpp.after[0]) | (dpp.before[1] ^ dpp.after[1]);
+    pawn_pairs_touching(dpp.before[0], dpp.before[1], changed, perspective, ksq, subs);
+    pawn_pairs_touching(dpp.after[0], dpp.after[1], changed, perspective, ksq, adds);
+}
+
+/// The pawn-pair features of one board that involve a square in `changed`.
+///
+/// The walk is [`pawn_pairs_of`]'s, unchanged, so each unordered pair is still visited
+/// exactly once — a pair both of whose pawns moved must not be emitted twice. What is added
+/// is the filter, and a skip for a pawn with nothing changed anywhere in its band.
+fn pawn_pairs_touching(
+    white: Bitboard,
+    black: Bitboard,
+    changed: Bitboard,
+    perspective: Color,
+    ksq: Square,
+    out: &mut Vec<u32>,
+) {
+    let mut bb = white;
+    while bb.any() {
+        let from = bb.pop_lsb();
+        let band = PAWN_PAIR_BB[from.index()];
+        let touched = changed.contains(from);
+        if !touched && (band & changed).is_empty() {
+            continue;
+        }
+        for to in band & bb {
+            if touched || changed.contains(to) {
+                out.push(pawn_pair_index(perspective, Color::White, from, to, Color::White, ksq));
+            }
+        }
+        for to in band & black {
+            if touched || changed.contains(to) {
+                out.push(pawn_pair_index(perspective, Color::White, from, to, Color::Black, ksq));
+            }
+        }
+    }
+
+    let mut bb = black;
+    while bb.any() {
+        let from = bb.pop_lsb();
+        let band = PAWN_PAIR_BB[from.index()];
+        let touched = changed.contains(from);
+        if !touched && (band & changed).is_empty() {
+            continue;
+        }
+        for to in band & bb {
+            if touched || changed.contains(to) {
+                out.push(pawn_pair_index(perspective, Color::Black, from, to, Color::Black, ksq));
+            }
+        }
+    }
 }
 
 /// The threat and pawn-pair sets share one weight array.
@@ -721,10 +764,13 @@ mod tests {
                 let dpp = child.do_move_recording(m, gives_check, Some(&mut dts));
 
                 let ksq = [child.king_square(Color::White), child.king_square(Color::Black)];
-                let mut adds = [Vec::new(), Vec::new()];
-                let mut subs = [Vec::new(), Vec::new()];
-                threat_delta(&dts, ksq, &mut adds, &mut subs);
-                pawn_pair_delta(&dpp, ksq, &mut adds, &mut subs);
+                let mut adds: [Vec<u32>; COLOR_NB] = [Vec::new(), Vec::new()];
+                let mut subs: [Vec<u32>; COLOR_NB] = [Vec::new(), Vec::new()];
+                for p in Color::ALL {
+                    let i = p.index();
+                    threat_delta(&dts, p, ksq[i], &mut adds[i], &mut subs[i]);
+                    pawn_pair_delta(&dpp, p, ksq[i], &mut adds[i], &mut subs[i]);
+                }
 
                 let after = full(&child);
                 for p in Color::ALL {

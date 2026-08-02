@@ -35,11 +35,12 @@ use crate::board::types::{VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY};
 pub fn evaluate(
     pos: &Position,
     network: Option<&nnue::Network>,
+    ply: usize,
     scratch: &mut nnue::Scratch,
     optimism: Value,
 ) -> Value {
     let v = match network {
-        Some(net) => nnue_value(pos, net, scratch, optimism),
+        Some(net) => nnue_value(pos, net, ply, scratch, optimism),
         None => classical::evaluate(pos),
     };
 
@@ -55,9 +56,11 @@ pub fn evaluate(
 pub fn evaluate(
     pos: &Position,
     network: Option<&nnue::Network>,
+    ply: usize,
     scratch: &mut nnue::Scratch,
     optimism: Value,
 ) -> Value {
+    let _ = ply;
     // The network, the scratch buffers and the optimism term are all deliberately unused:
     // taking them out of the per-node cost is the entire point of this build.
     let _ = (network, scratch, optimism);
@@ -97,10 +100,11 @@ fn material_only(pos: &Position) -> Value {
 fn nnue_value(
     pos: &Position,
     net: &nnue::Network,
+    ply: usize,
     scratch: &mut nnue::Scratch,
     optimism: Value,
 ) -> Value {
-    let out = net.evaluate(pos, scratch);
+    let out = net.evaluate(pos, ply, scratch);
     let mut nnue = i64::from(out.psqt + out.positional);
     let mut optimism = i64::from(optimism);
 
@@ -160,7 +164,7 @@ mod tests {
     /// Evaluate with no network, which is the fallback path.
     fn eval_classical(pos: &Position) -> Value {
         let mut scratch = nnue::Scratch::default();
-        evaluate(pos, None, &mut scratch, 0)
+        evaluate(pos, None, 0, &mut scratch, 0)
     }
 
     #[test]
