@@ -429,6 +429,27 @@ when the live slot holds this move's parent, and pruning and qsearch mean the ne
 evaluated is usually not the immediate child of the last one evaluated. 11% of the ~158M
 rebuild is ~17M against 85.7M paid.
 
+**The stack was then built anyway, with the delta, and measured.** The rows in "One slot, not
+a stack" were taken with BOTH designs rebuilding the feature set, so they say nothing about a
+stack whose whole purpose is to make a delta apply. That objection is correct and the
+experiment was redone: ../zfish's architecture, the delta seeded from ply `si - 1` instead of
+from the live slot, plumbed through `evaluate` as a stack index.
+
+| | search Ir |
+|---|---|
+| rebuild, single slot (kept) | 2,067,660,319 |
+| single-slot delta, 11% hit | 2,152,866,131 |
+| **per-ply stack + delta** | **2,246,124,890** |
+
+Bit-exact — signature 2508687, `nnue-check` 109 of 109, perft clean — and **178.5M worse than
+the rebuild**. The hit rate is fixed; the seeding is not. Rolling forward from the parent ply
+means copying that ply's accumulator AND its threat set into the working slot, ~7.4 KB per
+evaluation over 61,341 of them, and that copy costs more than the 158M rebuild it removes.
+What is left untried is folding directly from the parent's accumulator into the child's rather
+than copying first — the shape "One slot" tried second and lost by 278M, now with a delta
+under it. Anyone attempting it should expect to recover the copy and little else: the measured
+gap is 178.5M and the copy is most of it.
+
 **Raising that hit rate is the twice-lost stack.** The only way the parent's accumulator is
 always available is a slot per ply, which "One slot, not a stack" measured losing twice. A
 record stack without accumulators does not rescue it either: after a subtree return the live
