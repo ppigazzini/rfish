@@ -317,12 +317,19 @@ struct RayTables {
     between: Box<[[Bitboard; SQUARE_NB]; SQUARE_NB]>,
     /// The full line through two squares, empty when they share no rank, file or diagonal.
     line: Box<[[Bitboard; SQUARE_NB]; SQUARE_NB]>,
+    /// The ray from `s1` THROUGH `s2` and on to the edge, on an otherwise empty board.
+    ///
+    /// Upstream's `RayPassBB`, and what the threat delta needs that `between` cannot give:
+    /// when a piece leaves `s2`, the first man further along this ray is the one a slider on
+    /// `s1` newly attacks. `between` stops at `s2` and so cannot name it.
+    ray_pass: Box<[[Bitboard; SQUARE_NB]; SQUARE_NB]>,
 }
 
 impl RayTables {
     fn build() -> RayTables {
         let mut between = vec![[Bitboard::EMPTY; SQUARE_NB]; SQUARE_NB];
         let mut line = vec![[Bitboard::EMPTY; SQUARE_NB]; SQUARE_NB];
+        let mut ray_pass = vec![[Bitboard::EMPTY; SQUARE_NB]; SQUARE_NB];
 
         for s1 in Square::all() {
             for s2 in Square::all() {
@@ -335,6 +342,12 @@ impl RayTables {
                         between[s1.index()][s2.index()] =
                             sliding_attacks(dirs, s1, Bitboard::from_square(s2))
                                 & sliding_attacks(dirs, s2, Bitboard::from_square(s1));
+                        // Upstream `attacks_bb(pt, s1, 0) & (attacks_bb(pt, s2, s1) | s2)`:
+                        // everything s1 sees on an empty board, intersected with what s2
+                        // sees once s1 blocks it -- which is the far side of s2, plus s2.
+                        ray_pass[s1.index()][s2.index()] =
+                            sliding_attacks(dirs, s1, Bitboard::EMPTY)
+                                & (sliding_attacks(dirs, s2, Bitboard::from_square(s1)) | s2);
                     }
                 }
                 // Upstream includes s2 unconditionally, so a knight check -- which shares
@@ -346,6 +359,7 @@ impl RayTables {
         RayTables {
             between: between.into_boxed_slice().try_into().expect("64 rows"),
             line: line.into_boxed_slice().try_into().expect("64 rows"),
+            ray_pass: ray_pass.into_boxed_slice().try_into().expect("64 rows"),
         }
     }
 }
@@ -367,6 +381,26 @@ pub fn between_bb(a: Square, b: Square) -> Bitboard {
 #[must_use]
 pub fn line_bb(a: Square, b: Square) -> Bitboard {
     RAYS.line[a.index()][b.index()]
+}
+
+/// The ray from `a` through `b` and on to the edge, empty when they share no ray.
+///
+/// The threat delta's discovered-attack test: what a slider on `a` reaches once the man on
+/// `b` is gone. See [`RayTables::ray_pass`].
+#[inline(always)]
+#[must_use]
+pub fn ray_pass_bb(a: Square, b: Square) -> Bitboard {
+    RAYS.ray_pass[a.index()][b.index()]
+}
+
+/// Bishop and rook attacks from one square in a single lookup.
+///
+/// Upstream's `both_attacks_bb`. The threat delta needs both sets at the same square and
+/// the same occupancy, and asking twice recomputes the occupancy mask twice.
+#[inline(always)]
+#[must_use]
+pub fn both_attacks_bb(sq: Square, occ: Bitboard) -> (Bitboard, Bitboard) {
+    (bishop_attacks(sq, occ), rook_attacks(sq, occ))
 }
 
 /// True when the three squares are collinear.
@@ -464,5 +498,47 @@ mod tests {
         sorted.dedup();
         assert_eq!(sorted.len(), all.len());
         assert!(all.iter().all(|s| s & !mask == 0));
+    }
+}
+
+#[cfg(test)]
+mod ray_pass_tests {
+    use super::*;
+
+    fn sq(name: &str) -> Square {
+        let b = name.as_bytes();
+        Square::make((b[0] - b'a') as usize, (b[1] - b'1') as usize)
+    }
+
+    fn set(names: &[&str]) -> Bitboard {
+        names.iter().fold(Bitboard::EMPTY, |acc, n| acc | sq(n))
+    }
+
+    /// The whole ray from `a` through `b` to the edge, `a` excluded.
+    ///
+    /// It deliberately keeps the squares BETWEEN the two. At the only call site those are
+    /// provably empty -- a man between the slider and `s` would stop the slider attacking
+    /// `s`, so it would not be in the slider set at all -- which is what lets upstream
+    /// assert the discovered set holds at most one piece.
+    #[test]
+    fn a_ray_passes_through_the_far_square_to_the_edge() {
+        let f = |a: &str, b: &str| ray_pass_bb(sq(a), sq(b));
+        assert_eq!(f("a1", "a4"), set(&["a2", "a3", "a4", "a5", "a6", "a7", "a8"]), "file");
+        assert_eq!(f("a1", "d4"), set(&["b2", "c3", "d4", "e5", "f6", "g7", "h8"]), "diagonal");
+        assert_eq!(f("a1", "d1"), set(&["b1", "c1", "d1", "e1", "f1", "g1", "h1"]), "rank");
+        assert_eq!(f("h8", "e5"), set(&["g7", "f6", "e5", "d4", "c3", "b2", "a1"]), "reversed");
+        assert_eq!(f("a1", "b3"), Bitboard::EMPTY, "not on a shared ray");
+        assert_eq!(f("d4", "d4"), Bitboard::EMPTY, "a square shares no ray with itself");
+    }
+
+    /// Both halves must agree with the single-piece lookups they replace.
+    #[test]
+    fn both_attacks_agrees_with_the_separate_lookups() {
+        let occ = set(&["d4", "f6"]);
+        for s in Square::all() {
+            let (b, r) = both_attacks_bb(s, occ);
+            assert_eq!(b, bishop_attacks(s, occ), "{s:?} bishop");
+            assert_eq!(r, rook_attacks(s, occ), "{s:?} rook");
+        }
     }
 }
