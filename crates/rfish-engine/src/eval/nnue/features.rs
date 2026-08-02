@@ -219,16 +219,36 @@ pub fn halfka_delta(
     adds: &mut Vec<u32>,
     subs: &mut Vec<u32>,
 ) {
-    for (i, (&before, &after)) in was.iter().zip(now.iter()).enumerate() {
-        if before == after {
+    // EIGHT squares per comparison, not one. A move changes two to four squares of the
+    // sixty-four, so sixty of the byte comparisons this used to do could never fire, and a
+    // `[Piece; 8]` is eight bytes -- one machine word. Only a word that differs is opened up.
+    // Hoist everything the king square and the perspective decide. `halfka_index` recomputes
+    // all three per call, and all three are invariant across the whole delta.
+    let flip = 56 * perspective as u8;
+    let orient = HALFKA_ORIENT[ksq.index()] ^ flip;
+    let bucket = KING_BUCKETS[(ksq.raw() ^ flip) as usize];
+    let piece_index = &PIECE_SQUARE_INDEX[perspective.index()];
+    let index = |sq: Square, pc: Piece| {
+        u32::from(sq.raw() ^ orient) + u32::from(piece_index[pc.index()]) + bucket
+    };
+
+    let (was_words, _) = was.as_chunks::<8>();
+    let (now_words, _) = now.as_chunks::<8>();
+    for (c, (wc, nc)) in was_words.iter().zip(now_words.iter()).enumerate() {
+        if wc == nc {
             continue;
         }
-        let sq = Square::new(i);
-        if before != Piece::NONE {
-            subs.push(halfka_index(perspective, sq, before, ksq));
-        }
-        if after != Piece::NONE {
-            adds.push(halfka_index(perspective, sq, after, ksq));
+        for (k, (&before, &after)) in wc.iter().zip(nc.iter()).enumerate() {
+            if before == after {
+                continue;
+            }
+            let sq = Square::new(c * 8 + k);
+            if before != Piece::NONE {
+                subs.push(index(sq, before));
+            }
+            if after != Piece::NONE {
+                adds.push(index(sq, after));
+            }
         }
     }
 }
