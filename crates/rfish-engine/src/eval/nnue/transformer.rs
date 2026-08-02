@@ -178,8 +178,6 @@ impl PlySlot {
 pub struct EvalScratch {
     /// The position the live slots hold, or [`EMPTY_KEY`] when they hold nothing.
     key: Key,
-    /// The accumulator the search is walking, one per perspective.
-    live: [Side; COLOR_NB],
     /// One accumulator per ply, upstream's `AccumulatorStack`.
     ///
     /// A single slot cannot serve a delta: after a subtree returns it holds a COUSIN, and no
@@ -205,10 +203,14 @@ pub struct EvalScratch {
     /// Written ONLY on the refresh path. The delta path never builds a set, which is the
     /// whole of what this architecture buys — see [`FeatureTransformer::transform`].
     next_threats: [Vec<u32>; COLOR_NB],
-    /// The features one diff or one delta adds and removes, collected before either is
-    /// applied. Per perspective, because a delta is indexed for both at once.
+    /// The king-piece features one diff or one delta adds and removes, per perspective.
     adds: [Vec<u32>; COLOR_NB],
     subs: [Vec<u32>; COLOR_NB],
+    /// The same for the threat and pawn-pair features, collected SEPARATELY so that both
+    /// kinds can be folded in one sweep of the accumulator: they read different weight
+    /// tables, so they cannot share a list, but they can share the pass.
+    tp_adds: [Vec<u32>; COLOR_NB],
+    tp_subs: [Vec<u32>; COLOR_NB],
     /// The transformed features this evaluation produced, reused across evaluations.
     ///
     /// Held here rather than allocated in `Network::evaluate` because that is the per-node
@@ -230,9 +232,12 @@ pub struct EvalScratch {
 /// Every hop adds its whole record list to the fold, and records do not cancel before they
 /// are applied: a piece that moved twice contributes four rows rather than two. Past a point
 /// a longer chain costs more than the refresh it saves, and the point is MEASURED, not
-/// reasoned about — search instructions at avx2 over the same 163,081 nodes were 2,319M at
-/// one hop, 2,261M at two, 2,247M at three, 2,253M at four, 2,312M at six and 2,421M at ten.
-const HOP_CAP: usize = 3;
+/// reasoned about, and it MOVES as the fold gets cheaper: with the copying two-sweep fold it
+/// sat at three, and with the no-copy combined fold it sits at two. Search instructions at
+/// avx2 over the same 163,081 nodes: 2,174M at one hop, 2,025M at two, 2,026M at three,
+/// 2,044M at four, 2,131M at five and 2,232M at eight. Re-measure it after any change to
+/// [`FeatureTransformer::fold_into`].
+const HOP_CAP: usize = 2;
 
 /// How many `u64` words cover the threat-and-pawn-pair feature space.
 const MARK_WORDS: usize = THREAT_AND_PP_DIMENSIONS.div_ceil(64);
@@ -244,12 +249,13 @@ impl Default for EvalScratch {
     fn default() -> EvalScratch {
         EvalScratch {
             key: EMPTY_KEY,
-            live: [Side::empty(), Side::empty()],
             plies: Vec::new(),
             cache: [Vec::new(), Vec::new()],
             next_threats: [Vec::new(), Vec::new()],
             adds: [Vec::new(), Vec::new()],
             subs: [Vec::new(), Vec::new()],
+            tp_adds: [Vec::new(), Vec::new()],
+            tp_subs: [Vec::new(), Vec::new()],
             mark: Vec::new(),
             transformed: Aligned::new(L1),
         }
@@ -270,7 +276,6 @@ impl EvalScratch {
     pub fn reset(&mut self) {
         self.key = EMPTY_KEY;
         for i in 0..COLOR_NB {
-            self.live[i] = Side::empty();
             self.cache[i].clear();
         }
         self.plies.clear();
@@ -490,99 +495,83 @@ impl FeatureTransformer {
         }
     }
 
-    /// Apply a set of added and removed features to the accumulator and the PSQT head.
+    /// Fold both feature kinds from `src` into `dst`, in ONE sweep, without a copy.
     ///
-    /// Takes the changes rather than deriving them, because the two feature kinds arrive at
-    /// them differently: the king-piece features come from a board diff and the threat
-    /// features from a merge walk over two sorted sets.
-    fn fold_changed(
-        &self,
-        halfka: bool,
-        adds: &[u32],
-        subs: &[u32],
-        acc: &mut [i16],
-        psqt: &mut [i32; PSQT_BUCKETS],
-    ) {
-        if adds.is_empty() && subs.is_empty() {
-            return;
-        }
-
-        // Coerce ONCE, outside the loop. `Aligned` derefs to a subslice, so indexing it per
-        // iteration recomputes the offset and its bounds test every time: binding the slice
-        // here rather than the `Aligned` cost 12.4M instructions when it was not done.
-        let psqt_weights: &[i32] =
-            if halfka { &self.psqt_weights } else { &self.threat_and_pp_psqt_weights };
-        for &index in subs {
-            let base = index as usize * PSQT_BUCKETS;
-            for (p, w) in psqt.iter_mut().zip(psqt_weights[base..base + PSQT_BUCKETS].iter()) {
-                *p -= w;
-            }
-        }
-        for &index in adds {
-            let base = index as usize * PSQT_BUCKETS;
-            for (p, w) in psqt.iter_mut().zip(psqt_weights[base..base + PSQT_BUCKETS].iter()) {
-                *p += w;
-            }
-        }
-
-        if halfka {
-            let weights: &[i16] = &self.weights;
-            Self::fold_rows_i16(weights, adds, subs, acc);
-        } else {
-            let weights: &[i8] = &self.threat_and_pp_weights;
-            Self::fold_rows_i8(weights, adds, subs, acc);
-        }
-    }
-
-    /// Add every row in `adds` and subtract every row in `subs`, in one sweep of `acc`.
+    /// Three things upstream's `update_accumulator_incremental` does that applying the two
+    /// kinds separately does not:
     ///
-    /// Swept a TILE at a time so the running values stay in registers: the accumulator is
-    /// read once and written once however many rows are folded into it, where applying one
-    /// row at a time read and wrote all of it every time.
-    fn fold_rows_i16(weights: &[i16], adds: &[u32], subs: &[u32], acc: &mut [i16]) {
-        for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
+    /// - the source is READ rather than copied. Seeding `dst` from `src` and then folding in
+    ///   place moves 1024 entries that the fold is about to rewrite anyway;
+    /// - the accumulator is swept ONCE rather than twice. Each kind reads its own weight
+    ///   table, so the lists cannot merge, but the tile they land in can be held across both;
+    /// - the tile stays in registers for the whole of it, which is the reason [`TILE`] exists.
+    fn fold_into(&self, src: &[i16], dst: &mut [i16], ka: (&[u32], &[u32]), tp: (&[u32], &[u32])) {
+        let ka_weights: &[i16] = &self.weights;
+        let tp_weights: &[i8] = &self.threat_and_pp_weights;
+        for (t, chunk) in dst.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
             let off = t * TILE;
             let mut tile = [0i16; TILE];
-            tile.copy_from_slice(chunk);
-            for &index in subs {
+            tile.copy_from_slice(&src[off..off + TILE]);
+            for &index in ka.1 {
                 let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(weights[base..base + TILE].iter()) {
+                for (a, w) in tile.iter_mut().zip(ka_weights[base..base + TILE].iter()) {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
                     // rather than a value to saturate.
                     *a = a.wrapping_sub(*w);
                 }
             }
-            for &index in adds {
+            for &index in ka.0 {
                 let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(weights[base..base + TILE].iter()) {
+                for (a, w) in tile.iter_mut().zip(ka_weights[base..base + TILE].iter()) {
                     *a = a.wrapping_add(*w);
+                }
+            }
+            for &index in tp.1 {
+                let base = index as usize * L1 + off;
+                for (a, w) in tile.iter_mut().zip(tp_weights[base..base + TILE].iter()) {
+                    *a = a.wrapping_sub(i16::from(*w));
+                }
+            }
+            for &index in tp.0 {
+                let base = index as usize * L1 + off;
+                for (a, w) in tile.iter_mut().zip(tp_weights[base..base + TILE].iter()) {
+                    *a = a.wrapping_add(i16::from(*w));
                 }
             }
             chunk.copy_from_slice(&tile);
         }
     }
 
-    /// [`FeatureTransformer::fold_rows_i16`] for the threat and pawn-pair rows, whose
-    /// weights are one byte wide.
-    fn fold_rows_i8(weights: &[i8], adds: &[u32], subs: &[u32], acc: &mut [i16]) {
-        for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
-            let off = t * TILE;
-            let mut tile = [0i16; TILE];
-            tile.copy_from_slice(chunk);
+    /// The PSQT head's half of [`FeatureTransformer::fold_into`].
+    ///
+    /// Separate because it is eight values against 1024 and shares nothing with the sweep
+    /// above — folding it inside would put a second, differently shaped loop in the hot tile.
+    fn fold_psqt(
+        &self,
+        psqt: &mut [i32; PSQT_BUCKETS],
+        ka: (&[u32], &[u32]),
+        tp: (&[u32], &[u32]),
+    ) {
+        for (weights, (adds, subs)) in
+            [(&self.psqt_weights, ka), (&self.threat_and_pp_psqt_weights, tp)]
+        {
+            // Coerce ONCE, outside the loop. `Aligned` derefs to a subslice, so indexing it
+            // per iteration recomputes the offset and its bounds test every time: binding the
+            // slice here rather than the `Aligned` cost 12.4M instructions when it was not.
+            let weights: &[i32] = weights;
             for &index in subs {
-                let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(weights[base..base + TILE].iter()) {
-                    *a = a.wrapping_sub(i16::from(*w));
+                let base = index as usize * PSQT_BUCKETS;
+                for (p, w) in psqt.iter_mut().zip(weights[base..base + PSQT_BUCKETS].iter()) {
+                    *p -= w;
                 }
             }
             for &index in adds {
-                let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(weights[base..base + TILE].iter()) {
-                    *a = a.wrapping_add(i16::from(*w));
+                let base = index as usize * PSQT_BUCKETS;
+                for (p, w) in psqt.iter_mut().zip(weights[base..base + PSQT_BUCKETS].iter()) {
+                    *p += w;
                 }
             }
-            chunk.copy_from_slice(&tile);
         }
     }
 
@@ -632,14 +621,13 @@ impl FeatureTransformer {
     /// Roll `base`'s accumulator forward to this position, from records alone.
     ///
     /// **No feature set is built here, and that is the point.** The king-piece half comes
-    /// from a board diff, as it always has; the threat and pawn-pair half comes from the
-    /// hops' own records, where it used to come from rebuilding both sets and diffing them.
-    /// Building the set was ~257M of the search, and it was being paid on the delta path too
-    /// because the diff needed a set to compare against.
+    /// from a board diff; the threat and pawn-pair half comes from the hops' own records,
+    /// where it used to come from rebuilding both sets and diffing them.
     ///
     /// Concatenating a chain is legal for the same reason a single hop is: the fold applies
     /// the sum of the adds less the sum of the subs, so a feature one hop creates and a
-    /// later hop destroys cancels exactly, in either order.
+    /// later hop destroys cancels exactly, in either order. It is BOUNDED by [`HOP_CAP`]
+    /// because records do not cancel before they are applied.
     fn roll_forward(
         &self,
         pos: &Position,
@@ -650,34 +638,36 @@ impl FeatureTransformer {
         scratch: &mut EvalScratch,
     ) {
         let i = p.index();
-        scratch.live[i].clone_from(&scratch.plies[base].side[i]);
-
         scratch.adds[i].clear();
         scratch.subs[i].clear();
+        scratch.tp_adds[i].clear();
+        scratch.tp_subs[i].clear();
+
         // The board diff spans the whole chain at once: it compares placements, not moves.
-        halfka_delta(
-            &scratch.live[i].board,
-            pos.board(),
-            p,
-            ksq,
-            &mut scratch.adds[i],
-            &mut scratch.subs[i],
-        );
-        let live = &mut scratch.live[i];
-        self.fold_changed(true, &scratch.adds[i], &scratch.subs[i], &mut live.acc, &mut live.psqt);
-        live.board = *pos.board();
-
-        scratch.adds[i].clear();
-        scratch.subs[i].clear();
+        // Split the borrow by FIELD -- the stack is read while the collection buffers are
+        // written, and the two are distinct fields of the same scratch.
+        let (plies, adds, subs) = (&scratch.plies, &mut scratch.adds[i], &mut scratch.subs[i]);
+        halfka_delta(&plies[base].side[i].board, pos.board(), p, ksq, adds, subs);
         for hop in base + 1..=ply {
-            // Split the borrow by FIELD: the hop's records are read while this perspective's
-            // add and subtract lists are written, and the two are distinct fields.
-            let (plies, adds, subs) = (&scratch.plies, &mut scratch.adds[i], &mut scratch.subs[i]);
+            let (plies, adds, subs) =
+                (&scratch.plies, &mut scratch.tp_adds[i], &mut scratch.tp_subs[i]);
             threat_delta(&plies[hop].dts, p, ksq, adds, subs);
             pawn_pair_delta(&plies[hop].dpp, p, ksq, adds, subs);
         }
-        let live = &mut scratch.live[i];
-        self.fold_changed(false, &scratch.adds[i], &scratch.subs[i], &mut live.acc, &mut live.psqt);
+
+        // Read one ply and write another, both of them elements of the same stack: split it
+        // so the fold reads the source and writes the destination in one pass.
+        let (below, at) = scratch.plies.split_at_mut(ply);
+        let src = &below[base].side[i];
+        let dst = &mut at[0].side[i];
+        dst.acc.resize(L1, 0);
+        dst.psqt = src.psqt;
+        dst.king = Some(ksq);
+        dst.board = *pos.board();
+        let ka = (&scratch.adds[i][..], &scratch.subs[i][..]);
+        let tp = (&scratch.tp_adds[i][..], &scratch.tp_subs[i][..]);
+        self.fold_psqt(&mut dst.psqt, ka, tp);
+        self.fold_into(&src.acc, &mut dst.acc, ka, tp);
     }
 
     /// Rebuild this perspective's accumulator against the refresh cache.
@@ -685,57 +675,67 @@ impl FeatureTransformer {
     /// The ONLY path that materialises a feature set, and the only one that needs to: a
     /// cache entry is reached by a DIFF rather than by records, so the other side of the
     /// comparison has to exist. Taken when the king has moved, when the search has jumped,
-    /// or when a hop went unrecorded.
-    fn refresh(&self, pos: &Position, p: Color, ksq: Square, scratch: &mut EvalScratch) {
+    /// or when the nearest computed ancestor is further than [`HOP_CAP`].
+    fn refresh(
+        &self,
+        pos: &Position,
+        p: Color,
+        ply: usize,
+        ksq: Square,
+        scratch: &mut EvalScratch,
+    ) {
         let i = p.index();
         if scratch.cache[i].is_empty() {
             scratch.cache[i].resize(SQUARE_NB, CacheSlot::empty());
         }
-        Self::active_sets(pos, &mut scratch.next_threats);
+        scratch.adds[i].clear();
+        scratch.subs[i].clear();
+        scratch.tp_adds[i].clear();
+        scratch.tp_subs[i].clear();
 
         // With no entry for this king square the base is the biases and an empty active set,
         // so the "diff" is every feature -- which is exactly the from-scratch computation.
         // One code path serves both, so there is no second implementation to disagree.
         let src = &scratch.cache[i][ksq.index()];
-        let live = &mut scratch.live[i];
-        if src.side.king.is_some() {
-            live.clone_from(&src.side);
-        } else {
-            live.acc.clear();
-            live.acc.extend_from_slice(&self.biases);
-            live.psqt = [0; PSQT_BUCKETS];
-            live.board = [Piece::NONE; SQUARE_NB];
-        }
-        live.king = Some(ksq);
+        let seeded = src.side.king.is_some();
+        let base_board = if seeded { src.side.board } else { [Piece::NONE; SQUARE_NB] };
+        let base_psqt = if seeded { src.side.psqt } else { [0; PSQT_BUCKETS] };
 
-        scratch.adds[i].clear();
-        scratch.subs[i].clear();
-        halfka_delta(
-            &scratch.live[i].board,
-            pos.board(),
-            p,
-            ksq,
-            &mut scratch.adds[i],
-            &mut scratch.subs[i],
+        let (plies, adds, subs) = (&scratch.plies, &mut scratch.adds[i], &mut scratch.subs[i]);
+        let _ = plies;
+        halfka_delta(&base_board, pos.board(), p, ksq, adds, subs);
+        let old: &[u32] = if seeded { &scratch.cache[i][ksq.index()].threats } else { &[] };
+        Self::collect_diff(
+            old,
+            &scratch.next_threats[i],
+            &mut scratch.tp_adds[i],
+            &mut scratch.tp_subs[i],
+            &mut scratch.mark,
         );
-        let live = &mut scratch.live[i];
-        self.fold_changed(true, &scratch.adds[i], &scratch.subs[i], &mut live.acc, &mut live.psqt);
-        live.board = *pos.board();
 
-        // Split the borrow by FIELD: the cached set is read while the accumulator, the
-        // collection buffers and the membership bitmap are written.
-        let old: &[u32] = &scratch.cache[i][ksq.index()].threats;
-        let new: &[u32] = &scratch.next_threats[i];
-        let live = &mut scratch.live[i];
-        Self::collect_diff(old, new, &mut scratch.adds[i], &mut scratch.subs[i], &mut scratch.mark);
-        self.fold_changed(false, &scratch.adds[i], &scratch.subs[i], &mut live.acc, &mut live.psqt);
+        scratch.grow_to(ply);
+        let ka = (&scratch.adds[i][..], &scratch.subs[i][..]);
+        let tp = (&scratch.tp_adds[i][..], &scratch.tp_subs[i][..]);
+        // Split the borrow by FIELD: the cache and the biases are read while the ply slot is
+        // written, and no two of them are the same field.
+        let dst = &mut scratch.plies[ply].side[i];
+        dst.acc.resize(L1, 0);
+        dst.psqt = base_psqt;
+        dst.king = Some(ksq);
+        dst.board = *pos.board();
+        self.fold_psqt(&mut dst.psqt, ka, tp);
+        let seed: &[i16] =
+            if seeded { &scratch.cache[i][ksq.index()].side.acc } else { &self.biases };
+        self.fold_into(seed, &mut scratch.plies[ply].side[i].acc, ka, tp);
 
         // This king square's entry becomes what was just computed, set and all. Written only
         // here, so the set never touches the per-node path.
-        let slot = &mut scratch.cache[i][ksq.index()];
-        slot.side.clone_from(&scratch.live[i]);
+        let (plies, cache, next) =
+            (&scratch.plies, &mut scratch.cache[i], &scratch.next_threats[i]);
+        let slot = &mut cache[ksq.index()];
+        slot.side.clone_from(&plies[ply].side[i]);
         slot.threats.clear();
-        slot.threats.extend_from_slice(&scratch.next_threats[i]);
+        slot.threats.extend_from_slice(next);
     }
 
     /// Fill the scratch's transformed features and return the PSQT score.
@@ -756,9 +756,13 @@ impl FeatureTransformer {
         // past fourteen without a single feature having changed.
         let key = pos.raw_key();
 
-        // The same position twice in a row -- a quiescence stand-pat after a main-search
-        // evaluation, say -- needs no work at all.
-        if scratch.key != key {
+        // The slot may already hold this position -- a quiescence stand-pat after a main
+        // search evaluation at the same ply, say -- and then there is nothing to do. Asked
+        // of the SLOT rather than of a "last key seen", so that it is also the answer to
+        // "can the tail read this ply", which a last-key test is not.
+        let ready = ply < scratch.plies.len()
+            && Color::ALL.iter().all(|p| scratch.plies[ply].side[p.index()].computed_for == key);
+        if !ready {
             if scratch.mark.is_empty() {
                 scratch.mark = vec![0; MARK_WORDS];
             }
@@ -769,20 +773,26 @@ impl FeatureTransformer {
                 scratch.plies[0].recorded = false;
             }
 
+            // Decide BOTH perspectives before doing either. `active_sets` fills the sets
+            // for both at once, so asking for it inside a per-perspective refresh built
+            // every set twice when both refreshed, and built the other perspective's for
+            // nothing when only one did.
+            let ksq = [pos.king_square(Color::White), pos.king_square(Color::Black)];
+            let bases = [0, 1].map(|i| Self::rollforward_base(scratch, Color::ALL[i], ply, ksq[i]));
+            if bases.iter().any(Option::is_none) {
+                Self::active_sets(pos, &mut scratch.next_threats);
+            }
+
             for p in Color::ALL {
                 let i = p.index();
-                let ksq = pos.king_square(p);
-                match Self::rollforward_base(scratch, p, ply, ksq) {
-                    Some(base) => self.roll_forward(pos, p, ply, base, ksq, scratch),
-                    None => self.refresh(pos, p, ksq, scratch),
+                match bases[i] {
+                    // Already this position, for this perspective: the other one had to be
+                    // recomputed, this one did not.
+                    Some(base) if base == ply => {}
+                    Some(base) => self.roll_forward(pos, p, ply, base, ksq[i], scratch),
+                    None => self.refresh(pos, p, ply, ksq[i], scratch),
                 }
-                // The ply slot takes the state the two paths above left in `live`. Held in
-                // `live` rather than read out of the stack because the pairwise step below
-                // reads one accumulator per perspective and does not care which ply it came
-                // from.
-                let live = &mut scratch.live[i];
-                live.computed_for = key;
-                scratch.plies[ply].side[i].clone_from(live);
+                scratch.plies[ply].side[i].computed_for = key;
             }
             scratch.plies[ply].reached = key;
             scratch.key = key;
@@ -790,8 +800,8 @@ impl FeatureTransformer {
 
         let us = pos.side_to_move();
         let perspectives = [us, !us];
-        let psqt = (scratch.live[perspectives[0].index()].psqt[bucket]
-            - scratch.live[perspectives[1].index()].psqt[bucket])
+        let psqt = (scratch.plies[ply].side[perspectives[0].index()].psqt[bucket]
+            - scratch.plies[ply].side[perspectives[1].index()].psqt[bucket])
             / 2;
 
         let half = L1 / 2;
@@ -802,7 +812,7 @@ impl FeatureTransformer {
         // wrong.
         // Split the borrow by FIELD: the accumulators are read while the output is written,
         // and the two are distinct fields of the same scratch.
-        let (live, output) = (&scratch.live, scratch.transformed.as_mut_slice());
+        let (live, output) = (&scratch.plies[ply].side, scratch.transformed.as_mut_slice());
         for (p, side) in perspectives.iter().enumerate() {
             let (lo, hi) = live[side.index()].acc.split_at(half);
             let out = &mut output[half * p..half * (p + 1)];
