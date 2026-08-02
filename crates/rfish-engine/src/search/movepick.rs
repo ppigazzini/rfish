@@ -33,7 +33,17 @@ use super::history::{Histories, PawnHistory};
 pub type ContKey = usize;
 
 /// The six continuation planes a node reads, one to six plies back.
-pub type ContKeys = [Option<ContKey>; 6];
+pub type ContKeys = [ContKey; 6];
+
+/// The plane given to a slot a picker never reads.
+///
+/// Not every sequence reads all six: the quiescence and `ProbCut` sequences read plane zero
+/// through `score_evasions` or no plane at all, because `score_quiets` runs only from
+/// `QuietInit` and they never reach it. Those slots were `None`, which put an `Option` branch
+/// per plane on the picker's hottest line -- 17.2M instructions on a bench sit there, and
+/// the branch could never be taken from it. A placeholder index says the same thing without
+/// the branch: the slot is never read, so what it names does not matter.
+pub const UNREAD_PLANE: ContKey = 0;
 
 /// Where the picker is in its sequence. The numbering is upstream's, and the fallthrough
 /// order below depends on it.
@@ -209,7 +219,7 @@ impl MovePicker {
         debug_assert!(!pos.in_check(), "ProbCut is never entered in check");
         let usable = tt_move.is_ok() && pos.is_capture_stage(tt_move) && pos.pseudo_legal(tt_move);
         MovePicker {
-            continuations: [None; 6],
+            continuations: [UNREAD_PLANE; 6],
             tt_move: if usable { tt_move } else { Move::NONE },
             threshold,
             stage: if usable { Stage::ProbCutTt } else { Stage::ProbCutInit },
@@ -436,8 +446,7 @@ impl MovePicker {
         // node. Planes one, two, three, four and SIX — five is deliberately absent upstream.
         let main_row = h.main.row(us);
         let pawn_plane = h.pawn.plane(self.pawn_row);
-        let cont =
-            [0usize, 1, 2, 3, 5].map(|s| self.continuations[s].map(|k| h.continuation.plane(k)));
+        let cont = [0usize, 1, 2, 3, 5].map(|s| h.continuation.plane(self.continuations[s]));
         let low_ply = ((self.ply as usize) < super::history::LOW_PLY_HISTORY_SIZE)
             .then(|| h.low_ply.row(self.ply as usize));
 
@@ -452,16 +461,8 @@ impl MovePicker {
 
             let mut score = 2 * i32::from(main_row[mv.raw() as usize]);
             score += 2 * i32::from(pawn_plane[pc.index()][to.index()]);
-            // `clippy::manual_flatten` wants `cont.into_iter().flatten()` here. Both flatten
-            // forms were built and measured on `bench 16 1 8`: `iter().flatten()` costs
-            // +15.6M instructions and `into_iter().flatten()` +21.4M against this loop,
-            // because the iterator stops LLVM unrolling five fixed elements. The lint is
-            // right about the style and wrong about the code.
-            #[allow(clippy::manual_flatten)]
             for plane in cont {
-                if let Some(p) = plane {
-                    score += i32::from(p[pc.index()][to.index()]);
-                }
+                score += i32::from(plane[pc.index()][to.index()]);
             }
 
             // A quiet move that gives check is worth trying early: it is forcing, so the
@@ -486,7 +487,7 @@ impl MovePicker {
         let us = pos.side_to_move();
         // Both rows are fixed for the list; see `score_quiets`.
         let main_row = h.main.row(us);
-        let cont0 = self.continuations[0].map(|k| h.continuation.plane(k));
+        let cont0 = h.continuation.plane(self.continuations[0]);
         for sm in buf.iter_mut() {
             let to = sm.mv.to();
             let pc = pos.moved_piece(sm.mv);
@@ -496,7 +497,7 @@ impl MovePicker {
                 sm.score = piece_value(pos.piece_on(to)) + (1 << 28);
             } else {
                 sm.score = i32::from(main_row[sm.mv.raw() as usize])
-                    + cont0.map_or(0, |p| i32::from(p[pc.index()][to.index()]));
+                    + i32::from(cont0[pc.index()][to.index()]);
             }
         }
     }
@@ -522,7 +523,7 @@ mod tests {
     use crate::board::position::START_FEN;
 
     fn collect(pos: &Position, h: &Histories, tt: Move) -> Vec<Move> {
-        let mut mp = MovePicker::new(pos, [None; 6], tt, 4, 0);
+        let mut mp = MovePicker::new(pos, [UNREAD_PLANE; 6], tt, 4, 0);
         let mut buf = MoveBuf::new();
         let mut out = Vec::new();
         loop {
@@ -589,7 +590,7 @@ mod tests {
     fn qsearch_yields_only_forcing_moves() {
         let h = Histories::default();
         let pos = Position::from_fen("4k3/8/8/3q4/4P3/8/8/R3K3 w - - 0 1", false).expect("valid");
-        let mut mp = MovePicker::new(&pos, [None; 6], Move::NONE, 0, 0);
+        let mut mp = MovePicker::new(&pos, [UNREAD_PLANE; 6], Move::NONE, 0, 0);
         let mut buf = MoveBuf::new();
         let mut any = false;
         loop {
@@ -608,7 +609,7 @@ mod tests {
     fn qsearch_in_check_yields_every_evasion() {
         let h = Histories::default();
         let pos = Position::from_fen("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1", false).expect("valid");
-        let mut mp = MovePicker::new(&pos, [None; 6], Move::NONE, 0, 0);
+        let mut mp = MovePicker::new(&pos, [UNREAD_PLANE; 6], Move::NONE, 0, 0);
         let mut buf = MoveBuf::new();
         let mut out = Vec::new();
         loop {
@@ -630,7 +631,7 @@ mod tests {
     fn skip_quiets_stops_the_quiet_stage_mid_node() {
         let h = Histories::default();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
-        let mut mp = MovePicker::new(&pos, [None; 6], Move::NONE, 4, 0);
+        let mut mp = MovePicker::new(&pos, [UNREAD_PLANE; 6], Move::NONE, 4, 0);
         let mut buf = MoveBuf::new();
         mp.skip_quiet_moves();
         let mut seen = 0;

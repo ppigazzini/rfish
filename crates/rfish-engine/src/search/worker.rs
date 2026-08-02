@@ -46,7 +46,7 @@ use crate::state::{
 use super::history::{
     CORRECTION_LIMIT, Histories, LOW_PLY_HISTORY_SIZE, cont_plane_index, corr_plane_index,
 };
-use super::movepick::{ContKeys, MoveBuf, MovePicker};
+use super::movepick::{ContKeys, MoveBuf, MovePicker, UNREAD_PLANE};
 use super::score::Score;
 use super::skill::{Prng, Skill};
 use super::tt::{TranspositionTable, value_from_tt, value_to_tt};
@@ -1714,12 +1714,12 @@ impl SearchWorker {
         }
 
         let cont_keys: ContKeys = [
-            Some(self.stack[si - 1].continuation),
-            Some(self.stack[si - 2].continuation),
-            Some(self.stack[si - 3].continuation),
-            Some(self.stack[si - 4].continuation),
-            Some(self.stack[si - 5].continuation),
-            Some(self.stack[si - 6].continuation),
+            self.stack[si - 1].continuation,
+            self.stack[si - 2].continuation,
+            self.stack[si - 3].continuation,
+            self.stack[si - 4].continuation,
+            self.stack[si - 5].continuation,
+            self.stack[si - 6].continuation,
         ];
 
         let slot = SLOTS_PER_PLY * ply as usize
@@ -2468,8 +2468,16 @@ impl SearchWorker {
             futility_base = self.stack[si].static_eval + 306;
         }
 
-        let cont_keys: ContKeys =
-            [Some(self.stack[si - 1].continuation), None, None, None, None, None];
+        // Only plane zero is ever read here: quiescence reaches `score_evasions` at most and
+        // never `QuietInit`. See `movepick::UNREAD_PLANE`.
+        let cont_keys: ContKeys = [
+            self.stack[si - 1].continuation,
+            UNREAD_PLANE,
+            UNREAD_PLANE,
+            UNREAD_PLANE,
+            UNREAD_PLANE,
+            UNREAD_PLANE,
+        ];
         let prev_sq = if self.stack[si - 1].current_move.is_ok() {
             self.stack[si - 1].current_move.to()
         } else {
