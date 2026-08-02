@@ -295,6 +295,7 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | An inline `[ScoredMove; MAX_MOVES]` in the move picker, mirroring upstream's field | **Falsified, with a measurement.** Removes 97 M of allocator traffic, adds 473 M of per-node initialisation — worse than the `Vec` it replaced. Safe Rust cannot leave a buffer uninitialised; reuse one instead (§9). |
 | Making `Bitboard::iter` borrow instead of copy | **Rejected by design.** Iterating by value is what lets a loop mutate the board it came from, which is upstream's `while (b) pop_lsb(b)` over a local with the local made explicit. |
 | Rewriting the feature transformer's fold and transform in `std::simd` | **Not worth attempting, from the disassembly.** Both already emit upstream's kernel shape — `vpaddw`/`vpsubw`/`vpmovsxbw` in the fold, `vpminsw`/`vpmullw`/`vpsrlw`/`vpackuswb` in the transform — over 136 and 156 `%ymm` operands. Explicit vectors would transcribe what LLVM emits. See §12. |
+| Making `diff_apply`'s membership tests branchless | **Falsified, with a measurement.** Storing every element and advancing the count by the predicate removes 2.11M conditional mispredicts (2.187 → **1.896** of upstream's) and costs **+62.7M instructions** and **+37.4M data writes**. The branchy form stores only the rare kept element; the branchless one stores every element of BOTH sets. See §13 for why the premise was wrong. |
 
 ---
 
@@ -413,3 +414,53 @@ the vector operands in the symbol before spending a session on this.
 allocation crate. They are the standard answer to §9 and rfish cannot use any of them — the
 engine crate has zero dependencies, and that is a reviewed property. The workhorse pattern
 is the dependency-free equivalent and measured as good.
+
+---
+
+## 13. Branch misprediction: where it is, and the trade that does not pay
+
+Once the NNUE memory layout was fixed (§9), **misprediction became the worst counter on that
+axis** — 2.187x upstream's, where every cache row is at or below 1.16. It is worth knowing
+where it actually is before reformulating anything, because the obvious fix loses.
+
+Per-line, under `--branch-sim=yes` on the PGO build, `bench 16 1 8`:
+
+| line | mispredicts |
+|---|---|
+| `diff_apply`, `if mark[w] & b == 0` | 861,228 |
+| `diff_apply`, `if mark[w] & b != 0` | 862,252 |
+| `Bitboard::iter`, `if self.0.is_empty()` | 1,687,451 |
+| `NetReader::leb128_i16` | 5,138,376 — the net LOAD, not the search |
+
+Two things this settles. The `leb128_i16` row is startup and must come out before any ratio is
+quoted; it is 25% of the whole-process total on its own. And **the search spine is not the
+problem** — `movepick::next_move` mispredicts 911k against upstream's `MovePicker::next_move`
+at 1,380k, and `worker::node` 855k against upstream's `search` at 1,030k. rfish predicts the
+SEARCH better than upstream does. The excess is all in the evaluation.
+
+**The `Bitboard::iter` row is the design, not the loop.** `while bb != 0 { pop_lsb }` is what
+upstream writes too; rfish simply runs it far more, because it rebuilds the threat set every
+evaluation where upstream delta-updates. That row moves when the per-move delta lands and not
+before — see `docs/03-engine-eval.md`.
+
+**The `diff_apply` rows look like the textbook case for branchless code, and going branchless
+loses badly.** Writing the element unconditionally and advancing the count by the predicate —
+`buf[n] = f; n += usize::from(!hit)` — is bit-exact and does remove the mispredicts:
+
+| | instructions | mispredicts | data writes |
+|---|---|---|---|
+| branchy (kept) | 2,067,496,922 | 15,891,946 | 156,211,846 |
+| branchless | 2,130,153,965 | **13,778,891** | 193,619,507 |
+| | **+62.7M** | −2.11M | **+37.4M** |
+
+−2.11M mispredicts is roughly 36M cycles; +62.7M instructions is more than that on its own,
+and the write traffic is the reason: **the branchy form stores only the rare kept element,
+the branchless one stores every element of both sets.**
+
+The premise was wrong, and the mistake is worth naming. A test that mispredicts 861k times
+looks like a coin flip; this one is heavily BIASED — most features are unchanged from one
+evaluation to the next, so nearly every iteration takes the same arm and the misses are the
+minority transitions. Branchless trades a rare store for a certain one, which only pays when
+the predicate really is balanced. **Measure the taken/not-taken RATIO, not the mispredict
+count, before removing a branch:** `Bc` against `Bcm` per line is what distinguishes a coin
+flip from a biased test, and only the first is worth the unconditional write.
