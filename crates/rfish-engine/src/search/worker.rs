@@ -438,7 +438,7 @@ impl SearchWorker {
         let ply = si - STACK_BASE + 1;
         let dts = self.scratch.record_threats(ply);
         let dpp = self.pos.do_move_recording(mv, gives_check, Some(dts));
-        self.scratch.record(ply, self.pos.raw_key(), dpp);
+        self.scratch.record(ply, &self.pos, self.pos.raw_key(), dpp);
         self.stack[si].current_move = mv;
         self.stack[si].continuation = cont_plane_index(in_check, capture, moved, mv.to());
         self.stack[si].continuation_correction = corr_plane_index(moved, mv.to());
@@ -454,7 +454,7 @@ impl SearchWorker {
         self.pos.do_null_move();
         // A null move moves no piece, so it changes no threat and no pawn pair: the child
         // rolls forward from the parent with an EMPTY delta rather than refreshing.
-        self.scratch.record_null(si - STACK_BASE + 1, self.pos.raw_key());
+        self.scratch.record_null(si - STACK_BASE + 1, &self.pos, self.pos.raw_key());
         self.stack[si].current_move = Move::NULL;
         self.stack[si].continuation = cont_plane_index(false, false, Piece::NONE, Square::A1);
         self.stack[si].continuation_correction = corr_plane_index(Piece::NONE, Square::A1);

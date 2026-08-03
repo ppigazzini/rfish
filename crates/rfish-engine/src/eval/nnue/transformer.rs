@@ -159,6 +159,17 @@ struct PlySlot {
     ///
     /// False at the root, and after any path that moved the position without recording.
     recorded: bool,
+    /// The placement the search reached this ply with, stamped by `do_move` whether or not
+    /// this ply is ever evaluated.
+    ///
+    /// A roll-forward walks a CHAIN of plies and materialises every one of them, so it needs
+    /// each hop's own two placements to diff the king-piece half against. Only a computed ply
+    /// carries one in its [`Side`], and the plies a chain steps through are by definition the
+    /// ones that were NOT computed.
+    board: [Piece; SQUARE_NB],
+    /// The two king squares on that placement, so the walk-back can test the chain for a king
+    /// move without scanning the board for one.
+    king: [Square; COLOR_NB],
 }
 
 impl PlySlot {
@@ -169,6 +180,8 @@ impl PlySlot {
             dts: Vec::new(),
             dpp: DirtyPawnPairs::default(),
             recorded: false,
+            board: [Piece::NONE; SQUARE_NB],
+            king: [Square::A1; COLOR_NB],
         }
     }
 }
@@ -241,15 +254,23 @@ pub struct EvalScratch {
 
 /// How many hops a roll-forward will walk back through.
 ///
-/// Every hop adds its whole record list to the fold, and records do not cancel before they
-/// are applied: a piece that moved twice contributes four rows rather than two. Past a point
-/// a longer chain costs more than the refresh it saves, and the point is MEASURED, not
-/// reasoned about, and it MOVES as the fold gets cheaper: with the copying two-sweep fold it
-/// sat at three, and with the no-copy combined fold it sits at two. Search instructions at
-/// avx2 over the same 163,081 nodes: 2,174M at one hop, 2,025M at two, 2,026M at three,
-/// 2,044M at four, 2,131M at five and 2,232M at eight. Re-measure it after any change to
-/// [`FeatureTransformer::fold_into`].
-const HOP_CAP: usize = 2;
+/// **The cap stopped being the load-bearing constant when the roll started stamping every
+/// ply it steps through.** While the chain was concatenated into one fold it had to be tiny:
+/// records do not cancel before they are applied, so a piece that moved twice contributed
+/// four rows rather than two, and a longer chain bought nothing for the next evaluation
+/// because it wrote only its last ply. Search instructions at avx2 over the same 163,081
+/// nodes, with that fold: 2,174M at one hop, 2,025M at two, 2,026M at three, 2,044M at four,
+/// 2,131M at five, 2,232M at eight.
+///
+/// Hop by hop the curve runs the other way, on the same workload: 1,682M at two, 1,628M at
+/// four, 1,603M at eight, **1,601M at twelve**, and 1,601M at sixteen, thirty-two and
+/// sixty-four. It is a plateau rather than a peak — twelve is simply where the chains this
+/// search actually walks run out, so a larger cap describes the same walk.
+///
+/// The cap is now a BOUND on the worst case rather than a tuning knob: the measured average
+/// is 1.32 hops per roll-forward over 101,639 of them, because a chain walked once leaves
+/// every ply it covered ready for the next evaluation to reach in one.
+const HOP_CAP: usize = 12;
 
 /// How many `u64` words cover the threat-and-pawn-pair feature space.
 const MARK_WORDS: usize = THREAT_AND_PP_DIMENSIONS.div_ceil(64);
@@ -347,11 +368,13 @@ impl EvalScratch {
     /// Called from the search's own `do_move`. The records are consumed by
     /// [`FeatureTransformer::transform`] at that ply and at any ply below it that walks back
     /// through this one.
-    pub fn record(&mut self, ply: usize, key: Key, dpp: DirtyPawnPairs) {
+    pub fn record(&mut self, ply: usize, pos: &Position, key: Key, dpp: DirtyPawnPairs) {
         let slot = &mut self.plies[ply];
         slot.reached = key;
         slot.dpp = dpp;
         slot.recorded = true;
+        slot.board = *pos.board();
+        slot.king = [pos.king_square(Color::White), pos.king_square(Color::Black)];
     }
 
     /// The list [`EvalScratch::record`] appends this hop's threat records to.
@@ -368,12 +391,14 @@ impl EvalScratch {
     /// A null move needs none — it moves no piece, so no threat and no pawn pair changes —
     /// but anything else that advances a ply without recording must say so, or the roll
     /// forward would skip a move.
-    pub fn record_null(&mut self, ply: usize, key: Key) {
+    pub fn record_null(&mut self, ply: usize, pos: &Position, key: Key) {
         let slot = &mut self.plies[ply];
         slot.reached = key;
         slot.dts.clear();
         slot.dpp = DirtyPawnPairs::default();
         slot.recorded = true;
+        slot.board = *pos.board();
+        slot.king = [pos.king_square(Color::White), pos.king_square(Color::Black)];
     }
 }
 
@@ -723,6 +748,18 @@ impl FeatureTransformer {
         let mut at = ply;
         loop {
             let slot = &scratch.plies[at];
+            // Every ply the chain covers is MATERIALISED against `ksq`, so the king square
+            // has to be `ksq` at every one of them and not only at the base. Concatenating
+            // the chain into one fold did not need this — nothing between was written, so
+            // nothing between had to be a valid accumulator — but stamping the intermediates
+            // is the whole point here, and one stamped against a king square the position
+            // did not have would be read as valid by the next evaluation.
+            //
+            // It costs almost nothing: a king moves rarely, and the base has always had to
+            // match anyway.
+            if slot.king[i] != ksq {
+                return None;
+            }
             let side = &slot.side[i];
             if side.computed_for != EMPTY_KEY
                 && side.computed_for == slot.reached
@@ -738,16 +775,22 @@ impl FeatureTransformer {
         }
     }
 
-    /// Roll `base`'s accumulator forward to this position, from records alone.
+    /// Roll `base`'s accumulator forward to this position, ONE HOP AT A TIME.
     ///
     /// **No feature set is built here, and that is the point.** The king-piece half comes
     /// from a board diff; the threat and pawn-pair half comes from the hops' own records,
     /// where it used to come from rebuilding both sets and diffing them.
     ///
-    /// Concatenating a chain is legal for the same reason a single hop is: the fold applies
-    /// the sum of the adds less the sum of the subs, so a feature one hop creates and a
-    /// later hop destroys cancels exactly, in either order. It is BOUNDED by [`HOP_CAP`]
-    /// because records do not cancel before they are applied.
+    /// **Every ply the chain covers is written, not just the last one.** That is upstream's
+    /// `AccumulatorStack::evaluate` shape and it is what makes the walk-back pay for itself:
+    /// a materialised intermediate is a base the NEXT evaluation can reach in a single hop,
+    /// so the chain a subtree walks once it does not walk again. Concatenating every hop's
+    /// records into one fold looks cheaper per traversal — one sweep of the accumulator
+    /// rather than one per hop — and is dearer in total, because it leaves every ply it
+    /// steps over exactly as stale as it found it AND because records do not cancel before
+    /// they are applied, so a piece that moved twice contributes four rows rather than two.
+    /// Measured: with the whole chain concatenated, an uncapped walk folds 28.1 rows per
+    /// roll-forward against a refresh's 17.3, which is why the cap it needed was two.
     fn roll_forward(
         &self,
         pos: &Position,
@@ -758,36 +801,52 @@ impl FeatureTransformer {
         scratch: &mut EvalScratch,
     ) {
         let i = p.index();
-        scratch.adds[i].clear();
-        scratch.subs[i].clear();
-        scratch.tp_adds[i].clear();
-        scratch.tp_subs[i].clear();
-
-        // The board diff spans the whole chain at once: it compares placements, not moves.
-        // Split the borrow by FIELD -- the stack is read while the collection buffers are
-        // written, and the two are distinct fields of the same scratch.
-        let (plies, adds, subs) = (&scratch.plies, &mut scratch.adds[i], &mut scratch.subs[i]);
-        halfka_delta(&plies[base].side[i].board, pos.board(), p, ksq, adds, subs);
+        let _ = pos;
         for hop in base + 1..=ply {
+            scratch.adds[i].clear();
+            scratch.subs[i].clear();
+            scratch.tp_adds[i].clear();
+            scratch.tp_subs[i].clear();
+
+            // Split the borrow by FIELD -- the stack is read while the collection buffers
+            // are written, and the two are distinct fields of the same scratch.
+            let (plies, adds, subs) = (&scratch.plies, &mut scratch.adds[i], &mut scratch.subs[i]);
+            let (from, to) = (&plies[hop - 1].board, &plies[hop].board);
+            halfka_delta(from, to, p, ksq, adds, subs);
             let (plies, adds, subs) =
                 (&scratch.plies, &mut scratch.tp_adds[i], &mut scratch.tp_subs[i]);
             threat_delta(&plies[hop].dts, p, ksq, adds, subs);
             pawn_pair_delta(&plies[hop].dpp, p, ksq, adds, subs);
-        }
 
-        // Read one ply and write another, both of them elements of the same stack: split it
-        // so the fold reads the source and writes the destination in one pass.
-        let (below, at) = scratch.plies.split_at_mut(ply);
-        let src = &below[base].side[i];
-        let dst = &mut at[0].side[i];
-        dst.acc.resize(L1, 0);
-        dst.psqt = src.psqt;
-        dst.king = Some(ksq);
-        dst.board = *pos.board();
-        let ka = (&scratch.adds[i][..], &scratch.subs[i][..]);
-        let tp = (&scratch.tp_adds[i][..], &scratch.tp_subs[i][..]);
-        self.fold_psqt(&mut dst.psqt, ka, tp);
-        self.fold_into(&src.acc, &mut dst.acc, ka, tp);
+            // Read one ply and write the next, both of them elements of the same stack:
+            // split it so the fold reads the source and writes the destination in one pass.
+            let (plies, adds, subs, tp_adds, tp_subs) = (
+                &mut scratch.plies,
+                &scratch.adds[i],
+                &scratch.subs[i],
+                &scratch.tp_adds[i],
+                &scratch.tp_subs[i],
+            );
+            let (below, at) = plies.split_at_mut(hop);
+            let src = &below[hop - 1].side[i];
+            // Split the destination ply by FIELD too: its accumulator is written while its
+            // own placement and arrival key are read.
+            let PlySlot { side, board, reached, .. } = &mut at[0];
+            let dst = &mut side[i];
+            dst.acc.resize(L1, 0);
+            dst.psqt = src.psqt;
+            dst.king = Some(ksq);
+            dst.board = *board;
+            let ka = (&adds[..], &subs[..]);
+            let tp = (&tp_adds[..], &tp_subs[..]);
+            self.fold_psqt(&mut dst.psqt, ka, tp);
+            self.fold_into(&src.acc, &mut dst.acc, ka, tp);
+            // STAMP the hop. This is the whole difference from concatenating the chain into
+            // one fold: an intermediate ply that has been materialised is a base the next
+            // evaluation can roll a single hop from, where a chain that only ever wrote its
+            // last ply left every ply it stepped over exactly as stale as it found them.
+            dst.computed_for = *reached;
+        }
     }
 
     /// Rebuild this perspective's accumulator against the refresh cache.
@@ -899,17 +958,21 @@ impl FeatureTransformer {
             if scratch.mark.is_empty() {
                 scratch.mark = vec![0; MARK_WORDS];
             }
+            let ksq = [pos.king_square(Color::White), pos.king_square(Color::Black)];
             // The root stamps its own arrival; every other ply's is written by `do_move`.
+            // The PLACEMENT goes with it: a roll-forward diffs each hop's two boards, and
+            // the root is the one ply no `do_move` reaches.
             if ply == 0 {
                 scratch.plies[0].reached = key;
                 scratch.plies[0].recorded = false;
+                scratch.plies[0].board = *pos.board();
+                scratch.plies[0].king = ksq;
             }
 
             // Decide BOTH perspectives before doing either. `active_sets` fills the sets
             // for both at once, so asking for it inside a per-perspective refresh built
             // every set twice when both refreshed, and built the other perspective's for
             // nothing when only one did.
-            let ksq = [pos.king_square(Color::White), pos.king_square(Color::Black)];
             let bases = [0, 1].map(|i| Self::rollforward_base(scratch, Color::ALL[i], ply, ksq[i]));
             if bases.iter().any(Option::is_none) {
                 Self::active_sets(pos, &mut scratch.next_threats);
@@ -1030,7 +1093,7 @@ mod tests {
                 let gives_check = pos.gives_check(m);
                 let dts = walk.record_threats(ply);
                 let dpp = pos.do_move_recording(m, gives_check, Some(dts));
-                walk.record(ply, pos.raw_key(), dpp);
+                walk.record(ply, &pos, pos.raw_key(), dpp);
 
                 let rolled = ft.transform(&pos, 0, ply, &mut walk);
                 let rolled_out = walk.transformed().to_vec();
