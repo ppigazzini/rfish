@@ -183,6 +183,28 @@ impl From<io::Error> for NetError {
     }
 }
 
+/// The narrowing a LEB128 block applies on its way into the destination width.
+///
+/// Sealed by being private: the decode is `i32` internally because that is the width the
+/// encoding is defined over, and the two blocks a net carries land in `i32` and `i16`.
+trait FromI32Truncating: Copy {
+    fn from_i32_truncating(v: i32) -> Self;
+}
+
+impl FromI32Truncating for i32 {
+    fn from_i32_truncating(v: i32) -> i32 {
+        v
+    }
+}
+
+impl FromI32Truncating for i16 {
+    /// Truncating, exactly as the narrowing pass this replaced was: the trainer keeps every
+    /// value in range and a wrap here means a corrupt net rather than a value to saturate.
+    fn from_i32_truncating(v: i32) -> i16 {
+        v as i16
+    }
+}
+
 /// A reader that also decodes the two encodings a net uses.
 pub struct NetReader<R: Read> {
     inner: R,
@@ -255,6 +277,33 @@ impl<R: Read> NetReader<R> {
     /// complete — reproducing that special case matters, since it is what lets a full-range
     /// `i32` weight round-trip.
     pub fn leb128(&mut self, out: &mut [i32]) -> Result<(), NetError> {
+        self.leb128_block(out)
+    }
+
+    /// One LEB128 block decoded into `i16`s.
+    ///
+    /// Decoded STRAIGHT into the `i16`s. It used to decode into a `vec![0i32; out.len()]`
+    /// and narrow afterwards, and on the main weight block that temporary is 23,068,672
+    /// entries — **92 MiB, allocated and page-faulted in to be read once and thrown away**,
+    /// which is most of what made a `quit`-only run peak at 253 MiB.
+    pub fn leb128_i16(&mut self, out: &mut [i16]) -> Result<(), NetError> {
+        self.leb128_block(out)
+    }
+
+    /// The decode both widths share, walking the OUTPUT and consuming bytes as it needs them.
+    ///
+    /// The loop used to walk the BYTES and index the output, which put two tests on the
+    /// per-byte path that belong on neither: `if i == out.len()` ran once per byte where a
+    /// value takes one or two, and `out[i] = ...` was a bounds test against a runtime length.
+    /// Walking `out.iter_mut()` and pulling bytes from an iterator moves the length test to
+    /// once per VALUE and removes the store's test outright — the same shape as the fold's
+    /// weight rows in the transformer, one zone over.
+    ///
+    /// The arithmetic is unchanged, including the `% 32` and the `shift >= 32` guard that
+    /// skips sign extension once the value is already complete. That guard is what lets a
+    /// full-range `i32` weight round-trip, and `leb128_survives_a_round_trip_over_the_whole_signed_range`
+    /// pins it.
+    fn leb128_block<T: FromI32Truncating>(&mut self, out: &mut [T]) -> Result<(), NetError> {
         let mut magic = [0u8; 17];
         self.read_exact(&mut magic)?;
         if magic != LEB128_MAGIC {
@@ -264,36 +313,25 @@ impl<R: Read> NetReader<R> {
         let mut bytes = vec![0u8; byte_count];
         self.read_exact(&mut bytes)?;
 
-        let mut result: i32 = 0;
-        let mut shift: u32 = 0;
-        let mut i = 0usize;
-        for &byte in &bytes {
-            if i == out.len() {
-                break;
-            }
-            result |= i32::from(byte & 0x7F) << (shift % 32);
-            shift += 7;
-            if byte & 0x80 == 0 {
-                out[i] = if shift >= 32 || byte & 0x40 == 0 {
-                    result
-                } else {
-                    // Sign-extend: every bit above the payload becomes one.
-                    result | !((1i32 << shift).wrapping_sub(1))
+        let mut src = bytes.iter();
+        for o in out.iter_mut() {
+            let mut result: i32 = 0;
+            let mut shift: u32 = 0;
+            loop {
+                let Some(&byte) = src.next() else {
+                    return Err(NetError::Truncated);
                 };
-                i += 1;
-                result = 0;
-                shift = 0;
+                result |= i32::from(byte & 0x7F) << (shift % 32);
+                shift += 7;
+                if byte & 0x80 == 0 {
+                    if shift < 32 && byte & 0x40 != 0 {
+                        // Sign-extend: every bit above the payload becomes one.
+                        result |= !((1i32 << shift).wrapping_sub(1));
+                    }
+                    break;
+                }
             }
-        }
-        if i == out.len() { Ok(()) } else { Err(NetError::Truncated) }
-    }
-
-    /// One LEB128 block decoded into `i16`s.
-    pub fn leb128_i16(&mut self, out: &mut [i16]) -> Result<(), NetError> {
-        let mut wide = vec![0i32; out.len()];
-        self.leb128(&mut wide)?;
-        for (o, w) in out.iter_mut().zip(wide.iter()) {
-            *o = *w as i16;
+            *o = T::from_i32_truncating(result);
         }
         Ok(())
     }
