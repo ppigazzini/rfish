@@ -177,6 +177,19 @@ fn build_magics(
         let mut rng = Prng::new(MAGIC_SEEDS[sq.rank()]);
         let shift = 64 - bits;
 
+        // Both scratch views are EXACTLY `size` long, taken once per square. The search
+        // below already tests `idx >= size` before it touches either, so that one test is
+        // what proves every index under it in bounds -- and against a slice of length
+        // `size` LLVM can see that and drop the checks.
+        //
+        // Indexed as `table[offset + idx]` and `epoch[idx]` against their whole runtime
+        // lengths instead, the store alone cost 57.4M and the epoch pair another 34.9M, on
+        // an inner loop whose actual work is a multiply and a shift. `epoch` keeps its
+        // full-length storage: `attempt` is what invalidates a stale slot, and reslicing it
+        // per square does not disturb that.
+        let slot = &mut table[offset..offset + size];
+        let ep = &mut epoch[..size];
+
         // Search for a multiplier that is injective on the reference set. A collision is
         // acceptable only when both occupancies produce the SAME attack set, which is why
         // the check compares attacks rather than indices.
@@ -192,15 +205,17 @@ fn build_magics(
             };
 
             attempt += 1;
-            for i in 0..size {
-                let idx = ((occupancies[i] & mask).wrapping_mul(candidate) >> shift) as usize;
+            // Walked as a pair rather than by index, for the same reason: `i` indexed two
+            // more runtime-length slices to reach values a zip hands over unchecked.
+            for (&occ, &reference) in occupancies.iter().zip(references.iter()) {
+                let idx = ((occ & mask).wrapping_mul(candidate) >> shift) as usize;
                 if idx >= size {
                     continue 'search;
                 }
-                if epoch[idx] < attempt {
-                    epoch[idx] = attempt;
-                    table[offset + idx] = references[i];
-                } else if table[offset + idx] != references[i] {
+                if ep[idx] < attempt {
+                    ep[idx] = attempt;
+                    slot[idx] = reference;
+                } else if slot[idx] != reference {
                     continue 'search;
                 }
             }
