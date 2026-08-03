@@ -208,6 +208,23 @@ blind spots) before proposing any optimisation. Four rules that outrank intuitio
   a licence for `unsafe`; restructure so the bound is provable instead. Measured here:
   moving the search stack from `Vec<T>` to `Box<[T; N]>` was worth 16.0M instructions, while
   masking a square index to drop `piece_on`'s comparison COST 2.0M.
+- **A kernel whose OUTPUT WIDTH is small is the one to disassemble.** Being small is what
+  stops the vectoriser caring. `fold_psqt` accumulates eight `i32` — one AVX2 register — and
+  emitted 33 `mov`s and no vector instruction; `fc_2` is 128->1, so a generic
+  `propagate::<N>` instantiated at `Simd<i32, 1>` and LLVM widened it to `xmm` and then put a
+  HORIZONTAL REDUCTION inside the loop. 9.3M between them, invisible in the source and
+  invisible in the profile's symbol list. Both siblings record the same two traps on the same
+  two kernels.
+- **When one half of a pair gets an optimisation, check the other half.** `fold_into` was
+  given indexed fixed-width weight rows and `fold_mirror` — the same fold, forty lines away,
+  on the refresh path — was not. It was worth 28.9M there, MORE than on the half that got it,
+  because the refresh applies more rows.
+- **A walk-back that writes only its last step is a walk-back you will take again.** rfish's
+  roll-forward concatenated a chain of plies into one fold and stamped only the destination,
+  so `HOP_CAP` had to sit at two to contain it — and that cap then caused 92% of all
+  accumulator refreshes. Materialising every ply on the way forward, as upstream's
+  `AccumulatorStack::evaluate` does, inverts the cap's whole curve and was worth 113.0M.
+  Measure the cap AFTER changing what a hop costs, never before.
 - **The largest wins are constructs that read as free.** A `LazyLock` deref, an `Option` no
   caller can make `None`, a `Vec` whose length never changes, a loop that will not unroll
   because of a `break`, a horizontal reduction, a compute-then-copy pair, a range slice walked
