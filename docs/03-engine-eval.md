@@ -322,6 +322,12 @@ rather than only the ratios.
 | ../zfish, Zig 0.16 + LTO, **no PGO**, avx2 | 1,241,966,545 | **1.001** |
 | **rfish, clang-major LLVM + PGO + LTO, avx2** | **2,067,660,319** | **1.667** |
 
+**Every rfish row on this page below the accumulator sections is a NON-PGO count taken before
+the hop-by-hop roll-forward.** That change moved the non-PGO count from 1,743,381,846 to
+1,601,455,733 on the same tree, so the ratios here understate the port by roughly the same
+8.1%. Re-take the PGO row before quoting it; the instrument is `cargo xtask perf` and it
+rebuilds both sides.
+
 **rfish retires 1.90x ../mcfish's instructions and 1.67x ../zfish's.** Both siblings are at or
 below the engine they clone. This port is 67% above it, and it is the only one of the three
 that is. ../zfish reaches parity with NO profile-guided build at all, so the gap to it is
@@ -337,6 +343,14 @@ sits at 1.001. The constraint is not what costs 827M instructions.
 against a `DirtyPiece`; ../mcfish carries a seven-byte packed `NnueDirtyPiece`. Both do
 upstream's per-move delta. rfish rebuilds both feature sets every evaluation and diffs them,
 and it is the only port of the three that does.
+
+**Do not read the sibling ports as evidence that a portable kernel reaches upstream's affine
+layer.** ../mcfish's accumulator row ops are portable vector extensions, but every x86 tier of
+its `nnue_dot_step` is `immintrin.h` — `_mm512_dpbusd_epi32`, `_mm256_maddubs_epi16`,
+`_mm_maddubs_epi16` — and that is the instruction rfish has no safe route to. Its portable
+fallback body is a scalar lane loop kept so `simd-scalar` can pin bit-identity, not the tier
+any measurement on this page was taken against. The affine gap and the accumulator gap are
+different arguments and only the second one the siblings settle.
 
 That reframes the row below. This page has called the per-move delta "a redesign, not an
 edit" and priced it at "the ~158M row, not the whole evaluation gap". Against a measured 827M
@@ -563,7 +577,96 @@ wrong regime and does not hold.** What has to change with the stack, and what no
 attempt changed, is `Side::threats` and `EvalScratch::next_threats`: the delta path must not
 build a set at all, and `active_sets` must run only where the accumulator refreshes.
 
-### The refactor, and the four things that decided it
+### The chain must be MATERIALISED, not concatenated — and that was the cap
+
+The section below records a delta that beat the rebuild by 38.4M with `HOP_CAP` at two, and
+priced the cap as a knob whose value moves with the fold. Both readings were right about the
+code they were taken on and wrong about why the cap was small.
+
+**Instrumented, `bench 16 1 8` at avx2, over the same 163,081 nodes:** `rollforward_base`
+failed 59,054 times, and the reason was the CAP 54,527 times, a king move 4,357 times and the
+root 170 times. **A hop with no records: zero.** The walk-back was never blocked on a broken
+chain — it was blocked on the constant put there to contain the concatenation.
+
+And the concatenation is what made the cap necessary, for two reasons rather than one. The
+known one is that records do not cancel before they are applied, so a piece that moved twice
+contributes four rows. The one this page missed is that a concatenated chain writes only its
+LAST ply, so a chain walked once is walked again by the next evaluation. Uncapped, that folds
+**28.1 rows per roll-forward against a refresh's 17.3** — the walk-back had become dearer than
+the thing it was avoiding.
+
+Upstream does not concatenate. `AccumulatorStack::evaluate` walks back to the nearest computed
+ancestor and materialises every ply on the way forward, so each hop applies its own records
+and each ply it passes becomes a base the next evaluation reaches in one. Ported here:
+`PlySlot` carries the placement `do_move` reached it with and that placement's two king
+squares, `roll_forward` diffs each hop's own two boards, and `rollforward_base` tests the WHOLE
+chain for a king move rather than only the base — an intermediate stamped against a king square
+the position did not have would read as valid to the next evaluation, which concatenation never
+had to care about because it wrote no intermediates.
+
+The cap inverts with it. Search instructions at avx2, 163,081 nodes, startup subtracted:
+
+| `HOP_CAP` | 2 | 4 | 8 | 12 | 16 | 32 | 64 |
+|---|---|---|---|---|---|---|---|
+| concatenated | 2,025M | 2,044M | 2,232M | — | — | — | — |
+| hop by hop | 1,682M | 1,628M | 1,603M | **1,601M** | 1,601M | 1,601M | 1,601M |
+
+Twelve is a PLATEAU, not a peak — it is where the chains this search walks run out, so every
+larger cap describes the same walk. The cap has stopped being a tuning knob and become a bound
+on the worst case: the measured average is **1.32 hops per roll-forward** over 101,639 of them.
+
+| | before | after |
+|---|---|---|
+| refreshes, of 125,950 perspective computations | 59,054 (46.9%) | **24,311 (19.3%)** |
+| search instructions, avx2 | 1,714,434,277 | **1,601,455,733** |
+
+That is **113.0M**, and it is the largest single row this page has carried since the delta
+landed. Read with the 28.9M in the row below it, `bench 16 1 8` at avx2 went 1,743,381,846 to
+1,601,455,733 — **8.14%**, bit-exact throughout, `cargo xtask parity` and
+`cargo xtask arch-determinism` both exit 0.
+
+**The fold's own cost is now at parity and the remaining excess is elsewhere.** Measured per
+row over the whole bench, rfish applies 32.6 weight rows per evaluation at about 144
+instructions each — which is what eight 128-lane tiles of `vpmovsxbw`/`vpsubw` cost, and what
+upstream pays for the same row. What rfish still pays and upstream does not is
+`collect_diff` and `active_sets`, and both fire only on a REFRESH: cutting the refresh rate is
+therefore the lever on them too, and it has just moved 46.9% to 19.3%.
+
+### The refresh fold had been left behind by the delta fold
+
+`fold_into` was given fixed-width indexed weight rows and it was worth 19.3M. `fold_mirror` —
+the same fold, on the refresh path — was still taking `weights[base..base + TILE]`, so every
+row paid a range bounds test and then walked a `zip` iterator over the slice. The same edit is
+worth **28.9M** there, because a refresh applies more rows than a one-hop delta does: 20.1
+against 13.0, measured.
+
+**When one half of a pair gets an optimisation, check the other half.** Both halves were in
+the same file, forty lines apart, and the one that applies MORE rows is the one that was
+missed.
+
+### The affine layer is blocked on an instruction, and the density argument is why
+
+Disassembled at avx2, `propagate_sparse` already emits the good shape: per non-zero input it
+issues four `vpmovsxbd`, one `vpbroadcastd`, four `vpmaddwd` and four `vpaddd` — twelve vector
+operations for thirty-two outputs. LLVM found `vpmaddwd` from `w.cast::<i32>() * splat(x)`
+without being asked. There is nothing left to coax out of a per-input kernel.
+
+Upstream and both siblings do the same thirty-two outputs for FOUR inputs in the same twelve
+operations, and the instruction that buys it is `vpmaddubsw`. `../mcfish` reaches it with
+`_mm256_maddubs_epi16` — it is **not** a portable-C build at this layer, whatever its
+portability elsewhere; every x86 tier of `nnue_dot_step` in `src/engine/eval/nnue/simd.h` is
+`immintrin.h`. `../zfish` reaches it through Zig's `@Vector`. rfish cannot: LLVM will not
+synthesise `vpmaddubsw` from non-saturating IR, and the deinterleave that reaches it from
+portable vectors costs more than the fold saves — measured, 2,759M against 2,108M.
+
+**And the group-of-four route cannot pay even if the instruction appeared.** At this layer's
+~40% input density a group of four survives the zero test 87% of the time, so 223 group visits
+replace 410 input visits: the coarser test skips almost nothing, and it is the arithmetic that
+would have to win. Treat the ~176M this layer is above upstream as the price of the constraint
+and spend effort on the accumulator, where the excess is `collect_diff` and `active_sets` and
+both are still addressable.
+
+### The 2024 refactor, and the four things that decided it
 
 Built. **The per-move delta is now 38.4M cheaper than the rebuild**, at avx2 over the same
 163,081 nodes with startup subtracted, bit-exact throughout and `cargo xtask parity` green.
