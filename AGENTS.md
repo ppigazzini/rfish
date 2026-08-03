@@ -166,6 +166,7 @@ ports. Run it unpiped, or redirect to a log and test `$?`.
 | The default build sets no `-C target-cpu`. `cargo xtask build --arch <tier>` does, and it changes what the NNUE loops vectorise to — so a perf number without its tier is not a number. Every tier is ENUMERATED and `native` only selects one of them; a number filed under host-specific codegen is reproducible nowhere. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
 | `signature` builds at the DEFAULT arch, so it tests the portable arm and cannot see an ISA-gated divergence — and the NNUE kernels are `std::simd`, whose lowering the tier decides. `cargo xtask arch-determinism` is the gate that can; run it after touching a kernel. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
 | A cost regression is invisible to every gate in `parity`: the anchor pins the NODE count, not what a node costs. `cargo xtask perf-budget` holds the instruction count to a recorded row. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
+| **`perf-budget` SUBTRACTS startup, so it cannot see the net load or the magic tables.** Those were 1,281M instructions against a 1,524M search — nearly half a `bench` before it searches a node — and 17% of it was defect. Measure that axis with the `quit`-only profile the budget subtracts, and `/usr/bin/time -f "%M"` for peak RSS. A gate that subtracts a cost is a gate that hides it. | [docs/03-engine-eval.md](docs/03-engine-eval.md) |
 | "Improving" on upstream. A cleaner formulation that moves a rounding boundary moves the node count. | [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) |
 | Comments are **imperative mood**; never pin a number a gate computes. | [docs/11-writing.md](docs/11-writing.md) |
 | **Never exercise `Threads` near its declared maximum.** A worker is ~15.6 MB resident here (measured: 251 MB at `Threads 1`, 362 MB at `Threads 8`), so `Threads 1024` — the option's own max — is ~16 GB, and a harness running two engines is ~32 GB. That takes down a WSL2 VM and a CI runner, and it has: both sibling ports lost one. Cover the declared bounds with the `uci` listing diff, and keep every harness at 1, 2, 8 or 16. | this file |
@@ -208,6 +209,13 @@ blind spots) before proposing any optimisation. Four rules that outrank intuitio
   a licence for `unsafe`; restructure so the bound is provable instead. Measured here:
   moving the search stack from `Vec<T>` to `Box<[T; N]>` was worth 16.0M instructions, while
   masking a square index to drop `piece_on`'s comparison COST 2.0M.
+- **A guard proves nothing about a slice it is not stated against.** The magic search tested
+  `idx >= size` and then wrote `table[offset + idx]`, whose length is not `size` — so the test
+  bought nothing and the store paid a bounds check 11.5M times. Reslicing to exactly the length
+  the guard names turns a runtime test into a compile-time one, for free: 93.5M there, 34.6M in
+  the sparse affine layer, and part of 124.3M in the LEB128 decode. **Three zones, one defect**
+  — look for a runtime-length slice reached by a composite index in any loop whose real work is
+  arithmetic.
 - **A kernel whose OUTPUT WIDTH is small is the one to disassemble.** Being small is what
   stops the vectoriser caring. `fold_psqt` accumulates eight `i32` — one AVX2 register — and
   emitted 33 `mov`s and no vector instruction; `fc_2` is 128->1, so a generic

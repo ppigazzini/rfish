@@ -1082,6 +1082,27 @@ of the nest becomes a constant; the second level buys nothing and costs a second
 computation. **The lever is a compile-time bound the index provably cannot reach, not
 nesting.** If the outer index stays data-dependent, leave the composite alone.
 
+**It has now paid in THREE zones, and the enabling condition is the same in each.** The
+index has to be provably below a bound the compiler can see — and the proof is usually
+already in the source, one line above:
+
+| zone | the index | what made the bound provable | worth |
+|---|---|---|---|
+| `layers.rs`, the sparse affine layer | `blocks[c * SCAN + lane]` | chunk the rows as the inputs are chunked; `lane` comes from `trailing_zeros()` on a `u64` and `SCAN` is 64 | 34.6M |
+| `common.rs`, the LEB128 decode | `out[i]`, with `if i == out.len()` per BYTE | walk `out.iter_mut()` and pull bytes from an iterator | part of 124.3M |
+| `attacks.rs`, the magic search | `table[offset + idx]`, `epoch[idx]` | slice both to `size` once per square — the loop ALREADY tests `idx >= size` | 93.5M |
+
+The third is the clearest statement of the rule. The guard was there the whole time:
+
+```rust
+if idx >= size { continue 'search; }     // the proof
+...
+table[offset + idx] = references[i];     // against table.len(), which is not size
+```
+
+**A guard proves nothing about a slice it is not stated against.** Reslicing to exactly the
+length the guard names is what turns a runtime test into a compile-time one, and it is free.
+
 ### 18.2 `Box<[T; N]>` is not automatically better than `Vec<T>`
 
 The search stack moved from `Vec<T>` to `Box<[T; N]>` for **−16.0M** (§14.2) and the ply stack
@@ -1192,3 +1213,49 @@ The conclusion survived (a group of four survives the zero test 47% of the time 
 87%, which still kills it), but nobody could have known that without counting. **A figure that
 decides a design and was never produced by a command is a figure to re-derive before you
 trust the design.** It costs one `AtomicU64` and one bench run.
+
+### 18.9 Decode into the width it lands in, not through a wider temporary
+
+`leb128_i16` decoded into a `vec![0i32; out.len()]` and narrowed afterwards. On the NNUE main
+weight block that temporary is 23,068,672 entries — **92 MiB allocated and page-faulted in to
+be read once and dropped**, and it was most of what made a `quit`-only run peak at 253 MiB.
+
+The encoding is defined over `i32`, so the decode has to compute in `i32`; nothing requires it
+to STORE in `i32`. A private trait with one method per destination width gives both blocks one
+decode and no temporary. Read with §18.1's row: the same commit moved the length test off the
+per-byte path and removed the store's bounds test, and the three together are **124.3M of
+startup and 63 MiB of peak RSS**.
+
+**Ask what the intermediate width is for.** If it exists only because the algorithm's
+arithmetic is wider than its output, it belongs in a register, not in a buffer the size of the
+output.
+
+### 18.10 A transient allocation is not automatically a peak-RSS problem
+
+The same file's `i8s`, `i16s` and `i32s` each allocate a `Vec` the size of the whole block and
+convert out of it — **61 MiB for the threat weights alone**. Converting out of a fixed 8 KiB
+buffer instead measured **+5.3M instructions and moved peak RSS not at all.**
+
+That 61 MiB is allocated and FREED before the peak is reached, so it was never what set the
+peak; the LEB128 path was. **Check WHEN an allocation lives, not just how big it is** — and
+measure peak RSS directly (`/usr/bin/time -f "%M"`) rather than inferring it from the largest
+number in the source. Not kept.
+
+### 18.11 Startup is an axis the instruction budget SUBTRACTS
+
+`cargo xtask perf-budget` subtracts a `quit`-only profile, which is exactly the net load and
+the table build. **Nothing in §14–18 above could see either**, and together they were 1,281M
+instructions against a 1,524M search — a `bench` spent nearly half its instructions before it
+searched a node.
+
+Measure that axis with the profile the budget subtracts:
+
+```sh
+cd resources && echo quit | valgrind --tool=callgrind --callgrind-out-file=/dev/null \
+    --cache-sim=no ../target/release/stockfish 2>&1 | grep "I *refs"
+/usr/bin/time -f "%e s  %M KB peak" sh -c 'echo quit | ./stockfish > /dev/null'
+```
+
+Two blocks own it, and both turned out to be §18.1's defect: the LEB128 decode and the magic
+search. **A gate that subtracts a cost is a gate that hides it.** State what each instrument
+excludes before trusting a zero from it.
