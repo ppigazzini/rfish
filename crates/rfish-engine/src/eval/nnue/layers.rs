@@ -17,7 +17,7 @@
 
 use core::simd::Simd;
 use core::simd::cmp::{SimdOrd, SimdPartialEq};
-use core::simd::num::SimdInt;
+use core::simd::num::{SimdInt, SimdUint};
 
 use super::common::{Aligned, NetError, NetReader, NetWriter, ceil_to_multiple};
 
@@ -182,6 +182,59 @@ impl AffineLayer {
         }
 
         *output = acc.to_array();
+    }
+
+    /// `bias + sum_i weight[i] * input[i]`, for the layer whose output width is ONE.
+    ///
+    /// [`AffineLayer::propagate`] is generic over the output width and the last layer is
+    /// 128 -> 1, so it instantiated at `Simd<i32, 1>` -- a one-lane vector, which is a
+    /// scalar. What LLVM then made of it is worth reading, because it is not the obvious
+    /// failure: it widened the loop to `xmm` and put a HORIZONTAL REDUCTION inside it.
+    ///
+    /// ```text
+    ///   vpmovzxbw / vpmovsxbw     8 inputs, 8 weights, widened to i16
+    ///   vpmaddwd                  4 partial sums
+    ///   vpshufd / vpaddd          \  reduce four lanes to one, every iteration,
+    ///   vpshufd / vpaddd          /  because the accumulator in the source is a scalar
+    ///   vmovd / add
+    /// ```
+    ///
+    /// Twelve instructions per eight inputs, and the shuffle pair serialises the loop on a
+    /// dependency chain no wider accumulator would have. Sixteen `i32` lanes carried across
+    /// the whole walk and reduced ONCE at the end is the same arithmetic without either.
+    ///
+    /// The reassociation is exact rather than approximate: every product is a `u8` in
+    /// `[0, 127]` times an `i8`, so it is bounded by 16,256 in magnitude, and 128 of them
+    /// plus the bias cannot leave `i32`. Integer addition is associative, so the order the
+    /// lanes are summed in cannot change the total. `cargo xtask nnue-check` pins it against
+    /// upstream and the bench signature pins it against the whole tree.
+    ///
+    /// ../mcfish gives its own one-output layer a dedicated contiguous dot for exactly this
+    /// reason, and says so in `nnue_affine.c`: the generic path "loads four bytes at a time,
+    /// sign/zero-extends each quad to int32, repacks to int16 and reduces" for what one wide
+    /// instruction does at a stride.
+    #[must_use]
+    pub fn propagate_one(&self, input: &[u8]) -> i32 {
+        // At an output width of one the transposed copy IS the weight row, contiguously:
+        // `sparse[i * 1 + 0] == weights[0 * padded_dims + i]`. So this is a plain dot over
+        // two byte arrays, and needs no gather and no stride.
+        const LANES: usize = 16;
+        debug_assert_eq!(self.output_dims, 1);
+        debug_assert!(input.len() >= self.input_dims);
+
+        let (w_blocks, w_tail) = self.sparse[..self.input_dims].as_chunks::<LANES>();
+        let (i_blocks, i_tail) = input[..self.input_dims].as_chunks::<LANES>();
+        let mut acc = Simd::<i32, LANES>::splat(0);
+        for (wb, ib) in w_blocks.iter().zip(i_blocks.iter()) {
+            let w: Simd<i8, LANES> = Simd::from_array(*wb);
+            let x: Simd<u8, LANES> = Simd::from_array(*ib);
+            acc += w.cast::<i32>() * x.cast::<i32>();
+        }
+        let mut sum = self.biases[0] + acc.reduce_sum();
+        for (&w, &x) in w_tail.iter().zip(i_tail.iter()) {
+            sum += i32::from(w) * i32::from(x);
+        }
+        sum
     }
 
     /// How many bytes of weights and biases this layer holds.
