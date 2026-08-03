@@ -1147,6 +1147,49 @@ The arithmetic implemented is upstream's **scalar fallback** — which upstream 
 precisely so its vector paths have something to be bit-identical to. That is what makes
 `nnue-check` a meaningful comparison rather than a comparison of two approximations.
 
+## Loading the net, and the axis every gate subtracts
+
+**`cargo xtask perf-budget` subtracts a `quit`-only profile, so no number on this page above
+this line includes the net load.** It is not small: startup was **1,281M instructions against
+a 1,524M search**, so a `bench` spent nearly half its instructions before it searched a node.
+Measure it with the profile the budget subtracts:
+
+```sh
+cd resources && echo quit | valgrind --tool=callgrind --callgrind-out-file=/dev/null \
+    --cache-sim=no ../target/release/stockfish 2>&1 | grep "I *refs"
+/usr/bin/time -f "%e s  %M KB peak" sh -c 'echo quit | ./stockfish > /dev/null'
+```
+
+| | startup Ir | peak RSS |
+|---|---:|---:|
+| before | 1,281,194,773 | 253,344 KB |
+| the LEB128 decode, into the destination width | 1,156,853,329 | 190,208 KB |
+| **the magic search, sliced to its own guard** | **1,063,324,214** | 190,200 KB |
+
+**−17.0% and −63 MiB, and both blocks were the same defect** — a runtime-length slice reached
+by a composite index, which is [docs/08-idiomatic-rust.md](08-idiomatic-rust.md) §18.1's shape
+in its second and third zones.
+
+- `leb128_i16` decoded into a `vec![0i32; out.len()]` and narrowed afterwards. On the main
+  weight block that is 23,068,672 entries — 92 MiB, allocated and page-faulted to be read once.
+  It also tested `i == out.len()` once per BYTE where a value takes one or two, and reached the
+  destination through a bounds-tested `out[i]`. Walking `out.iter_mut()` and pulling bytes from
+  an iterator fixes all three.
+- `build_magics` indexed four runtime-length slices per iteration of a loop whose real work is
+  a multiply and a shift, and 70.2M of it was `core::slice::index`. Its own `idx >= size` guard
+  was already there — reslicing `table` and `epoch` to exactly `size` is what let LLVM use it.
+
+**What rfish cannot do here, and it is the constraint working as intended:** ../mcfish loads
+by `mmap` and records loading in a fifth of upstream's cycles because of it. `mmap` is behind
+an `unsafe fn`, every crate wrapping it is `unsafe` internally, and the engine crate has zero
+dependencies under `forbid(unsafe_code)`. The comparison rfish's decode has to win is against
+upstream's own `read_leb_128`, not against a memory map.
+
+Two things remain and both are blocked rather than undone: the compressed block is still
+materialised whole (streaming it needs a refill test per byte, and the falsified row in
+§18.10 is the measurement saying a per-byte refill costs more than the allocation), and
+`vec![0u8; n]` is the only safe way to get a buffer `read_exact` overwrites in full.
+
 ## The net is a runtime input, never embedded
 
 `cargo xtask net` fetches it into `resources/`. The engine looks in the working directory,
