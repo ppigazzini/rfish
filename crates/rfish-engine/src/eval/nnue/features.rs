@@ -488,7 +488,7 @@ fn threat_index_oriented(
 }
 
 /// Every active threat feature, for one perspective.
-pub fn threat_active(pos: &Position, out: &mut [Vec<u32>; COLOR_NB]) {
+pub fn threat_active(pos: &Position, wanted: [bool; COLOR_NB], out: &mut [Vec<u32>; COLOR_NB]) {
     let ksq = [pos.king_square(Color::White), pos.king_square(Color::Black)];
     let occupied = pos.occupied();
     let pawn_targets = pos.pieces(PieceType::Knight) | pos.pieces(PieceType::Rook);
@@ -514,6 +514,14 @@ pub fn threat_active(pos: &Position, out: &mut [Vec<u32>; COLOR_NB]) {
     macro_rules! emit {
         ($attacker:expr, $from:expr, $to:expr, $attacked:expr) => {{
             for i in 0..COLOR_NB {
+                // The SCAN is shared -- which square attacks which is a fact about the
+                // position -- but the INDEX is not, and a set nobody is going to read costs
+                // exactly as much to build as one that will be. A refresh is now almost
+                // always a king move, and a king move invalidates ONE perspective, so the
+                // other side's set was being built for nothing on 15,453 of 19,882 calls.
+                if !wanted[i] {
+                    continue;
+                }
                 let index = threat_index_oriented(
                     t,
                     orientation[i],
@@ -674,10 +682,15 @@ fn pp_index_oriented(
 }
 
 /// Every active pawn-pair feature, for one perspective.
-pub fn pawn_pair_active(pos: &Position, out: &mut [Vec<u32>; COLOR_NB]) {
+pub fn pawn_pair_active(pos: &Position, wanted: [bool; COLOR_NB], out: &mut [Vec<u32>; COLOR_NB]) {
     let white = pos.pieces_of(Color::White, PieceType::Pawn);
     let black = pos.pieces_of(Color::Black, PieceType::Pawn);
     for p in Color::ALL {
+        // Per perspective, for the reason `threat_active` gives: this one shares nothing
+        // between the two, so a set nobody reads is pure waste.
+        if !wanted[p.index()] {
+            continue;
+        }
         pawn_pairs_of(white, black, p, pos.king_square(p), &mut out[p.index()]);
     }
 }
@@ -873,8 +886,8 @@ mod tests {
 
         fn full(pos: &Position) -> [Vec<u32>; COLOR_NB] {
             let mut out = [Vec::new(), Vec::new()];
-            threat_active(pos, &mut out);
-            pawn_pair_active(pos, &mut out);
+            threat_active(pos, [true, true], &mut out);
+            pawn_pair_active(pos, [true, true], &mut out);
             out
         }
         fn counts(v: &[u32]) -> HashMap<u32, i32> {
@@ -985,9 +998,9 @@ mod tests {
         ] {
             let pos = Position::from_fen(fen, false).expect("valid");
             let mut v = [Vec::new(), Vec::new()];
-            threat_active(&pos, &mut v);
+            threat_active(&pos, [true, true], &mut v);
             let mut w = [Vec::new(), Vec::new()];
-            pawn_pair_active(&pos, &mut w);
+            pawn_pair_active(&pos, [true, true], &mut w);
             for p in Color::ALL {
                 for &i in &v[p.index()] {
                     assert!(i < THREAT_DIMENSIONS, "{fen}: threat index {i} out of range");
@@ -1042,7 +1055,7 @@ mod tests {
         assert_eq!(halfka.len(), 32, "one feature per piece on the board");
 
         let mut pp_both = [Vec::new(), Vec::new()];
-        pawn_pair_active(&pos, &mut pp_both);
+        pawn_pair_active(&pos, [true, true], &mut pp_both);
         let pp = &pp_both[Color::White.index()];
         // The band spans ranks 2..7, so a rank-2 pawn pairs with the rank-7 pawns on its
         // own and adjacent files as well as with its own neighbours: 7 white-white pairs,
@@ -1066,7 +1079,7 @@ mod tests {
         )
         .expect("valid");
         let mut both = [Vec::new(), Vec::new()];
-        threat_active(&pos, &mut both);
+        threat_active(&pos, [true, true], &mut both);
         let (w, b) = (&both[Color::White.index()], &both[Color::Black.index()]);
         assert_eq!(w.len(), b.len(), "both sides see the same threats, differently indexed");
         assert_ne!(w, b);
