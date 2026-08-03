@@ -751,10 +751,17 @@ fn strip_identity(out: &str) -> String {
 /// This settles the mechanical half. It CANNOT tell you a sentence has become false —
 /// that part is yours, and every false claim ever found in the sibling ports' docs got
 /// there by a commit that changed the code and not the page.
+///
+/// A path claim is resolved against the TREE rather than the working directory, because the
+/// working directory is not what a reader gets. `.exists()` reads whatever the developer
+/// happens to have lying around, so a doc naming a file that only ever exists locally passes
+/// here and fails in CI — which is how the reference to the per-machine
+/// `tools/instr_budget.golden` reached `main` green.
 pub(crate) fn docs_lint() -> Result<Outcome, String> {
     let root = workspace_root();
     let mut problems = Vec::new();
     let mut checked = 0;
+    let tracked = tracked_paths(&root)?;
 
     let mut files = Vec::new();
     collect_markdown(&root, &mut files)?;
@@ -790,9 +797,9 @@ pub(crate) fn docs_lint() -> Result<Outcome, String> {
                     && !word.ends_with('/')
                 {
                     checked += 1;
-                    if !root.join(word).exists() {
+                    if !in_tree(&tracked, word) && !deliberately_untracked(&root, word) {
                         problems.push(format!(
-                            "{}:{}: names a path that does not exist: {word}",
+                            "{}:{}: names a path the tree does not carry: {word}",
                             rel.display(),
                             n + 1
                         ));
@@ -811,6 +818,33 @@ pub(crate) fn docs_lint() -> Result<Outcome, String> {
     }
     println!("docs-lint: {checked} references checked across {} files", files.len());
     Ok(Outcome::check(problems.is_empty(), format!("{} documentation problems", problems.len())))
+}
+
+/// Every path a fresh checkout carries, which is the only tree a reader or CI ever has.
+fn tracked_paths(root: &std::path::Path) -> Result<std::collections::BTreeSet<String>, String> {
+    let out = capture(Command::new("git").current_dir(root).arg("ls-files"))?;
+    Ok(out.lines().map(str::to_string).collect())
+}
+
+/// True when the tree carries `word`, either as a file or as a directory holding one.
+fn in_tree(tracked: &std::collections::BTreeSet<String>, word: &str) -> bool {
+    if tracked.contains(word) {
+        return true;
+    }
+    // A directory is not itself an entry, so match it by the files underneath. The set is
+    // ordered, so the first entry at or after `word/` settles it without a scan.
+    let dir = format!("{word}/");
+    tracked.range(dir.clone()..).next().is_some_and(|p| p.starts_with(&dir))
+}
+
+/// True when `.gitignore` names `word`.
+///
+/// An ignored path is one the repository has DECIDED not to carry — `tools/instr_budget.golden`
+/// is per-machine, because a retired-instruction count is toolchain- and CPU-specific — so a
+/// doc naming it is documenting the tool that writes it, not making a false claim about the
+/// tree. Absent from a checkout and absent from `.gitignore` is the rot this gate is for.
+fn deliberately_untracked(root: &std::path::Path, word: &str) -> bool {
+    run(Command::new("git").current_dir(root).args(["check-ignore", "-q", word])).is_ok()
 }
 
 /// Refuse the current bench anchor written into prose.
