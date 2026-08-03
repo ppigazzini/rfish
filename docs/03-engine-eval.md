@@ -618,10 +618,17 @@ on the worst case: the measured average is **1.32 hops per roll-forward** over 1
 | | before | after |
 |---|---|---|
 | refreshes, of 125,950 perspective computations | 59,054 (46.9%) | **24,311 (19.3%)** |
+| — of which a KING MOVE | 4,357 | **24,148 (99.3%)** |
+| — of which the cap | 54,527 | **26** |
 | search instructions, avx2 | 1,714,434,277 | **1,601,455,733** |
 
 That is **113.0M**, and it is the largest single row this page has carried since the delta
-landed. Read with the 28.9M in the row below it, `bench 16 1 8` at avx2 went 1,743,381,846 to
+landed. **The cap has stopped being a cause at all** — 99.3% of what refreshes now is a king
+move, which is exactly the shape upstream has, and it is what makes upstream's
+`update_accumulator_hybrid` (../mcfish's `nnue_acc_apply_hybrid_delta`) the next lever rather
+than anything about the walk-back. That path reaches a moved king from the parent's
+accumulator plus the two king squares' cache entries, so it pays neither `active_sets` nor
+`collect_diff`; both of those now fire on refreshes alone and are worth roughly 45M together. Read with the 28.9M in the row below it, `bench 16 1 8` at avx2 went 1,743,381,846 to
 1,601,455,733 — **8.14%**, bit-exact throughout, `cargo xtask parity` and
 `cargo xtask arch-determinism` both exit 0.
 
@@ -631,6 +638,68 @@ instructions each — which is what eight 128-lane tiles of `vpmovsxbw`/`vpsubw`
 upstream pays for the same row. What rfish still pays and upstream does not is
 `collect_diff` and `active_sets`, and both fire only on a REFRESH: cutting the refresh rate is
 therefore the lever on them too, and it has just moved 46.9% to 19.3%.
+
+### Two kernels LLVM left scalar, and both were found by DISASSEMBLING
+
+Neither is visible in the source and neither shows as a hot symbol — they are small
+functions doing a few times more work than they need to. Both were found by reading
+`objdump`, and ../mcfish's source records hitting the same two walls on the same two
+kernels, which is what makes them worth naming as a SHAPE rather than as two incidents.
+
+**`fold_psqt` accumulates eight `i32`, which is one AVX2 register exactly** — and it held 33
+`mov`s and not one vector instruction. LLVM will not turn an eight-lane integer loop into a
+`vpaddd` on its own. ../mcfish says so about its own `nnue_acc_apply_psqt_delta`: "the scalar
+8-step loop these replaced stayed scalar (the toolchain does not auto-vectorize integer
+loops)". Written as `Simd<i32, 8>` it is **3.3M**.
+
+**`fc_2` is 128 -> 1, so the generic `propagate::<N>` instantiated at `Simd<i32, 1>`** — a
+one-lane vector. What LLVM made of that is not the obvious failure, and it is the part worth
+remembering:
+
+```text
+  vpmovzxbw / vpmovsxbw     8 inputs, 8 weights, widened to i16
+  vpmaddwd                  4 partial sums
+  vpshufd / vpaddd          \  reduce four lanes to one, EVERY iteration,
+  vpshufd / vpaddd          /  because the accumulator in the source is a scalar
+  vmovd / add
+```
+
+It widened the loop to `xmm` and then put a horizontal reduction inside it, so twelve
+instructions per eight inputs sit on a serialised shuffle chain. A dedicated contiguous dot
+carrying sixteen `i32` lanes and reducing once is **6.0M**. ../mcfish gives its one-output
+layer its own `nnue_affine1_dot` for exactly this reason.
+
+**The shape: a kernel whose output width is small is the one to disassemble.** Both of these
+are tiny relative to the fold, and both were doing several times the necessary work precisely
+because being small is what stopped the vectoriser caring.
+
+### Falsified, with numbers
+
+**A `Box<[i16; L1]>` accumulator is 6.1M WORSE.** `Side::acc` is a `Vec<i16>`, so the fold's
+tile loop has a runtime chunk count where it is always exactly eight, every `src_rows[t]`
+carries a bounds test, and each computation calls `resize(L1, 0)` to restate what the type
+already says. Fixing all three at once moved `bench 16 1 8` at avx2 from 1,592.2M to 1,598.3M
+at an identical node count. Fully unrolling a loop that was already eight tiles of
+register-resident work buys nothing and costs code size, which is the counter this port is
+already worst on. Do not re-derive it.
+
+### Where the fold stands, per row
+
+| | per (row, tile) |
+|---|---|
+| the arithmetic — eight `vpmovsxbw` + eight `vpsubw` over 128 lanes | 16 instructions |
+| the ADDRESSING — `&tp_rows[index * ROWS_PER_FEATURE + t]` | **8 instructions** |
+
+The row count itself is right: 5.3 rows per hop over 134,525 hops, which is a per-move delta's
+worth and what upstream applies. What is left is that `index * ROWS_PER_FEATURE` is recomputed
+once per TILE rather than once per row, because the row lists are walked inside the tile loop —
+and that the bounds test upstream does not have costs two of the eight.
+
+Pre-scaling the collected indices at their push sites would remove the multiply, and it is
+worth about 6M against a 1,592M total. It is NOT taken: `collect_diff` shares those buffers
+with a bitmap keyed on the RAW index, so the two would have to disagree about what an entry
+means, across four files, for 0.4%. Recorded so the next attempt knows the size before
+starting.
 
 ### The refresh fold had been left behind by the delta fold
 
