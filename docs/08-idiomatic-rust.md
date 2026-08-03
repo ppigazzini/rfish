@@ -346,7 +346,7 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | Fusing move scoring into generation, because "the siblings have no `generate_append`" | **The PREMISE was false.** mcfish's `score_list()` calls `generate_captures`/`generate_quiets`/`generate_evasions` to build the whole list and then walks it to fill `out[i].value` — exactly rfish's shape. It only looks fused because it is one static function that callgrind folds into `nextMove`. The picker-zone gap is inside the generation loops, not in the pass structure. See §15.6. |
 | Making `Bitboard::iter` borrow instead of copy | **Rejected by design.** Iterating by value is what lets a loop mutate the board it came from, which is upstream's `while (b) pop_lsb(b)` over a local with the local made explicit. |
 | Rewriting the feature transformer's fold and transform in `std::simd` | **Not worth attempting, from the disassembly.** Both already emit upstream's kernel shape — `vpaddw`/`vpsubw`/`vpmovsxbw` in the fold, `vpminsw`/`vpmullw`/`vpsrlw`/`vpackuswb` in the transform — over 136 and 156 `%ymm` operands. Explicit vectors would transcribe what LLVM emits. See §12 — and §17.1, where the ADDRESSING around those same loops was worth 11.6M without touching a kernel. |
-| Upstream's per-move accumulator delta | **Falsified, with a measurement, after being BUILT.** Bit-exact (signature 2508687, nnue-check 109/109) and it loses: recording costs 85.7M on every `do_move` and the fast path fires on **11%** of evaluations, so it saves 0.47M. The board-zone half is kept and tested; see `docs/03-engine-eval.md`. |
+| Upstream's per-move accumulator delta | **Falsified, with a measurement, after being BUILT.** Bit-exact — the anchor and `nnue-check` both held — and it loses: recording costs 85.7M on every `do_move` and the fast path fires on **11%** of evaluations, so it saves 0.47M. The board-zone half is kept and tested; see `docs/03-engine-eval.md`. |
 | Making `diff_apply`'s membership tests branchless | **Falsified, with a measurement.** Storing every element and advancing the count by the predicate removes 2.11M conditional mispredicts (2.187 → **1.896** of upstream's) and costs **+62.7M instructions** and **+37.4M data writes**. The branchy form stores only the rare kept element; the branchless one stores every element of BOTH sets. See §13 for why the premise was wrong. |
 
 ---
@@ -760,7 +760,7 @@ doc, and every one produces a plausible number rather than an error:
 
 - **A worktree has no net.** `resources/` is gitignored, so a worktree checkout has no
   `.nnue`. Callgrind runs and `cargo xtask signature` then silently use the CLASSICAL
-  evaluation — signature reads 3454359, not 2508687. Two lanes read that as their own patch
+  evaluation — signature reads 3454359 rather than the anchor. Two lanes read that as their own patch
   breaking bit-exactness. Fix before anything else:
   `mkdir -p resources && ln -sf <main>/resources/nn-*.nnue resources/`
 - **`cargo xtask signature` rebuilds `target/release/stockfish` at the DEFAULT arch**, wiping

@@ -73,12 +73,15 @@ away for a configuration change would cost strength for no reason.
 
 ## What is not here
 
-- **No NUMA model and no network replication.** Upstream replicates the NNUE weights per
-  NUMA node and binds threads to it. There are weights to replicate now, and this is
-  nonetheless **blocked**: replication only pays if a thread can be pinned to the node
-  holding its copy, and `std` exposes no affinity API — both pinning and node-local
-  allocation are FFI, which the engine crate cannot reach without `unsafe` or a dependency.
-  [06-platform.md](06-platform.md) has the full reasoning.
+- **No thread PINNING, and therefore no network replication.** The NUMA model itself is
+  here — `platform/numa.rs` reads the real topology and the process affinity, implements
+  upstream's three auto policies, parses and prints its `NumaPolicy` syntax, and distributes
+  a worker set across nodes with upstream's arithmetic. What is missing is the last step:
+  `std` exposes no affinity API, and both `sched_setaffinity` and node-local allocation are
+  FFI the engine crate cannot reach without `unsafe` or a dependency. Replication follows
+  pinning, so it is **blocked** rather than pending, and the shell reports thread
+  *distribution* where upstream reports *binding* rather than implying a guarantee it cannot
+  make. [06-platform.md](06-platform.md) has the full reasoning.
 
 Pondering IS here. `Ponder` buys the current move a quarter more time; a budget that runs
 out while pondering sets a flag rather than stopping, because only the GUI can end a ponder;

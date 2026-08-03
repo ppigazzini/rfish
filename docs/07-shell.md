@@ -111,8 +111,12 @@ Two things follow from it, and both had to move together:
 
 ## What is not here
 
-- **No `help`, no `flip`, no `export_net`, no `tune`.** All declared out of scope until the
-  zones they report on exist.
+- **`speedtest` — and nothing else.** Every other command upstream accepts is accepted here,
+  including the debugging surface it calls "custom non-UCI commands": `d`, `eval`,
+  `compiler`, `flip`, `export_net`, and `help`/`license` with upstream's own text. Upstream
+  spells the missing one `BenchmarkCommand`; it is a "how fast is this box" tool with no
+  consumer in this repository, where `bench` is what every gate and harness drives. Absent on
+  purpose, not by oversight — and `bench` itself IS ported.
 - **Reading and searching do not share a thread.** They cannot: the search runs where `go`
   was dispatched, so a loop that reads a line, dispatches it, and only then reads the next
   one cannot see a `stop` until the search it would stop has already ended. `go infinite`
