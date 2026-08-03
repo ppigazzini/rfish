@@ -19,6 +19,7 @@
 //! two instruments over them; the instruments disagree often, and both readings belong in a
 //! report. See `docs/09-tooling-ci.md` for which instrument settles which question.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -584,6 +585,267 @@ fn callgrind_search_ir(bin: &Path, cwd: &Path) -> Result<(u64, u64), String> {
     Ok((total.saturating_sub(startup_ir(bin, cwd)?), nodes))
 }
 
+/// Where the per-tier instruction budgets live.
+const BUDGET_GOLDEN: &str = "tools/instr_budget.golden";
+
+/// How far the measured count may sit from the recorded one before the gate reddens.
+///
+/// **Set by MUTATION, not by feel**, which is the discipline both sibling ports paid for:
+/// ../zfish shipped 0.20% and watched a real regression sail through it, ../mcfish shipped
+/// 0.5% and watched the same one. The mutation has to be re-run HERE, because the value is a
+/// property of this instrument and this workload, and the number it produced is why this is
+/// not either sibling's figure: forcing `Position::adjust_key50` out of line — their mutation
+/// too — costs **+0.0541%** here, so 0.05% would have caught it by a factor of 1.08 and
+/// missed anything smaller.
+///
+/// Against a spread of ten instructions in 1.7e9 across a from-scratch rebuild, 0.005% is
+/// ~8000x the noise and ~11x under the mutation. `docs/09-tooling-ci.md` records the run.
+const BUDGET_TOLERANCE: f64 = 0.000_05;
+
+/// How many times the bench is profiled before the median is taken.
+///
+/// One would do on a deterministic instrument. Two is what makes the cross-round workload
+/// check mean anything: an engine that dies mid-gate, or a net that goes missing after the
+/// first launch, otherwise reports a smaller count that reads as an improvement.
+const BUDGET_ROUNDS: usize = 2;
+
+/// Hold an absolute instruction count to a recorded budget — the regression nothing else sees.
+///
+/// `signature` proves the same NODE count and says nothing about what those nodes cost, so a
+/// change can shed no nodes, keep every gate in `parity` green, and still run measurably
+/// slower. Ported from ../mcfish's `perf-budget` and ../zfish 51031f48, with the instrument
+/// swapped: both siblings read hardware counters through `perf_event_open`, which many CI
+/// containers refuse; rfish already has callgrind wired for the differential and it is
+/// deterministic, so the budget reuses it.
+///
+/// **Local, and deliberately NOT in `parity`.** The count is a property of the toolchain as
+/// much as of the code, so the pinned nightly moving legitimately moves it. Run it after a
+/// perf commit and after a toolchain bump.
+pub(crate) fn perf_budget(args: &[&str], update: bool) -> Result<Outcome, String> {
+    let tier = tier_of(args)?;
+    // A row keyed `native` is a number about ONE MACHINE, and ../zfish 7d4de85f is the shape
+    // to copy: REFUSE the key. Its `native` is a selector among enumerated tiers, so the
+    // codegen is a property of the tier either way; rfish's is real `-C target-cpu=native`,
+    // which is ../mcfish's shape, and mcfish's own fix — folding the resolved target-cpu
+    // into the key — records host-specific codegen rather than eliminating it. Do NOT copy
+    // that half. The end state is native as a selector; until then no row may be keyed by it.
+    // Here the tier table refuses the same tier for a second, independent reason: callgrind
+    // implements no AVX-512.
+    if !tier.callgrind_safe {
+        return Err(format!(
+            "tier '{}' cannot carry a budget: it resolves to a different binary on every host, \
+             so a row would name this machine rather than the code, and callgrind SIGILLs on \
+             the first instruction it does not know. Use a pinned tier: {}",
+            tier.name,
+            TIERS
+                .iter()
+                .filter(|t| t.callgrind_safe)
+                .map(|t| t.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !have("valgrind") {
+        return Ok(Outcome::Skipped("valgrind is needed to count instructions".to_string()));
+    }
+    let rounds: usize =
+        arg_value(args, "--rounds").and_then(|v| v.parse().ok()).unwrap_or(BUDGET_ROUNDS);
+
+    // Its own target directory, so this gate cannot leave a tier-built binary in
+    // `target/release` for the next one to measure or ship by accident.
+    let dir = workspace_root().join("target/budget").join(tier.name);
+    println!("perf-budget: building at tier {} ({})", tier.name, tier.rustc);
+    cargo_build(&format!("-C target-cpu={}", tier.rustc), &dir, false)?;
+    let bin = dir.join("release/stockfish");
+
+    let (ir, nodes) = budget_ir(&bin, &resources_dir(), rounds)?;
+    println!(
+        "perf-budget: {ir} instructions over {nodes} nodes (bench {}, startup subtracted)",
+        DIFF_BENCH.join(" ")
+    );
+
+    let path = workspace_root().join(BUDGET_GOLDEN);
+    if update {
+        write_budget(&path, tier, nodes, ir)?;
+        println!("perf-budget: recorded {} {} {nodes} {ir}", tier.name, tier.rustc);
+        return Ok(Outcome::Pass);
+    }
+
+    let Some(row) = read_budget(&path, tier)? else {
+        return Ok(Outcome::Skipped(format!(
+            "no budget recorded for tier '{}'; run `cargo xtask perf-budget-update --tier {}`",
+            tier.name, tier.name
+        )));
+    };
+    if row.nodes != nodes {
+        return Ok(Outcome::Fail(format!(
+            "the workload moved: {nodes} nodes against the budget's {}. An instruction count \
+             over a different tree is not comparable — settle `signature` first, then re-record",
+            row.nodes
+        )));
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let delta = (ir as f64 - row.ir as f64) / row.ir as f64;
+    println!(
+        "perf-budget: budget {}, delta {:+.4}% against a tolerance of {:+.4}%",
+        row.ir,
+        delta * 100.0,
+        BUDGET_TOLERANCE * 100.0
+    );
+    if delta.abs() <= BUDGET_TOLERANCE {
+        return Ok(Outcome::Pass);
+    }
+    Ok(Outcome::Fail(format!(
+        "{} by {:.4}%, outside the {:.4}% tolerance. {}",
+        if delta > 0.0 { "REGRESSED" } else { "improved" },
+        delta.abs() * 100.0,
+        BUDGET_TOLERANCE * 100.0,
+        if delta > 0.0 {
+            "Find the cost before re-recording: a budget raised to fit the tree gates nothing"
+        } else {
+            "Re-record it with `perf-budget-update` once the win is understood"
+        }
+    )))
+}
+
+/// One recorded budget row.
+struct Budget {
+    nodes: u64,
+    ir: u64,
+}
+
+/// The median instruction count over `rounds`, with the workload held across all of them.
+///
+/// **Every round is held to round one's node count.** ../zfish credits exactly this check
+/// with catching an ablation that searched 162 860 nodes while claiming 163 081, and the
+/// instruction delta read clean either way. A run whose workload moves is a rig fault, not a
+/// measurement, so it refuses rather than publishing the smaller median as an improvement.
+fn budget_ir(bin: &Path, cwd: &Path, rounds: usize) -> Result<(u64, u64), String> {
+    if rounds == 0 {
+        return Err("--rounds 0 measures nothing".to_string());
+    }
+    // Once, not per round: the same binary parses the same net every time, and this is the
+    // half of the profile that is not the search.
+    let startup = startup_ir(bin, cwd)?;
+    let mut counts = Vec::with_capacity(rounds);
+    let mut first_nodes = 0u64;
+    for round in 1..=rounds {
+        let (total, nodes, net) = budget_round(bin, cwd)?;
+        // A measurement without a net is a measurement of a DIFFERENT ENGINE: the classical
+        // fallback searches its own tree at its own cost, and reports a plausible number.
+        if net.is_none() {
+            return Err(format!(
+                "the engine loaded no NNUE network from {} — it fell back to the classical \
+                 evaluation, and that is a different engine. Run `cargo xtask net`",
+                cwd.display()
+            ));
+        }
+        if round == 1 {
+            first_nodes = nodes;
+        } else if nodes != first_nodes {
+            return Err(format!(
+                "the node count moved between rounds (round 1 = {first_nodes}, round {round} = \
+                 {nodes}); the rounds measured different workloads and the median would read as \
+                 a change in cost"
+            ));
+        }
+        counts.push(total.saturating_sub(startup));
+    }
+    counts.sort_unstable();
+    Ok((counts[counts.len() / 2], first_nodes))
+}
+
+/// One profiled bench: the whole-process count, the node total, and the net it loaded.
+fn budget_round(bin: &Path, cwd: &Path) -> Result<(u64, u64, Option<String>), String> {
+    let out = std::env::temp_dir().join(format!("rfish-cg-budget-{}.out", scratch_key(bin)));
+    let mut cmd = Command::new("valgrind");
+    cmd.current_dir(cwd)
+        .args(["--tool=callgrind", "--cache-sim=no", "--branch-sim=no"])
+        .arg(format!("--callgrind-out-file={}", out.display()))
+        .arg(bin)
+        .arg("bench")
+        .args(DIFF_BENCH);
+    let text = capture_both(&mut cmd)?;
+    let net = text
+        .lines()
+        .find_map(|l| l.split_once("NNUE evaluation using "))
+        .map(|(_, name)| name.trim().to_string());
+    Ok((callgrind_total(&out)?, node_total(&text)?, net))
+}
+
+/// The row for `tier`, or `None` when the file records none.
+fn read_budget(path: &Path, tier: &Tier) -> Result<Option<Budget>, String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() != 4 {
+            return Err(format!("malformed budget row: {line}"));
+        }
+        if f[0] != tier.name {
+            continue;
+        }
+        // The key names the BINARY, not the tier alone. A row whose target-cpu is not the one
+        // this tier resolves to today was measured on a different build.
+        if f[1] != tier.rustc {
+            return Err(format!(
+                "the budget for tier '{}' is keyed '{}' but the tier now resolves to '{}'; \
+                 re-record it, because the row measured a different binary",
+                tier.name, f[1], tier.rustc
+            ));
+        }
+        let nodes =
+            f[2].parse().map_err(|e| format!("{line}: the node count does not parse: {e}"))?;
+        let ir = f[3].parse().map_err(|e| format!("{line}: the count does not parse: {e}"))?;
+        return Ok(Some(Budget { nodes, ir }));
+    }
+    Ok(None)
+}
+
+/// Replace this tier's row, leaving every other tier's alone.
+fn write_budget(path: &Path, tier: &Tier, nodes: u64, ir: u64) -> Result<(), String> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    // The header is rewritten from the constant every time rather than carried forward: a
+    // file written months ago would otherwise keep explaining the gate as it was then, and
+    // this is the only place a reader of the golden learns what the rows mean.
+    let mut out = String::from(BUDGET_HEADER);
+    for line in existing.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        if line.split_whitespace().next().is_none_or(|t| t != tier.name) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    writeln!(out, "{} {} {nodes} {ir}", tier.name, tier.rustc)
+        .map_err(|e| format!("building the budget row: {e}"))?;
+    std::fs::write(path, out).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// What a reader of the golden has to know before believing a row.
+const BUDGET_HEADER: &str = "\
+# Instructions retired over `bench 16 1 8`, startup subtracted, one row per TIER.
+#
+# `<tier> <target-cpu> <nodes> <instructions>`, written by `cargo xtask perf-budget-update`
+# and checked by `cargo xtask perf-budget`.
+#
+# LOCAL AND PER-MACHINE -- .gitignore keeps this file out of the tree, because the count is
+# a property of the toolchain and the libc as well as of the code. It is NOT an anchor:
+# `tools/signature.golden` owns the one number this repository shares.
+#
+# The key names the BINARY rather than the host: the tier and the target-cpu it resolves to
+# are both in it, and `native` is refused because it means a different binary on every box.
+# A pinned-nightly bump or a new net moves the number legitimately -- re-record it.
+#
+# The node count is here so the gate can refuse a count taken over a different tree.
+";
+
 /// Run a command and return stdout AND stderr together.
 ///
 /// Upstream's `bench` writes its summary — the node total and the time this module reads —
@@ -662,6 +924,7 @@ fn nps_ab(
 ) -> Result<Outcome, String> {
     println!("\nsearch time (paired A/B, {rounds} rounds, order alternates each round)");
     let mut ratios: Vec<f64> = Vec::with_capacity(rounds);
+    let mut first_nodes = 0u64;
     for round in 1..=rounds {
         let ((our_ms, our_nodes), (their_ms, their_nodes)) = if round % 2 == 1 {
             (timed_bench(ours, our_dir)?, timed_bench(theirs, their_dir)?)
@@ -672,6 +935,21 @@ fn nps_ab(
         if our_nodes != their_nodes {
             return Err(format!(
                 "node counts differ (rfish {our_nodes}, upstream {their_nodes}) on round {round}"
+            ));
+        }
+        // And hold every round to ROUND ONE, not just the two sides of a round to each other.
+        // A pair that moves together — a net that goes missing after the first launch, an
+        // engine restarted mid-run against a changed tree — passes the check above and
+        // publishes a plausible median over a workload nobody asked for. ../mcfish 8d24312d
+        // and ../zfish 03bbb6f7 both landed this after finding the guard applied on round
+        // one alone.
+        if round == 1 {
+            first_nodes = our_nodes;
+        } else if our_nodes != first_nodes {
+            return Err(format!(
+                "the workload moved between rounds (round 1 = {first_nodes} nodes, round \
+                 {round} = {our_nodes}); the rounds are not comparable and the median would \
+                 read as a change in speed"
             ));
         }
         #[allow(clippy::cast_precision_loss)]

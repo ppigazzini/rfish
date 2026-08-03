@@ -7,7 +7,8 @@
 use std::process::Command;
 
 use crate::runner::{
-    GATE_PROFILE, Outcome, build_engine, cargo, drive, drive_at, engine_path, node_total,
+    GATE_PROFILE, Outcome, build_engine, cargo, compared_something, drive, drive_at, engine_path,
+    node_total,
 };
 use crate::{capture, have, resources_dir, run, workspace_root};
 
@@ -261,6 +262,9 @@ pub(crate) fn perft() -> Result<Outcome, String> {
     for f in &failures {
         eprintln!("  {f}");
     }
+    if let Some(refusal) = compared_something(checked, "positions", "tools/perft.table") {
+        return Ok(refusal);
+    }
     println!("perft: {} of {checked} positions match", checked - failures.len());
     Ok(Outcome::check(failures.is_empty(), format!("{} perft mismatches", failures.len())))
 }
@@ -323,6 +327,11 @@ pub(crate) fn golden(update: bool) -> Result<Outcome, String> {
 
     if update {
         return Ok(Outcome::Pass);
+    }
+    // Every case skipped is the same hole as no case at all: the denominator below goes to
+    // zero and the gate reports a comparison it never made.
+    if let Some(refusal) = compared_something(cases.len() - skipped, "cases", "tools/cases/*.uci") {
+        return Ok(refusal);
     }
     println!(
         "golden: {} of {} cases match{}",
@@ -473,6 +482,10 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
         }
     }
 
+    if let Some(refusal) = compared_something(agree + differ.len(), "goldens", "tools/cases/*.uci")
+    {
+        return Ok(refusal);
+    }
     println!(
         "golden-audit: {agree} agree, {} differ, {} not answerable ({})",
         differ.len(),
@@ -831,6 +844,9 @@ pub(crate) fn tb() -> Result<Outcome, String> {
     for f in failures.iter().take(8) {
         eprintln!("  {f}");
     }
+    if let Some(refusal) = compared_something(checked, "probes", "tools/cases/tb.fens") {
+        return Ok(refusal);
+    }
     println!(
         "tb: {} of {checked} probes match upstream ({} positions x WDL and DTZ)",
         checked - failures.len(),
@@ -917,6 +933,9 @@ pub(crate) fn nnue_check() -> Result<Outcome, String> {
 
     for f in failures.iter().take(8) {
         eprintln!("  {f}");
+    }
+    if let Some(refusal) = compared_something(checked, "positions", "tools/cases/eval.fens") {
+        return Ok(refusal);
     }
     println!(
         "nnue-check: {} of {checked} positions match upstream exactly",

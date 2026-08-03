@@ -293,6 +293,15 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
             }
             scripts += 1;
         }
+        // A fuzz run that fuzzed nothing is the loudest version of a gate that compared
+        // nothing: it reports a survival nobody tested. ../zfish 6782c38e found a target
+        // that had gone dark under a starved runner and cleared its own floor for a whole
+        // lane; the counter is the only thing that can see it.
+        if let Some(refusal) =
+            crate::runner::compared_something(scripts, "UCI scripts", "the fuzz budget")
+        {
+            return Ok(refusal);
+        }
         println!("fuzz: {scripts} UCI scripts survived, engine still answering");
     }
 
@@ -309,7 +318,7 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
         harness == "all" || harness == if *name == "search" { "search" } else { "tb" }
     }) {
         println!("fuzz: {name}, {share}s");
-        let status = Command::new(cargo())
+        let out = Command::new(cargo())
             .current_dir(crate::resources_dir())
             .args([
                 "test",
@@ -327,11 +336,27 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
             ])
             .env("RFISH_FUZZ_SECONDS", share.to_string())
             .env("RFISH_FUZZ_SEED", seed.to_string())
-            .status()
+            .output()
             .map_err(|e| format!("running {what}: {e}"))?;
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        print!("{text}");
 
-        if !status.success() {
+        if !out.status.success() {
             return Ok(Outcome::Fail(format!("{what} failed; replay with RFISH_FUZZ_SEED={seed}")));
+        }
+        // **A FILTER THAT MATCHES NOTHING EXITS 0.** `cargo test` calls "0 passed" a success,
+        // so renaming or `#[ignore]`-ing a soak takes the target dark and leaves this gate
+        // green — the whole class ../zfish 6782c38e and ../mcfish's `assert_fuzz_executed`
+        // exist to catch. Assert the run happened rather than inferring it from the status.
+        if !text.contains("1 passed") {
+            return Ok(Outcome::Fail(format!(
+                "{what} ran no test: `{filter}` matched nothing, so this lane fuzzed nothing. \
+                 A filter that matches no test exits 0 — check the path before reading the pass"
+            )));
         }
     }
 

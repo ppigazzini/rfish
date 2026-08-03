@@ -29,6 +29,27 @@ impl Outcome {
     }
 }
 
+/// Refuse a gate that had nothing to compare.
+///
+/// `Ok(false) == no mismatches` is true of an empty subject list, so a gate whose corpus is
+/// missing, filtered away or renamed reports "0 of 0 match" and exits 0 — it does not merely
+/// pass having compared nothing, it passes having reported a comparison it never made.
+/// ../mcfish 01e0b71c found this in its transcript gate and ../zfish 108e7af6 in a step
+/// checker reading 6% of its subject; the shape is the same wherever a denominator is
+/// computed rather than asserted.
+///
+/// A missing corpus is [`Outcome::Skipped`] elsewhere in this file and stays that way — the
+/// tool is absent, and exit 2 says so. This is the other case: the corpus is THERE and empty,
+/// which is a rig fault the gate must go red for.
+pub(crate) fn compared_something(count: usize, subject: &str, source: &str) -> Option<Outcome> {
+    (count == 0).then(|| {
+        Outcome::Fail(format!(
+            "compared no {subject}: {source} yielded none, so this gate proves nothing. \
+             Restore the corpus rather than reading the pass"
+        ))
+    })
+}
+
 /// Where the engine binary lands for `profile`.
 #[must_use]
 pub(crate) fn engine_path(profile: &str) -> PathBuf {
@@ -143,6 +164,15 @@ mod tests {
         assert!(Outcome::Pass.is_pass());
         assert!(!Outcome::Skipped("no tool".into()).is_pass());
         assert!(!Outcome::Fail("red".into()).is_pass());
+    }
+
+    #[test]
+    fn an_empty_corpus_reddens_a_gate_rather_than_passing_it() {
+        // The whole point: `failures.is_empty()` is true of a corpus that was never read, so
+        // the refusal has to key on the DENOMINATOR and nothing else.
+        let refusal = compared_something(0, "positions", "tools/cases/eval.fens");
+        assert!(matches!(refusal, Some(Outcome::Fail(_))));
+        assert!(compared_something(1, "positions", "tools/cases/eval.fens").is_none());
     }
 
     #[test]
