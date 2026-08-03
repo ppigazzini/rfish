@@ -167,9 +167,9 @@ pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
     let us = pos.side_to_move();
     let checkers = pos.checkers();
 
-    // The four board sets every mask below is cut from, read ONCE. `checkers` costs a walk
-    // to the end of the state chain, and the other three are field reads LLVM will not merge
-    // across the `list` writes because a `MoveSink` is free to alias anything.
+    // The four board sets every mask below is cut from, read ONCE. All four are field reads
+    // LLVM will not merge across the `list` writes, because a `MoveSink` is free to alias
+    // anything: nothing is hoisted across a push, however loop-invariant it reads.
     let occ = pos.occupied();
     let own = pos.colored(us);
     let enemy = pos.colored(!us);
@@ -299,8 +299,8 @@ fn generate_pawn_moves<S: MoveSink>(
     let not_on_seventh = pawns & !seventh;
     let empty = !occ;
 
-    // Under check only the checker can be captured, so the enemy set collapses to it. The
-    // caller already holds both sets; re-reading `checkers` here is a second state-chain walk.
+    // Under check only the checker can be captured, so the enemy set collapses to it. Both
+    // sets come from the caller, which read them once above the pushes that stop any hoist.
     let enemies = if gt == GenType::Evasions { checkers } else { enemies };
     let evasions = gt == GenType::Evasions;
 

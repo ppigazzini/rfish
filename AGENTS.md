@@ -208,10 +208,16 @@ blind spots) before proposing any optimisation. Four rules that outrank intuitio
   masking a square index to drop `piece_on`'s comparison COST 2.0M.
 - **The largest wins are constructs that read as free.** A `LazyLock` deref, an `Option` no
   caller can make `None`, a `Vec` whose length never changes, a loop that will not unroll
-  because of a `break`, a horizontal reduction, a compute-then-copy pair.
-  [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) sections 14 and 15 record nine such
-  shapes, what each was worth, and the ten of the same shape that measured WORSE — read both
-  before hand-optimising anything, in either zone.
+  because of a `break`, a horizontal reduction, a compute-then-copy pair, a range slice walked
+  by an iterator, two tables read under one key, a container scanned where only the CHANGED
+  elements matter. [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) sections 14, 15 and
+  17 record thirteen such shapes, what each was worth, and the ten of the same shape that
+  measured WORSE — read them before hand-optimising anything, in either zone.
+- **In a kernel that already vectorises, attack the ADDRESSING before the arithmetic.** The
+  NNUE folds emit upstream's own instruction shape, and an explicit `std::simd` rewrite of one
+  cost +177M — while indexing fixed-width weight rows instead of range-slicing and zipping
+  them, and colocating a lookup's two tables behind one base, were worth 19.3M between them.
+  Section 17 of the same file has both.
 - **An instruction count cannot see a latency win.** Callgrind counts instructions RETIRED,
   so multiple accumulator chains, software pipelining and unrolling-for-ILP can only ADD to
   it however much wall clock they buy. Decide which quantity a change is meant to move before

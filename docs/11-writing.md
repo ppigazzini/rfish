@@ -32,8 +32,11 @@ stale number is worse than an absent one: it tells a reader to hold the wrong in
 the day after it is written. The before-and-after belongs in the commit message, which is
 the durable per-task record. A doc states what is true **now**.
 
-The one exception is [08-idiomatic-rust.md](08-idiomatic-rust.md) §10, which is a
-deliberate list of dead ideas — its purpose is to stop them being re-derived, and it says so.
+The one exception is [08-idiomatic-rust.md](08-idiomatic-rust.md), which is a deliberate
+measurement ledger: §11 lists the dead ideas so they are not re-derived, and §§13–17 record
+what measured and what each shape was worth. A measurement is a fact about the tree,
+not a story about the week — write it as the rule a reader applies now, and let the number be
+the evidence for it.
 
 ## A doc claim is a claim about the tree
 

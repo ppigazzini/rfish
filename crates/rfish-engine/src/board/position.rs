@@ -12,10 +12,11 @@
 //!
 //! Upstream chains `StateInfo` through a `previous` pointer that the caller allocates on
 //! its own stack frame, and a `Position` that outlives one of those frames is a dangling
-//! read. Here the chain is a `Vec<StateInfo>` the position owns: `previous` is `len - 2`,
-//! the repetition walk is a backwards slice scan, and the lifetime question does not
-//! arise. That is the single largest structural difference from the C++, and it is what
-//! lets the whole zone forbid `unsafe`.
+//! read. Here the position owns the chain: the current state is the `st` field, every
+//! earlier one is in `prev`, `prev.len()` is the current state's own index, the repetition
+//! walk is a backwards slice scan over `prev`, and the lifetime question does not arise.
+//! That is the single largest structural difference from the C++, and it is what lets the
+//! whole zone forbid `unsafe`.
 //!
 //! Golden: `Stockfish/src/position.h`, `Stockfish/src/position.cpp`.
 
