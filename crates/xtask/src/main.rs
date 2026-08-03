@@ -77,6 +77,8 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "pgo" => perf::pgo(args),
         "oracle" => perf::oracle(args),
         "perf" => perf::perf(args),
+        "perf-budget" => perf::perf_budget(args, false),
+        "perf-budget-update" => perf::perf_budget(args, true),
         "upstream-nodes" => perf::upstream_nodes(args),
         "fingerprint" => perf::fingerprint(args),
         "fuzz" => fuzz::fuzz(args),
@@ -121,6 +123,13 @@ cargo xtask <step> — the rfish build driver
                                        the differential: callgrind instructions, then a
                                        paired interleaved A/B of search time
                                        tiers: sse41, avx2 (default), native
+    perf-budget [--tier T] [--rounds N]
+                                       hold this tier's absolute instruction count to
+                                       tools/instr_budget.golden -- the cost regression
+                                       `signature` cannot see. Local, NOT in parity: the
+                                       count moves with the toolchain as well as the code
+    perf-budget-update [--tier T]       re-record this tier's row. DANGEROUS on a red gate,
+                                       exactly as signature-update is
 
   Scheduled — a wall-clock budget, so NOT part of parity
     fuzz [SECONDS]        random UCI text at the shell, random positions at the search

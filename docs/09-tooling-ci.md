@@ -133,12 +133,77 @@ It scans the shipped crates only. `xtask` is a build tool that never enters the 
 necessarily names the patterns it looks for; scanning it would make the gate report itself.
 It is still covered by the workspace forbid, which the manifest check asserts.
 
+### A gate that compared nothing must not pass
+
+`no mismatches` is true of an empty corpus, so every gate above whose verdict is a
+`failures.is_empty()` can report "0 of 0 match" and exit 0. That is worse than a bare zero:
+it does not merely pass having compared nothing, it publishes a comparison it never made.
+`runner::compared_something` is the refusal, and `perft`, `golden`, `golden-audit`,
+`nnue-check`, `tb` and both halves of `fuzz` are wired to it.
+
+The distinction it draws is deliberate: a **missing** corpus is `Skipped` at exit 2 — the
+gate could not run — while a corpus that is present and yields nothing is a rig fault and
+goes RED. A filter that matches no test is the same shape one step further out: `cargo test`
+calls "0 passed" a success, so `fuzz` asserts its soak actually ran rather than reading the
+exit status.
+
+../mcfish 01e0b71c found this in a transcript gate that fed both engines an unmatched glob
+and counted their identical nothing as agreement; ../zfish 108e7af6 found a step checker
+reporting OK while reading 6% of its subject.
+
+## The local gates, which `parity` does not run
+
+### `perf-budget`
+
+**The regression nothing else sees.** `signature` proves the same NODE count and says
+nothing about what those nodes cost, so a change can shed no nodes, keep every gate in
+`parity` green, and still run measurably slower.
+
+```sh
+cargo xtask perf-budget --tier avx2          # hold the count to the recorded row
+cargo xtask perf-budget-update --tier avx2   # re-record it
+```
+
+It builds at the tier into `target/budget/<tier>` — never `target/release`, which
+`signature` rebuilds at the default arch — profiles `bench 16 1 8` under callgrind twice,
+subtracts startup, and holds the median to `tools/instr_budget.golden` within
+**0.005%**.
+
+Four properties, each of which cost a sibling port a wrong verdict before it was fixed:
+
+- **The tolerance is set by MUTATION, not by feel.** Forcing `Position::adjust_key50` out of
+  line — the per-node class this gate owns — costs **+0.0541%** here with `signature` still
+  green. ../zfish shipped 0.20% and ../mcfish 0.5%; both watched that regression sail
+  through. Measured spread on this box is **ten instructions in 1.7e9 across a from-scratch
+  rebuild**, so 0.005% is ~8000x the noise and ~11x under the mutation. Verified both
+  directions at the shipped value: clean → exit 0 at +0.0000%, mutated → exit 1 at +0.0541%.
+- **A row keyed `native` is refused**, which is ../zfish 7d4de85f's shape and the right one:
+  `-C target-cpu=native` is a different binary on every host, so the row would name this
+  machine rather than the code. ../mcfish's answer — folding the resolved `target-cpu` into
+  the key — records the host-specific codegen instead of eliminating it; do not copy that
+  half. zfish's `native` is a SELECTOR among enumerated tiers, so its codegen is a property
+  of the tier however it was asked for, and that is the end state rfish's `--arch native`
+  wants too. It is not there yet: rfish's `native` is real host codegen, and refusing it as
+  a key is what holds the line until it is a selector. The key still carries the tier AND
+  the `target-cpu` it resolves to, so a pinned row whose target-cpu changed is named rather
+  than matched.
+- **The node count is in the row.** A count taken over a different tree is not comparable,
+  and the gate says so instead of reporting the difference as cost.
+- **A missing row SKIPS at exit 2**, never passes. "Could not measure" must not read as "did
+  not regress".
+
+The golden is **gitignored and per-machine**: the count is a property of the toolchain and
+the libc as well as of the code. Record your own, and re-record after a toolchain bump, a
+net change or a deliberate perf commit — a budget raised to fit the tree gates nothing.
+
 ## Running the engine
 
 **Always from `resources/`.** The engine looks for its net relative to the working
 directory, so a run from the repository root silently finds none and produces an unrelated
 number — one that looks entirely plausible. `runner::drive` sets the working directory for
-every gate; a hand-run measurement must do the same.
+every gate; a hand-run measurement must do the same. `perf-budget` asserts the
+`NNUE evaluation using …` line for the same reason: a budget measured without a net is a
+budget for the classical fallback.
 
 ## Build tiers
 
@@ -151,6 +216,15 @@ rather than by mutating this process's — so a later gate in the same `parity` 
 inherit it.
 
 **A perf number without its tier is not a number.**
+
+**`native` is not a tier, and making it one is outstanding.** It resolves to real
+`-C target-cpu=native`, so it names a different binary on every host and nothing measured
+under it is keyed to anything. ../zfish has the right model: its `native` is a SELECTOR that
+resolves to one of the enumerated tiers, so the codegen is a property of the tier however
+the build was asked for. ../mcfish carries rfish's shape and its own fix keys the row by the
+resolved host CPU, which records the problem rather than removing it — take zfish's. Until
+`native` is a selector here, no measurement may be filed under it: `perf-budget` refuses the
+key outright.
 
 ## Resyncing to a newer upstream
 
