@@ -26,12 +26,15 @@ hand. See [04-multithreading.md](04-multithreading.md).
 **NUMA.** Upstream keeps one copy of the network per NUMA node and binds each thread to
 the node holding the copy it reads. rfish keeps one `Arc<Network>` for the whole pool.
 
-The old reason for this ("nothing to replicate until the network lands") expired when the
-network landed. The real one is sharper, and it is the first case in this port where the
-no-`unsafe` constraint blocks a feature outright rather than redirecting it:
+`platform/numa.rs` owns everything up to that last step: `NumaConfig::from_system` reads the
+real topology and the process affinity, `AutoPolicy` implements upstream's three, `from_string`
+parses its `NumaPolicy` syntax, and the distribution across nodes uses upstream's arithmetic.
+All of it from file reads, so no `unsafe` and no dependency. What is blocked is the binding,
+and it is the first case in this port where the no-`unsafe` constraint stops a feature
+outright rather than redirecting it:
 
 - Topology discovery is **fine** — `/sys/devices/system/node/*/cpulist` is a text file, and
-  reading it needs nothing but `std::fs`.
+  reading it needs nothing but `std::fs`. It is done, not merely possible.
 - Pinning a thread to a node is **not possible in safe Rust**. `std` exposes no affinity
   API at all; `sched_setaffinity` and `SetThreadAffinityMask` are FFI, which means `unsafe`
   or a dependency, and the engine crate has neither.

@@ -802,11 +802,96 @@ pub(crate) fn docs_lint() -> Result<Outcome, String> {
         }
     }
 
+    // The two rules `docs/11-writing.md` names as the most-broken, held mechanically.
+    checked += quoted_signature(&root, &files, &mut problems)?;
+    checked += undocumented_steps(&root, &files, &mut problems)?;
+
     for p in &problems {
         eprintln!("  {p}");
     }
     println!("docs-lint: {checked} references checked across {} files", files.len());
     Ok(Outcome::check(problems.is_empty(), format!("{} documentation problems", problems.len())))
+}
+
+/// Refuse the current bench anchor written into prose.
+///
+/// The number `signature` computes is the one the "never pin a number a gate computes" rule
+/// is most often broken with, and a stale anchor in a page tells a reader to hold the wrong
+/// invariant. Only THIS number is held — a node count, an instruction total or a case count
+/// in prose passes cleanly and is just as stale.
+fn quoted_signature(
+    root: &std::path::Path,
+    files: &[std::path::PathBuf],
+    problems: &mut Vec<String>,
+) -> Result<usize, String> {
+    let path = root.join("tools/signature.golden");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(0);
+    };
+    let Some(anchor) =
+        text.lines().find(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty())
+    else {
+        return Ok(0);
+    };
+    let anchor = anchor.trim();
+    let mut checked = 0;
+    for file in files {
+        let body = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let rel = file.strip_prefix(root).unwrap_or(file);
+        for (n, line) in body.lines().enumerate() {
+            checked += 1;
+            if line.contains(anchor) {
+                problems.push(format!(
+                    "{}:{}: quotes the bench anchor; cite `cargo xtask signature` instead",
+                    rel.display(),
+                    n + 1
+                ));
+            }
+        }
+    }
+    Ok(checked)
+}
+
+/// Refuse an `xtask` step no shipped page names.
+///
+/// A step nobody can discover is a step nobody runs, and both sibling ports gate the same
+/// property. The dispatch table is the owner: parse it rather than keeping a second list
+/// here, or this check rots the way the prose it guards does.
+fn undocumented_steps(
+    root: &std::path::Path,
+    files: &[std::path::PathBuf],
+    problems: &mut Vec<String>,
+) -> Result<usize, String> {
+    let main = root.join("crates/xtask/src/main.rs");
+    let text = std::fs::read_to_string(&main).map_err(|e| format!("{}: {e}", main.display()))?;
+    let mut prose = String::new();
+    for file in files {
+        prose.push_str(
+            &std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?,
+        );
+    }
+
+    let mut checked = 0;
+    for line in text.lines() {
+        let line = line.trim();
+        // `"step" => …` in the dispatch table, and nothing else.
+        let Some(rest) = line.strip_prefix('"') else {
+            continue;
+        };
+        let Some((step, tail)) = rest.split_once('"') else {
+            continue;
+        };
+        if !tail.trim_start().starts_with("=>") || step.starts_with('-') || step == "help" {
+            continue;
+        }
+        checked += 1;
+        if !prose.contains(step) {
+            problems.push(format!(
+                "crates/xtask/src/main.rs: `{step}` is a step no shipped page names"
+            ));
+        }
+    }
+    Ok(checked)
 }
 
 fn collect_markdown(

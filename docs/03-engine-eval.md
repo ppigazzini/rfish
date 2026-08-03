@@ -94,8 +94,8 @@ was contended:
 | diffed | 21.35 / 20.29 / 21.23 s |
 
 **A 1.48× speedup, with the node count bit-identical** — the same 1 240 003 nodes, which is
-what proves the evaluation did not change. `cargo xtask nnue-check` still matches upstream on
-all 109 positions.
+what proves the evaluation did not change, and `cargo xtask nnue-check` still matches
+upstream on every position it carries.
 
 Applying the diff is one sweep of the accumulator, not one per changed feature: the merge
 walk collects what changed and a tiled fold applies the whole collection, so the accumulator
@@ -438,7 +438,7 @@ this port sits.
 
 Built in full and bit-exact — `update_piece_threats` ported, recorded through `do_move`,
 consumed by a fast path in `transform` that derives the child's threat set from the parent's
-instead of rebuilding it. Signature 2508687, `nnue-check` 109 of 109, and a gate-build
+instead of rebuilding it. The anchor held, `nnue-check` matched upstream throughout, and a gate-build
 assertion comparing the derived set against the rebuild on every evaluation.
 
 | | search Ir |
@@ -466,7 +466,7 @@ from the live slot, plumbed through `evaluate` as a stack index.
 | single-slot delta, 11% hit | 2,152,866,131 |
 | **per-ply stack + delta** | **2,246,124,890** |
 
-Bit-exact — signature 2508687, `nnue-check` 109 of 109, perft clean — and **178.5M worse than
+Bit-exact — the anchor, `nnue-check` and perft all clean — and **178.5M worse than
 the rebuild**. The hit rate is fixed; the seeding is not. Rolling forward from the parent ply
 means copying that ply's accumulator AND its threat set into the working slot, ~7.4 KB per
 evaluation over 61,341 of them, and that copy costs more than the 158M rebuild it removes.
@@ -762,7 +762,8 @@ across two sessions.
 
 It is kept anyway, for the reason upstream and both siblings keep it. The alignment that
 exists without it is allocator luck: the accumulator survives at avx2 only because it happens
-to land at `%32 == 0`, and a 64-byte AVX-512 load at `--tier native` would not forgive that.
+to land at `%32 == 0`, and a 64-byte AVX-512 load at `--tier avx512icl` would not forgive
+that.
 
 ### The spine's IPC deficit is not a data-layout problem
 

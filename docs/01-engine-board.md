@@ -118,13 +118,16 @@ different order search different trees once move ordering is only partially dete
 deliberately **not** a golden: those counts are facts about chess, so a mismatch is always
 a bug here.
 
-## What is not here yet
+## The threat recording is here, and nothing consumes it
 
-- **Threat deltas.** Upstream's `do_move` records which threat and pawn-pair features a move
-  creates and destroys, so the NNUE accumulator can be patched from the move's geometry.
-  rfish does not, and no longer needs to: [03-engine-eval.md](03-engine-eval.md) reaches the
-  same accumulator by diffing the recomputed feature SETS, which is correct by construction
-  and measured at 1.48× the from-scratch cost it replaced.
+`do_move_recording` is upstream's `do_move` with the bookkeeping attached: it records which
+threat and pawn-pair features a move creates and destroys, into a caller-owned
+`Vec<DirtyThreat>` and a `DirtyPawnPairs`. It is tested against the rebuild in
+`board/threats.rs`, and the search calls it on every move.
 
-  A per-move delta would still be faster, because it would remove the set recomputation
-  entirely. It is now an optimisation with a number to beat rather than a blocker.
+**The evaluation does not use it**, and that is a measured decision rather than an unfinished
+one: patching the accumulator from the delta fires on a minority of evaluations and loses to
+diffing the recomputed feature SETS, which is correct by construction.
+[03-engine-eval.md](03-engine-eval.md) carries the numbers and the four things that decided
+it. Keep the recording working — the decision is about the accumulator, not about the board
+zone — and read that page before proposing to consume it again.

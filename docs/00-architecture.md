@@ -104,5 +104,7 @@ catches it.
 - **No embedded network.** The net is a runtime input, fetched by `cargo xtask net` into
   `resources/`. Embedding it would make the bench anchor look like a property of this
   repository rather than of a file downloaded separately.
-- **No NUMA model, no large-page allocator, no memory mapping.** See
-  [06-platform.md](06-platform.md) for why each is absent rather than pending.
+- **No large-page allocator and no memory mapping**, and **NUMA without PINNING**: the
+  topology, the policies and the reporting are in `crates/rfish-engine/src/platform/numa.rs`,
+  read from `/sys` and `/proc`; what `std` exposes no API for is binding a thread to a node.
+  See [06-platform.md](06-platform.md) for why each gap is blocked rather than pending.

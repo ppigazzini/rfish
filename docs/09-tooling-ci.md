@@ -34,11 +34,13 @@ from the passes, and never counts one as green.
 Listed in the order `parity` runs them. See [CONTRIBUTING.md](../CONTRIBUTING.md) for what
 each asserts.
 
-`fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `test` → `perft` → `golden` → `nnue-check`
-→ `tb` → `signature`
+`fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `test` → `perft` → `golden` →
+`golden-audit` → `nnue-check` → `tb` → `signature`
 
 Cheap and structural first, so a formatting mistake is reported in seconds rather than
-after a two-minute bench.
+after a two-minute bench. `fmt-fix` is the same gate with the fix applied, and is not one
+`parity` runs. Read the list from `gates::parity` when it matters: prose cannot be gated,
+and a list that drifts by one entry reads exactly like one that has not.
 
 ### `signature`
 
@@ -114,11 +116,18 @@ as a broken engine rather than as a position to skip.
 
 ### `docs-lint`
 
-Every markdown link resolves, and every `crates/…` or `tools/…` path named in prose exists.
+Four checks: every markdown link resolves, every `crates/…` or `tools/…` path named in prose
+exists, no page quotes the current bench anchor, and no `xtask` step goes unnamed by every
+shipped page. The last two hold the rules
+[11-writing.md](11-writing.md) records as the most-broken — a pinned number and an
+undiscoverable step — and both read their subject from its owner (`tools/signature.golden`,
+the dispatch table in `crates/xtask/src/main.rs`) rather than from a second list here.
 
-It settles the **mechanical** half of documentation rot. It cannot tell you a sentence has
-become false, and in the sibling ports every false claim ever found got there by a commit
-that changed the code and not the page. That half is yours.
+It settles the **mechanical** half of documentation rot, and [11-writing.md](11-writing.md)
+names the three classes it cannot: a real symbol attributed to the wrong file, a list with
+the wrong count or order, and a behaviour described as absent from a build that has it. It
+cannot tell you a sentence has become false, and in the sibling ports every false claim ever
+found got there by a commit that changed the code and not the page. That half is yours.
 
 ### `unsafe-lint`
 
@@ -173,8 +182,8 @@ how each lane operation lowers — a saturation or a narrowing that behaves diff
 bits produces a different tree with every other gate green. Run it after touching a kernel,
 and before adding a tier: that is what makes a new rung a checked change.
 
-Local rather than in `parity` because it is five release builds. All five reproduce
-`2508687` today, including the three AVX-512 rungs.
+Local rather than in `parity` because it is five release builds. All five reproduce the
+anchor today, including the three AVX-512 rungs.
 
 ### `perf-budget`
 
@@ -264,7 +273,7 @@ resolved `native` this way from the start.
 DEFAULT arch, so it tests the portable arm and nothing else, while rfish's NNUE kernels are
 `std::simd` whose lowering the tier decides. `cargo xtask arch-determinism` builds every
 enumerated tier and holds each to the anchor — that is what makes adding a tier a checked
-change rather than a hopeful one. All five reproduce `2508687` today.
+change rather than a hopeful one. All five reproduce the anchor today.
 
 ## Resyncing to a newer upstream
 
@@ -373,13 +382,24 @@ and Windows. Nothing in CI is a gate that does not exist locally, and nothing lo
 weaker than CI — a contributor who runs `cargo xtask parity` and sees green should not be
 surprised by the merge gate.
 
-The lanes:
+Every lane, which is what the file has rather than the ones worth mentioning:
 
 | Lane | Runs |
 |---|---|
 | `lint` | `fmt`, `clippy`, `unsafe-lint`, `docs-lint` |
 | `test` | `cargo xtask test` on three platforms |
 | `gates` | `net`, `tb-fetch`, `perft`, `golden`, `signature` on Linux |
+| `tsan` | `net`, then a four-thread search under ThreadSanitizer |
+| `valgrind` | `net`, `build`, then the binary under memcheck |
+| `cross-build` | `cargo check` for `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-gnu` |
+
+`cross-build` **checks rather than builds**, and the reason is worth keeping: the runner has
+no cross LINKER for either target, so a build fails at the link step having already proven
+everything the lane is for. What it is for is catching a `cfg` sneaking into engine code —
+the engine's only real platform differences are the `SyzygyPath` separator and the binary's
+extension. Every lane reads its toolchain from `rust-toolchain.toml` rather than naming a
+channel, because that file overrides whatever the action installs: a hard-coded channel
+installs one toolchain and silently runs another, without the target's `std` in this lane.
 
 `cargo xtask tb-fetch` downloads the 3-man Syzygy set — ~26 KiB, ten files — and CI caches
 it keyed on the fetcher, which is how both sibling ports carry theirs. It verifies each
@@ -484,7 +504,7 @@ tree, and `perf` and `fingerprint` refuse an oracle whose stamp is not `UPSTREAM
 **This caught a real one.** The oracle directory is built once, reused, and lives OUTSIDE the
 repository, so advancing the pin leaves it untouched and nothing about its filename changes.
 After the `c5aef2bf1` sync the avx2 oracle here was still the `23cf5d82` tree — it benched
-3184328 where the pin benches 2508687 — and every measurement taken against it compared this
+3184328 where the pin benches the anchor — and every measurement taken against it compared this
 port to an upstream it is not a translation of. The instruction differential would eventually
 have noticed, because it compares node counts before quoting a ratio; eventually is the
 problem, since that check only runs when callgrind does, so at `--tier native` or on a box

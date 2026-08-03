@@ -57,6 +57,7 @@ In the order `parity` runs them:
 | `test` | the unit and property suite, under the `gate` profile's debug assertions |
 | `perft` | the reference counts in `tools/perft.table` match |
 | `golden` | the UCI case outputs match `tools/*.golden` |
+| `golden-audit` | every golden is what UPSTREAM produces, not merely what rfish produces |
 | `nnue-check` | the network's raw output equals a pristine upstream build's, position by position |
 | `tb` | Syzygy discovery finds the tables, and an empty path changes nothing |
 | `signature` | `bench` reproduces `tools/signature.golden` |
