@@ -219,6 +219,10 @@ blind spots) before proposing any optimisation. Four rules that outrank intuitio
   given indexed fixed-width weight rows and `fold_mirror` — the same fold, forty lines away,
   on the refresh path — was not. It was worth 28.9M there, MORE than on the half that got it,
   because the refresh applies more rows.
+- **Two paths that both walk back can need OPPOSITE caps.** The roll-forward materialises
+  every ply it steps through, so a long chain leaves work done and its cap is 12; the
+  king-move delta materialises only its last ply, so a long chain is pure cost and its cap is
+  3. Sharing the constant costs 38M. Measure a cap per PATH, not per file.
 - **A walk-back that writes only its last step is a walk-back you will take again.** rfish's
   roll-forward concatenated a chain of plies into one fold and stamped only the destination,
   so `HOP_CAP` had to sit at two to contain it — and that cap then caused 92% of all

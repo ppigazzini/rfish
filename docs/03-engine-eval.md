@@ -329,11 +329,11 @@ profile:
 
 | avx2, non-PGO, one tree | search instructions | vs rfish |
 |---|---|---|
-| ../mcfish, `MCFISH_SIMD_VECTOR` (its shipped path) | 1,186,193,283 | 0.75 |
-| **rfish, at HEAD** | **1,581,232,932** | **1.00** |
-| ../mcfish, `-DMCFISH_SIMD_SCALAR` | 4,906,184,642 | 3.10 |
+| ../mcfish, `MCFISH_SIMD_VECTOR` (its shipped path) | 1,186,193,283 | 0.76 |
+| **rfish, at HEAD** | **1,558,298,395** | **1.00** |
+| ../mcfish, `-DMCFISH_SIMD_SCALAR` | 4,906,184,642 | 3.15 |
 
-**rfish is 1.33x ../mcfish, where this page's PGO table records 1.90x.** The gap closed
+**rfish is 1.31x ../mcfish, where this page's PGO table records 1.90x.** The gap closed
 because the accumulator sections below are what moved, not because the instrument changed.
 
 **The third row does NOT isolate what an intrinsic is worth, and must not be quoted as if it
@@ -643,12 +643,80 @@ on the worst case: the measured average is **1.32 hops per roll-forward** over 1
 | search instructions, avx2 | 1,714,434,277 | **1,601,455,733** |
 
 That is **113.0M**, and it is the largest single row this page has carried since the delta
-landed. **The cap has stopped being a cause at all** — 99.3% of what refreshes now is a king
-move, which is exactly the shape upstream has, and it is what makes upstream's
-`update_accumulator_hybrid` (../mcfish's `nnue_acc_apply_hybrid_delta`) the next lever rather
-than anything about the walk-back. That path reaches a moved king from the parent's
-accumulator plus the two king squares' cache entries, so it pays neither `active_sets` nor
-`collect_diff`; both of those now fire on refreshes alone and are worth roughly 45M together. Read with the 28.9M in the row below it, `bench 16 1 8` at avx2 went 1,743,381,846 to
+landed. **The cap has stopped being a cause at all** — 99.3% of what refreshed after it was a
+king move, which is exactly the shape upstream has, and that named the next lever precisely.
+It is taken in the section below.
+
+### A king move is a DELTA, not a refresh
+
+A king move re-indexes every king-piece feature a perspective sees, so the parent's
+accumulator looks worthless after one. **Only its king-piece half is.** Its threat half is
+still exactly right whenever both king squares put the threat numbering in the same MIRROR
+HALF — that numbering is a function of the king's file alone — so the child is reachable by
+swapping one half out and leaving the other in place:
+
+```text
+  a      = biases + HalfKA(this position, new king)      the new king square's cache
+  parent = biases + HalfKA(ancestor, old king) + threats(ancestor)
+  b      = biases + HalfKA(ancestor, old king)           the old king square's cache
+
+  a + parent - b = biases + HalfKA(this position, new king) + threats(ancestor)
+```
+
+The biases cancel to exactly one copy, which is the property that makes the three-way sum an
+accumulator rather than a difference; the chain's own threat records then turn
+`threats(ancestor)` into `threats(this position)`. This is upstream's
+`update_accumulator_hybrid` and ../mcfish's `nnue_acc_apply_hybrid_delta`.
+
+**It needs a second cache, and that is the part that is a redesign rather than an edit.** The
+king-piece terms have to exist WITHOUT threat rows mixed in, and the refresh cache cannot
+supply them: its entries are whole accumulators and the two halves cannot be separated once
+summed. `EvalScratch::ka_cache` is upstream's `AccumulatorCaches::Cache` — 64 slots per
+perspective holding the biases plus the HalfKA rows, updated by board diff exactly as the
+refresh cache is.
+
+**What it buys is not the fold — it is that the hybrid builds NO FEATURE SET.** A refresh has
+to materialise the whole threat and pawn-pair set through `active_sets` and diff it through
+`collect_diff`, and those two are the reason a king move was the dearest thing an evaluation
+did.
+
+| | before | after |
+|---|---|---|
+| refreshes | 24,311 | **13,799** |
+| taken as a hybrid | 0 | **10,512**, 1.85 hops each |
+| search instructions, avx2 | 1,581,232,932 | **1,558,298,395** |
+
+**Its cap is its OWN constant, and it is small.** A roll-forward materialises every ply it
+steps through, so a long chain leaves work done; this path materialises only its last ply, so
+a long chain is pure cost — the threat records concatenate without cancelling AND both cache
+entries get dragged to a further board on every call, which thrashes them. Same workload:
+
+| `HYBRID_HOP_CAP` | 1 | 2 | **3** | 4 | 5 | 6 | 8 | 12 |
+|---|---|---|---|---|---|---|---|---|
+| search Ir | 1,566M | 1,560M | **1,558M** | 1,559M | 1,563M | 1,569M | 1,583M | 1,596M |
+
+Twelve — [`HOP_CAP`], the roll-forward's own value — is **38M worse** than three. The two
+constants describe opposite economics and must not be shared.
+
+**Asking only about the immediate parent is worth a 17% hit rate**, 4,219 of 24,311, and that
+was the first version. A king moves once and every later ply then differs from every ancestor
+before the move, so "the king moved on THIS hop" describes a small fraction of the plies that
+cannot roll forward; "the nearest computed ancestor is on another square" describes nearly all
+of them. Walking back is what took it to 10,512.
+
+### Where the whole session landed
+
+| | search Ir, avx2, 163,081 nodes |
+|---|---|
+| before this work | 1,743,381,846 |
+| the refresh fold's indexed rows | 1,714,434,277 |
+| the hop-by-hop roll-forward | 1,601,455,733 |
+| `fold_psqt` and `fc_2` vectorised | 1,592,154,121 |
+| the active set built per perspective | 1,581,232,932 |
+| **the king-move delta** | **1,558,298,395** |
+
+**10.61%**, bit-exact throughout, and against ../mcfish's own non-PGO build on the identical
+tree the ratio is **1.31x** where this page's PGO table records 1.90x. Read with the 28.9M in the row below it, `bench 16 1 8` at avx2 went 1,743,381,846 to
 1,601,455,733 — **8.14%**, bit-exact throughout, `cargo xtask parity` and
 `cargo xtask arch-determinism` both exit 0.
 
