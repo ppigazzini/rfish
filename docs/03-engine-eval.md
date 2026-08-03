@@ -329,11 +329,11 @@ profile:
 
 | avx2, non-PGO, one tree | search instructions | vs rfish |
 |---|---|---|
-| ../mcfish, `MCFISH_SIMD_VECTOR` (its shipped path) | 1,186,193,283 | 0.76 |
-| **rfish, at HEAD** | **1,558,298,395** | **1.00** |
-| ../mcfish, `-DMCFISH_SIMD_SCALAR` | 4,906,184,642 | 3.15 |
+| ../mcfish, `MCFISH_SIMD_VECTOR` (its shipped path) | 1,186,193,283 | 0.78 |
+| **rfish, at HEAD** | **1,523,668,306** | **1.00** |
+| ../mcfish, `-DMCFISH_SIMD_SCALAR` | 4,906,184,642 | 3.22 |
 
-**rfish is 1.31x ../mcfish, where this page's PGO table records 1.90x.** The gap closed
+**rfish is 1.28x ../mcfish, where this page's PGO table records 1.90x.** The gap closed
 because the accumulator sections below are what moved, not because the instrument changed.
 
 **The third row does NOT isolate what an intrinsic is worth, and must not be quoted as if it
@@ -713,10 +713,15 @@ of them. Walking back is what took it to 10,512.
 | the hop-by-hop roll-forward | 1,601,455,733 |
 | `fold_psqt` and `fc_2` vectorised | 1,592,154,121 |
 | the active set built per perspective | 1,581,232,932 |
-| **the king-move delta** | **1,558,298,395** |
+| the king-move delta | 1,558,298,395 |
+| **the sparse layer's row addressing** | **1,523,668,306** |
 
-**10.61%**, bit-exact throughout, and against ../mcfish's own non-PGO build on the identical
-tree the ratio is **1.31x** where this page's PGO table records 1.90x. Read with the 28.9M in the row below it, `bench 16 1 8` at avx2 went 1,743,381,846 to
+**12.60%**, bit-exact throughout, and against ../mcfish's own non-PGO build on the identical
+tree the ratio is **1.28x** where this page's PGO table records 1.90x.
+
+Every row is a defect rather than a tuning gain: three of them are the same addressing shape
+in three different kernels, two are loops LLVM would not vectorise because their output width
+was small, and the two largest are walk-backs that threw away the work they had just done. Read with the 28.9M in the row below it, `bench 16 1 8` at avx2 went 1,743,381,846 to
 1,601,455,733 — **8.14%**, bit-exact throughout, `cargo xtask parity` and
 `cargo xtask arch-determinism` both exit 0.
 
@@ -816,12 +821,64 @@ portability elsewhere; every x86 tier of `nnue_dot_step` in `src/engine/eval/nnu
 synthesise `vpmaddubsw` from non-saturating IR, and the deinterleave that reaches it from
 portable vectors costs more than the fold saves — measured, 2,759M against 2,108M.
 
-**And the group-of-four route cannot pay even if the instruction appeared.** At this layer's
-~40% input density a group of four survives the zero test 87% of the time, so 223 group visits
-replace 410 input visits: the coarser test skips almost nothing, and it is the arithmetic that
-would have to win. Treat the ~176M this layer is above upstream as the price of the constraint
-and spend effort on the accumulator, where the excess is `collect_diff` and `active_sets` and
-both are still addressable.
+**The density this page has always quoted was never measured, and it was nearly three times
+too high.** Counted with an instrumented build: 9,551,893 non-zero inputs over 62,975
+evaluations, which is **151.7 of 1024 — 14.8%**, against the ~40% this page claimed.
+
+The conclusion survives the correction, and is worth restating with the right number. A group
+of four is skippable only when all four are zero, so at 14.8% it survives `1 - 0.852^4` = 47%:
+121 group visits replace 151.7 input visits, a fifth fewer, and each would have to do four
+inputs' arithmetic. That is a win only with an instruction that dots four bytes at once. Quote
+14.8%, and re-count it after any change to the activation feeding this layer.
+
+**What the layer costs is now known exactly, because it was disassembled rather than
+reasoned about.** The per-input loop is TWENTY instructions and every one of them is
+arithmetic:
+
+```text
+  xor / tzcnt / blsr        walk the non-zero mask
+  movzbl / vmovd / vpbroadcastd   the input byte, splatted
+  shl                       the weight row address
+  vpmovsxbd x4              32 weights, widened
+  vpmaddwd x4 / vpaddd x4   32 outputs accumulated
+  jne
+```
+
+No bounds test, no composite index, no spill — the addressing fix below took the last of it.
+At 151.7 visits that is ~3,030 instructions per evaluation against upstream's ~1,940 for 121
+group visits, so **the layer is ~69M above upstream and all of it is the four `vpmaddwd`
+covering ONE input where `vpmaddubsw` covers four.** It is the instruction and not the shape,
+and no reformulation in this file will reach it.
+
+### The addressing was nine times the arithmetic
+
+`propagate_sparse` reached its weight row as `blocks[c * SCAN + lane]`, where `blocks` takes
+its length from the layer at run time. Line costs over the same bench:
+
+| | Ir |
+|---|---|
+| `Simd::from_array(blocks[i])` | 66,863,251 |
+| `let i = c * SCAN + lane` | 19,103,786 |
+| `acc += w.cast::<i32>() * splat(x)` — the work | **9,551,893** |
+
+Nine times the multiply-accumulate's cost, to address it. Chunking the weight rows the same
+way the inputs already are makes the bound a CONSTANT — `rows` is `&[[i8; N]; SCAN]` and
+`lane` came out of `trailing_zeros()` on a `u64`, so it cannot reach `SCAN` — and LLVM drops
+the test. **34.6M.**
+
+That is the third time this shape has paid on this page, after `fold_into` and `fold_mirror`,
+and the first outside the transformer. Look for a runtime-length slice indexed by a composite
+expression in any kernel that already vectorises.
+
+**Two reshapes of the same kind that measured WORSE**, so the shape is not a rule:
+
+- viewing the transformer's weight tables as whole feature rows and taking tile `t` inside
+  one — `tp_rows[index].as_chunks::<TILE>().0[t]` against
+  `tp_rows[index * ROWS_PER_FEATURE + t]` — is **9.3M worse**. The composite index wins there
+  because the outer bound is data-dependent either way, so the second level buys no constant
+  and costs a second address computation.
+- `Box<[i16; L1]>` for the accumulator, which gives the fold's tile loop a constant trip
+  count, is **6.1M worse** (see below).
 
 ### The 2024 refactor, and the four things that decided it
 
