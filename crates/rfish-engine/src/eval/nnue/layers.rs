@@ -138,16 +138,29 @@ impl AffineLayer {
     /// contributed.
     ///
     /// Inputs are tested ONE at a time, where upstream's kernel tests four. The two engines
-    /// are skipping zeros against different cost models. Upstream's `vpdpbusd` dots four
-    /// bytes in a single instruction, so a group of four costs it what a group of one costs
-    /// and the coarser test comes free. rfish has no such instruction and pays per multiply,
-    /// so the only thing that matters is how much work a test can skip — and a group is
-    /// skippable only when EVERY input in it is zero. At this layer's density four is the
-    /// wrong number: with roughly 40% of the inputs non-zero, a group of four survives the
-    /// test about 87% of the time and almost nothing is skipped, where a group of one skips
-    /// 60% outright. Measured, `bench 16 1 8` at `nehalem`, against the same net and the
-    /// same 166 964 nodes: groups of four 5,783,523,617 instructions, groups of one
-    /// 4,769,344,411.
+    /// are skipping zeros against different cost models: upstream's four-way byte dot costs
+    /// it the same for a group of four as for one, so the coarser test comes free, while
+    /// rfish pays per multiply and only cares how much work a test can SKIP.
+    ///
+    /// **The density this argument rests on is 14.8%, not the ~40% this comment used to
+    /// claim.** Counted rather than estimated: 9,551,893 non-zero inputs over 62,975
+    /// evaluations of `bench 16 1 8`, which is 151.7 of 1024. The old figure was never
+    /// measured and it was nearly three times too high.
+    ///
+    /// The conclusion survives the correction, and is worth restating with the right number.
+    /// A group of four is skippable only when all four are zero, so at 14.8% it survives
+    /// `1 - 0.852^4` = **47%** of the time: 121 group visits replace 151.7 input visits, a
+    /// fifth fewer, and each would have to do four inputs' arithmetic. That is a win only
+    /// with an instruction that dots four bytes at once, and it is a loss without one —
+    /// measured, `bench 16 1 8` at `nehalem`: groups of four 5,783,523,617 instructions,
+    /// groups of one 4,769,344,411.
+    ///
+    /// **Disassembled, the per-input loop is now twenty instructions and there is nothing
+    /// left in it that is not arithmetic:** `tzcnt`/`blsr` to walk the mask, a `movzbl` and
+    /// a broadcast for the input, four `vpmovsxbd`, four `vpmaddwd`, four `vpaddd`, one
+    /// `shl` for the row address and the loop branch. No bounds test, no composite index,
+    /// no spill. What separates it from upstream is that those four `vpmaddwd` cover one
+    /// input where `vpmaddubsw` covers four, and that is the instruction — not the shape.
     /// `N` is the output width, static so the accumulators can stay in registers. Through a
     /// `&mut [i32]` the compiler must assume the stores alias the weights it is reading and
     /// spills all of them on every input; through a fixed-size array taken by value it does
