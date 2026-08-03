@@ -306,7 +306,7 @@ mod tests {
     /// The threat feature indices active in `pos`, one sorted list per perspective.
     fn active(pos: &Position) -> [Vec<u32>; 2] {
         let mut out = [Vec::new(), Vec::new()];
-        threat_active(pos, &mut out);
+        threat_active(pos, [true, true], &mut out);
         for v in &mut out {
             v.sort_unstable();
         }
@@ -526,8 +526,8 @@ mod tests {
                 }
                 let mut a = [Vec::new(), Vec::new()];
                 let mut b = [Vec::new(), Vec::new()];
-                pawn_pair_active(&parent, &mut a);
-                pawn_pair_active(&child, &mut b);
+                pawn_pair_active(&parent, [true, true], &mut a);
+                pawn_pair_active(&child, [true, true], &mut b);
                 for v in a.iter_mut().chain(b.iter_mut()) {
                     v.sort_unstable();
                 }

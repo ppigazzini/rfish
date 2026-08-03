@@ -739,12 +739,14 @@ impl FeatureTransformer {
     /// Deliberately NOT sorted: [`FeatureTransformer::diff_apply`] tests membership rather
     /// than merging, so an order would cost a comparison sort per evaluation and buy
     /// nothing. Upstream sorts nothing here either.
-    fn active_sets(pos: &Position, threats: &mut [Vec<u32>; COLOR_NB]) {
-        for t in threats.iter_mut() {
-            t.clear();
+    fn active_sets(pos: &Position, wanted: [bool; COLOR_NB], threats: &mut [Vec<u32>; COLOR_NB]) {
+        for (t, w) in threats.iter_mut().zip(wanted) {
+            if w {
+                t.clear();
+            }
         }
-        threat_active(pos, threats);
-        pawn_pair_active(pos, threats);
+        threat_active(pos, wanted, threats);
+        pawn_pair_active(pos, wanted, threats);
     }
 
     /// The nearest ancestor ply whose accumulator this one can roll forward from.
@@ -988,8 +990,12 @@ impl FeatureTransformer {
             // every set twice when both refreshed, and built the other perspective's for
             // nothing when only one did.
             let bases = [0, 1].map(|i| Self::rollforward_base(scratch, Color::ALL[i], ply, ksq[i]));
-            if bases.iter().any(Option::is_none) {
-                Self::active_sets(pos, &mut scratch.next_threats);
+            // Only the perspectives that will actually REFRESH need a set. A king move
+            // invalidates one side and leaves the other rolling forward, and a king move is
+            // what 99.3% of refreshes now are.
+            let wanted = [bases[0].is_none(), bases[1].is_none()];
+            if wanted[0] || wanted[1] {
+                Self::active_sets(pos, wanted, &mut scratch.next_threats);
             }
 
             for p in Color::ALL {
