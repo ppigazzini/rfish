@@ -322,11 +322,31 @@ rather than only the ratios.
 | ../zfish, Zig 0.16 + LTO, **no PGO**, avx2 | 1,241,966,545 | **1.001** |
 | **rfish, clang-major LLVM + PGO + LTO, avx2** | **2,067,660,319** | **1.667** |
 
-**Every rfish row on this page below the accumulator sections is a NON-PGO count taken before
-the hop-by-hop roll-forward.** That change moved the non-PGO count from 1,743,381,846 to
-1,601,455,733 on the same tree, so the ratios here understate the port by roughly the same
-8.1%. Re-take the PGO row before quoting it; the instrument is `cargo xtask perf` and it
-rebuilds both sides.
+**Every rfish row in the table above is a PGO count taken before the accumulator work below,
+and it is stale by 9.3%.** Re-taken non-PGO against ../mcfish built the same way, on the
+IDENTICAL 163,081-node tree at avx2, startup subtracted from each by its own `quit`-only
+profile:
+
+| avx2, non-PGO, one tree | search instructions | vs rfish |
+|---|---|---|
+| ../mcfish, `MCFISH_SIMD_VECTOR` (its shipped path) | 1,186,193,283 | 0.75 |
+| **rfish, at HEAD** | **1,581,232,932** | **1.00** |
+| ../mcfish, `-DMCFISH_SIMD_SCALAR` | 4,906,184,642 | 3.10 |
+
+**rfish is 1.33x ../mcfish, where this page's PGO table records 1.90x.** The gap closed
+because the accumulator sections below are what moved, not because the instrument changed.
+
+**The third row does NOT isolate what an intrinsic is worth, and must not be quoted as if it
+did.** `MCFISH_SIMD_SCALAR` turns off ../mcfish's WHOLE vector vocabulary — the
+`vector_size` accumulator row ops as well as the dot's `immintrin.h` bodies — so 4.14x is the
+price of having no vectors at all, not the price of the four-way byte dot. Isolating that
+needs a build with `MCFISH_SIMD_VECTOR` on and only the dot forced to its portable branch,
+which is not a configuration ../mcfish ships. Until someone builds it, the honest statement is
+that the kernels are worth 4.14x there and that rfish's own affine layer sits ~163M above
+upstream's; the split between "portable vectors" and "the instruction" is NOT measured.
+
+Re-take the PGO row before quoting it; the instrument is `cargo xtask perf` and it rebuilds
+both sides.
 
 **rfish retires 1.90x ../mcfish's instructions and 1.67x ../zfish's.** Both siblings are at or
 below the engine they clone. This port is 67% above it, and it is the only one of the three
