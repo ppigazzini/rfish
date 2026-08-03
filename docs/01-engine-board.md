@@ -67,9 +67,10 @@ recompute cheaply on the way back. Undo restores by popping a `StateInfo`, never
 recomputing — so **any field added to `StateInfo` must be written by `do_move` before the
 recursion**, or unmake restores a stale value.
 
-The state chain is a `Vec<StateInfo>` the position owns rather than a pointer chain through
-caller stack frames. See [08-idiomatic-rust.md](08-idiomatic-rust.md) §1 for what that cost
-and bought.
+The state chain is owned by the position rather than pointed at through caller stack frames:
+the current state is a field, and every earlier one sits in a `Vec<StateInfo>` behind it. See
+[08-idiomatic-rust.md](08-idiomatic-rust.md) §1 for what that costs and buys, and §15.4 for
+why the split falls where it does.
 
 `StateInfo`'s fields divide into two groups, exactly as upstream's do:
 

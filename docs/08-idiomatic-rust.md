@@ -18,13 +18,19 @@ repetition walk follows that chain backwards. A `Position` that outlives the fra
 one of its `StateInfo`s is a dangling read, and the C++ avoids it by convention: the search
 stack outlives the recursion, so the frames are still there.
 
-**rfish.** `Position` owns `states: Vec<StateInfo>`. `do_move` pushes; `undo_move` pops;
-`previous` is `len - 2`; the repetition walk is a backwards index scan over a slice.
+**rfish.** `Position` owns the CURRENT state as a field, `st: StateInfo`, and every earlier
+one in `prev: Vec<StateInfo>`, oldest first. `do_move` pushes the old state and updates `st`
+in place; `undo_move` pops back into it; the repetition walk is a backwards index scan over
+`prev`.
 
-**What it cost.** The `Vec` reallocates as the search deepens, once, and then never again —
+**Why the split, and where the boundary falls.** `prev.len()` is exactly the current state's
+old index, so every backwards walk lands wholly inside `prev` and no caller needs a "which
+half am I in" test. That is what makes the current state a field offset rather than a
+`states.last()` — worth **12.8M instructions**, with the in-place update worth another 5.8M
+on top. §15.4 has the measurement and the two traps that come with it.
+
+**What it costs.** The `Vec` reallocates as the search deepens, once, and then never again —
 `MAX_PLY` is 246 and the vector reaches that capacity in the first deep iteration.
-`states.last()` is a bounds check the pointer deref was not, on a path taken several times
-per node. Neither has shown up as measurable.
 
 **What it bought.** The lifetime question does not arise. `Position` is `Clone` and can be
 sent to another thread, which is what makes the Lazy-SMP design in
@@ -339,7 +345,7 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | Upstream's hybrid same-half king-move accumulator path | **Not attempted, for a stated reason.** `halfka_delta` takes ONE king square and assumes base and target share it, so a hybrid path needs a new function re-indexing every piece from the old square to the new — roughly 64 rows. In upstream and zfish that buys skipping a full refresh; here rfish's refresh already starts from a per-king-square cache entry whose halfka diff is usually small, so the hybrid would ADD halfka work. Measure before assuming. |
 | Fusing move scoring into generation, because "the siblings have no `generate_append`" | **The PREMISE was false.** mcfish's `score_list()` calls `generate_captures`/`generate_quiets`/`generate_evasions` to build the whole list and then walks it to fill `out[i].value` — exactly rfish's shape. It only looks fused because it is one static function that callgrind folds into `nextMove`. The picker-zone gap is inside the generation loops, not in the pass structure. See §15.6. |
 | Making `Bitboard::iter` borrow instead of copy | **Rejected by design.** Iterating by value is what lets a loop mutate the board it came from, which is upstream's `while (b) pop_lsb(b)` over a local with the local made explicit. |
-| Rewriting the feature transformer's fold and transform in `std::simd` | **Not worth attempting, from the disassembly.** Both already emit upstream's kernel shape — `vpaddw`/`vpsubw`/`vpmovsxbw` in the fold, `vpminsw`/`vpmullw`/`vpsrlw`/`vpackuswb` in the transform — over 136 and 156 `%ymm` operands. Explicit vectors would transcribe what LLVM emits. See §12. |
+| Rewriting the feature transformer's fold and transform in `std::simd` | **Not worth attempting, from the disassembly.** Both already emit upstream's kernel shape — `vpaddw`/`vpsubw`/`vpmovsxbw` in the fold, `vpminsw`/`vpmullw`/`vpsrlw`/`vpackuswb` in the transform — over 136 and 156 `%ymm` operands. Explicit vectors would transcribe what LLVM emits. See §12 — and §17.1, where the ADDRESSING around those same loops was worth 11.6M without touching a kernel. |
 | Upstream's per-move accumulator delta | **Falsified, with a measurement, after being BUILT.** Bit-exact (signature 2508687, nnue-check 109/109) and it loses: recording costs 85.7M on every `do_move` and the fast path fires on **11%** of evaluations, so it saves 0.47M. The board-zone half is kept and tested; see `docs/03-engine-eval.md`. |
 | Making `diff_apply`'s membership tests branchless | **Falsified, with a measurement.** Storing every element and advancing the count by the predicate removes 2.11M conditional mispredicts (2.187 → **1.896** of upstream's) and costs **+62.7M instructions** and **+37.4M data writes**. The branchy form stores only the rare kept element; the branchless one stores every element of BOTH sets. See §13 for why the premise was wrong. |
 
@@ -794,9 +800,13 @@ loops — so hand-write vectors for a reason."* It verified the dot product lowe
 slices on the assumption the compiler needs help.
 
 **rfish is LLVM, so mcfish is right and zfish is inapplicable** — and this file has the
-receipts on both sides: an explicit `std::simd` fold cost **+177M** (§11), while §15.1 and
-§15.2 won by changing what the scalar loops were *fed*, not by vectorising them. The
+receipts on both sides: an explicit `std::simd` fold cost **+177M** (§11), while §15.1, §15.2
+and §17.1 won by changing what the scalar loops were *fed*, not by vectorising them. The
 practical rule: **when the two siblings disagree, copy mcfish.** It shares rfish's backend.
+
+That rule has a positive receipt as well as the two negatives below: mcfish's
+`ThreatIndexBlocks` colocation translated directly, at −7.7M (§17.2). Its recipes travel; its
+verdicts on upstream's ISA-gated paths do not, because those are claims about FIDELITY (§16.4).
 
 The one place zfish still transfers is where the exact lowering is load-bearing rather than
 merely fast — mcfish makes the same carve-out for its `pmaddubsw` kernel, whose `i16`
@@ -930,3 +940,107 @@ missing a win".
   nothing here to recover. Rust's move semantics and LLVM's RVO already do it.
 - **Leaving a fully-written buffer `undefined`.** Not available: safe Rust must initialise.
   §9 and §14.2 record the shape that replaces it — initialise once per worker, reuse forever.
+
+---
+
+## 17. Four more shapes: the addressing, not the arithmetic
+
+None of these changes an arithmetic operation. The loops retire the same products and sums in
+the same order, and what moves is how the operands are REACHED — which is where this zone's
+wins have been since the kernels themselves reached upstream's instruction shape (§12).
+Measured as §14 and §15 are: avx2 tier, matched net, an identical 163 081-node `bench 16 1 8`,
+startup subtracted, signature unchanged.
+
+### 17.1 Index a fixed-width row; do not range-slice and zip it
+
+**A range slice walked by an iterator costs twice over.** The slice tests a bound at BOTH
+ends and cannot be hoisted out of the loop that produces `base`; the iterator pair then costs
+a step and a pointer compare per element. Priced on the accumulator folds, where each feature
+took `weights[base..base + WIDTH]` and zipped it against the tile: **94.5M instructions of
+`core::slice::iter` and `core::ptr::non_null` inside `transform`**, and 13.7M of `fold_psqt`'s
+29.1M — on a kernel whose whole body adds eight `i32`s.
+
+Both folds now view their tables as fixed-width ROWS once per call through `as_chunks`, so a
+feature's row is an index rather than a slice, and walk two `[T; WIDTH]` arrays by `0..WIDTH`,
+which needs no check at either end. `L1` is a whole number of tiles and the PSQT head is
+exactly one row, so both tables divide exactly — check that before reaching for this.
+
+| | Ir |
+|---|---|
+| `fold_into`, all four accumulator loops | **−7.5M** |
+| `fold_psqt`, with the head accumulated in a local | **−4.1M** |
+
+Two rules generalise out of it:
+
+- **Take the row view once per CALL, not once per iteration.** §12 already records
+  `chunks_exact(N)` beating `w[i * N..i * N + N]` by 20M; this is the same lever pushed one
+  step further, and the iterator that survived that fix was worth 11.6M more.
+- **Accumulate into a LOCAL, not through the caller's `&mut`.** The compiler must assume the
+  weight loads alias the output and reloads it every iteration — §12's `&mut [T]` entry, seen
+  from the loop's end rather than the vectoriser's. The same rule is why `Aligned` is coerced
+  to a slice above a loop rather than indexed through inside it.
+
+Read the pair against §11's `std::simd` row: an explicit vector rewrite of this exact tile
+costs **+177M**. rustc already autovectorises these loops into the kernel upstream writes by
+hand. **Before hand-vectorising a kernel, check what the kernel is being FED.**
+
+### 17.2 Colocate what one lookup reads behind one base
+
+**A lookup that combines two tables under one key is one table.** A threat index adds a class
+base to a slot number; held in separately based tables it computes two bases and touches two
+allocations. `ThreatBlock` carries both for one attacker, so the lookup is one base and two
+loads: **−7.7M**.
+
+Both siblings found half of this. Sum the entries at build time where they are constants of
+each other — `slot` is the pre-summed `Offsets[from] + IndexLut2[from][to]`, after ../zfish
+662d82ef — and colocate them behind one base where they are not, which is ../mcfish's
+`ThreatIndexBlocks` and `nnue_full_make_index`, measured there at −1.16%. Taking the second
+half after the first is why this reads smaller here than there.
+
+The block is `#[repr(C, align(64))]` and a `const` assertion holds its size to a whole number
+of cache lines, because **a stride that is not a multiple of the line carries the alignment to
+the first attacker's rows and no further** — a silent half-fix. mcfish's own `static_assert`
+makes the same claim for the same reason.
+
+### 17.3 Walk what CHANGED, not the container
+
+**Where a move touches one or two elements, iterate the changed set and reject nothing.**
+`pawn_pairs_touching` walks `pawns & changed` and draws each partner from
+`PAWN_PAIR_BB[from] & (unchanged | bb)`, which is ../zfish's `ppGenerate`; scanning all
+sixteen pawns and testing each against `changed` rejects fifteen of them per call.
+
+Emission ORDER changes under this, and that is safe **here and only here**: the feature lists
+are deliberately unsorted and membership-tested. A move list is the opposite — generation
+order decides the tree, and `AGENTS.md` names it as one of the four bugs perft cannot see.
+The correctness argument for the walk is that each unordered pair is still emitted exactly
+once, because a partner comes from the unchanged pawns plus the changed ones not yet popped,
+so a pair whose two pawns both moved is seen only from whichever pops first, and the index is
+symmetric in its two pawns.
+
+Three changes were measured together at **−15.7M** and are not individually attributed:
+
+- the walk above;
+- `PAWN_PAIR_BB` as a `const` rather than a `LazyLock`, because it is read once per pawn
+  inside that walk and a lazy static pays a `Once` load and a branch per deref (§5). `THREATS`
+  cannot follow — its build needs the magic tables — so its deref is hoisted instead;
+- the orientation and the perspective bit hoisted out of the record loops, invariant for a
+  whole list (§14.4).
+
+### 17.4 A generic sink blocks every hoist across a push
+
+**A generic `&mut S` sink may alias the position, so LLVM hoists NOTHING across a push.** No
+board accessor called inside a generation loop is common-subexpression-eliminated, however
+obviously loop-invariant it reads — and `occupied()` in the per-attacker slider loop is the
+generator's innermost read. The generator therefore takes the occupancy, own, enemy and
+checker sets once at the top and threads them down, at **−0.9M**.
+`clippy::too_many_arguments` is suppressed rather than restructured; a struct of the four
+sets would read better and has not been measured.
+
+**A comparable rewrite of the activations was worth about the same, and the smallness is the
+finding.** Narrowing `clipped_relu` and `sqr_clipped_relu` sixteen `i32` at a step — two AVX2
+registers in, one byte store out — is **−0.9M**, because LLVM was already vectorising both
+competently. The `i64` square is not the defect it looks like: squaring in `i32` after
+saturating into `i16` agrees for every input this network produces, and the reason is the CAP
+rather than the arithmetic (an operand outside `i16` squares to at least 2^30, which is above
+127 after any shift a caller passes). Where a kernel already vectorises, expect a number this
+size and budget the session accordingly.
