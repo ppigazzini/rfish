@@ -282,6 +282,7 @@ both sides clang + PGO + LTO:
 | **rfish, avx2 vs avx2 oracle, at the `c5aef2bf1` pin** | **1.53x** | 1.33..1.65 |
 | rfish, avx2, before the sync | 1.52x | 1.29..1.82 |
 | rfish, native vs native oracle (before the membership diff) | 1.77x | 1.38..1.99 |
+| | **not reproducible — see below** | |
 | **spine, avx2, at the `c5aef2bf1` pin** | **1.31x** | 1.18..1.39 |
 
 **Every time figure on this page was taken on a BUSY box, and the spreads say so.** This is a
@@ -296,8 +297,15 @@ exactly, and every Ir ratio on this page is repeatable in a way no time ratio he
 
 Both spreads exclude 1.000, so the direction holds at this sample size; neither is tight
 enough to read a few per cent from. The instruction axis is the one that resolves small
-effects, and it has a tier ceiling — callgrind implements no AVX-512, so `native` has a time
-ratio and no instruction ratio.
+effects, and it has a tier ceiling — callgrind implements no AVX-512, so the AVX-512 tiers
+have a time ratio and no instruction ratio.
+
+**The `native` row above cannot be reproduced, and is kept only as a record.** It was taken
+when `native` meant `-C target-cpu=native` on both sides, so it describes two binaries that
+were a property of this box rather than of any tier. `native` now SELECTS an enumerated tier
+(`avx512icl` here) — see `docs/09-tooling-ci.md` — so a rerun measures a differently
+compiled pair and the numbers are not comparable. Re-take it under a named tier before
+quoting it.
 
 ### The three-way, measured head to head
 

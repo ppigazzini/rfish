@@ -151,7 +151,30 @@ exit status.
 and counted their identical nothing as agreement; ../zfish 108e7af6 found a step checker
 reporting OK while reading 6% of its subject.
 
+**A non-empty corpus does not settle it, because two blank sides compare equal.** Every way
+a comparison can fail blanks it — an oracle that dies before its banner, a filter that eats
+the output, a golden re-derived against a dead engine — and `""` == `""` scores an agreement.
+`golden-audit` refuses a case where both sides are blank, before it tallies either way, and
+`golden` refuses a case whose engine printed nothing in BOTH modes: the two failures compose,
+since an update writes the blank golden and the check then passes it against the next dead
+run. Every case here ends by printing something, so a blank side is a dead engine and never a
+behaviour. ../zfish a4f0b6e9 is the same equality one gate over.
+
 ## The local gates, which `parity` does not run
+
+### `arch-determinism`
+
+Every enumerated tier must bench the anchor. It builds the engine once per tier into
+`target/arch/<tier>` and drives `bench` at the signature depth.
+
+**`signature` cannot stand in for it.** That gate builds at the default arch, so it exercises
+the portable arm and nothing else, while the NNUE kernels are `std::simd` and the tier decides
+how each lane operation lowers — a saturation or a narrowing that behaves differently at 512
+bits produces a different tree with every other gate green. Run it after touching a kernel,
+and before adding a tier: that is what makes a new rung a checked change.
+
+Local rather than in `parity` because it is five release builds. All five reproduce
+`2508687` today, including the three AVX-512 rungs.
 
 ### `perf-budget`
 
@@ -177,16 +200,12 @@ Four properties, each of which cost a sibling port a wrong verdict before it was
   through. Measured spread on this box is **ten instructions in 1.7e9 across a from-scratch
   rebuild**, so 0.005% is ~8000x the noise and ~11x under the mutation. Verified both
   directions at the shipped value: clean → exit 0 at +0.0000%, mutated → exit 1 at +0.0541%.
-- **A row keyed `native` is refused**, which is ../zfish 7d4de85f's shape and the right one:
-  `-C target-cpu=native` is a different binary on every host, so the row would name this
-  machine rather than the code. ../mcfish's answer — folding the resolved `target-cpu` into
-  the key — records the host-specific codegen instead of eliminating it; do not copy that
-  half. zfish's `native` is a SELECTOR among enumerated tiers, so its codegen is a property
-  of the tier however it was asked for, and that is the end state rfish's `--arch native`
-  wants too. It is not there yet: rfish's `native` is real host codegen, and refusing it as
-  a key is what holds the line until it is a selector. The key still carries the tier AND
-  the `target-cpu` it resolves to, so a pinned row whose target-cpu changed is named rather
-  than matched.
+- **Every row is keyed by an ENUMERATED tier**, and `native` resolves to one before a row is
+  ever written — so a row names a build any host of that tier can reproduce. That is what
+  removed the hazard ../zfish 7d4de85f refused by hand and ../mcfish 71c3fae3 first tried to
+  key around; see the tier section above. The key carries the tier AND its `target-cpu`, so a
+  row written before a tier-table change is named rather than matched. A tier callgrind
+  cannot execute — the three AVX-512 rungs — is refused for that reason and no other.
 - **The node count is in the row.** A count taken over a different tree is not comparable,
   and the gate says so instead of reporting the difference as cost.
 - **A missing row SKIPS at exit 2**, never passes. "Could not measure" must not read as "did
@@ -217,14 +236,35 @@ inherit it.
 
 **A perf number without its tier is not a number.**
 
-**`native` is not a tier, and making it one is outstanding.** It resolves to real
-`-C target-cpu=native`, so it names a different binary on every host and nothing measured
-under it is keyed to anything. ../zfish has the right model: its `native` is a SELECTOR that
-resolves to one of the enumerated tiers, so the codegen is a property of the tier however
-the build was asked for. ../mcfish carries rfish's shape and its own fix keys the row by the
-resolved host CPU, which records the problem rather than removing it — take zfish's. Until
-`native` is a selector here, no measurement may be filed under it: `perf-budget` refuses the
-key outright.
+### The tiers are enumerated, and `native` only SELECTS one
+
+| tier | `-C target-cpu` | upstream `ARCH=` | callgrind |
+|---|---|---|---|
+| `sse41` | `nehalem` | `x86-64-sse41-popcnt` | yes |
+| `avx2` (default) | `haswell` | `x86-64-avx2` | yes |
+| `avx512` | `skylake-avx512` | `x86-64-avx512` | no |
+| `vnni512` | `cascadelake` | `x86-64-vnni512` | no |
+| `avx512icl` | `icelake-server` | `x86-64-avx512icl` | no |
+
+`--arch native` / `--tier native` reads the host's `target_feature` set from rustc and names
+the highest tier the box can run, printing which. **It never compiles
+`-C target-cpu=native`**, and that is the whole point: such a build carries tuning and ISA
+extensions no tier label records, so two hosts reporting the same label ship different
+binaries and every per-tier number — budget rows, instruction ratios against the oracle, an
+Elo standing — is a comparison across builds that cannot be reproduced anywhere.
+
+The cost is real and belongs next to the benefit: a fixed-flag tier gives up whatever the
+host-tuned build was worth, and buys a number that can be reproduced on any host of that
+tier. ../mcfish 3b9fc8ae measured **+1.38%** for the same trade, and its history is the
+argument for taking the cause rather than the symptom — it first keyed its budget rows by
+the resolved host CPU, which records host-specific codegen instead of removing it. ../zfish
+resolved `native` this way from the start.
+
+**A tier is not free to add: `signature` cannot see an ISA divergence.** It builds at the
+DEFAULT arch, so it tests the portable arm and nothing else, while rfish's NNUE kernels are
+`std::simd` whose lowering the tier decides. `cargo xtask arch-determinism` builds every
+enumerated tier and holds each to the anchor — that is what makes adding a tier a checked
+change rather than a hopeful one. All five reproduce `2508687` today.
 
 ## Resyncing to a newer upstream
 
