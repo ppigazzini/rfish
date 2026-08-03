@@ -1044,3 +1044,151 @@ saturating into `i16` agrees for every input this network produces, and the reas
 rather than the arithmetic (an operand outside `i16` squares to at least 2^30, which is above
 127 after any shift a caller passes). Where a kernel already vectorises, expect a number this
 size and budget the session accordingly.
+
+## 18. The data structure, not the loop: six shapes and the three that inverted
+
+§17 moved how operands are REACHED. This section moves what they are STORED IN, which is the
+next layer down and the one where the falsified attempts outnumber the wins. Every row is the
+same instrument as §14, §15 and §17: avx2 tier, matched net, an identical 163 081-node
+`bench 16 1 8`, startup subtracted, signature unchanged at every step.
+
+**Read the three that measured WORSE first.** Each is the obvious application of a rule that
+had just paid somewhere else, which is exactly why they are here.
+
+### 18.1 Make the bound a CONSTANT the index cannot reach
+
+**A runtime-length slice indexed by a composite expression pays a length load, a compare and
+a scaled address on every visit.** Priced on the sparse affine layer, which reached its
+weight row as `blocks[c * SCAN + lane]`:
+
+| line | Ir |
+|---|---|
+| `Simd::from_array(blocks[i])` | 66,863,251 |
+| `let i = c * SCAN + lane` | 19,103,786 |
+| `acc += w.cast::<i32>() * splat(x)` — the arithmetic | **9,551,893** |
+
+**Nine times the multiply-accumulate's cost to address it.** The fix is not to remove the
+check but to make it FOLD: chunk the weight rows the way the inputs already are, so the row
+view is `&[[i8; N]; SCAN]` and the index is `lane` alone — and `lane` came out of
+`trailing_zeros()` on a `u64`, so LLVM knows it is below 64 and `SCAN` is 64. The test
+disappears and the row is one displacement off a base the loop already holds. **−34.6M**, and
+the loop is then twenty instructions of which every one is arithmetic.
+
+**The condition is narrow, and the counter-case cost 9.3M.** The same reshape applied to the
+accumulator fold — `tp_rows[index].as_chunks::<TILE>().0[t]` in place of
+`tp_rows[index * ROWS_PER_FEATURE + t]` — is **+9.3M WORSE**. The difference is that a
+feature `index` is data-dependent and unbounded by anything the compiler can see, so no level
+of the nest becomes a constant; the second level buys nothing and costs a second address
+computation. **The lever is a compile-time bound the index provably cannot reach, not
+nesting.** If the outer index stays data-dependent, leave the composite alone.
+
+### 18.2 `Box<[T; N]>` is not automatically better than `Vec<T>`
+
+The search stack moved from `Vec<T>` to `Box<[T; N]>` for **−16.0M** (§14.2) and the ply stack
+followed it. Applying the same to the accumulator — `Side::acc` as `Box<[i16; L1]>`, which
+gives the fold's tile loop a trip count of eight at compile time, removes a bounds test per
+tile and deletes a `resize` that restates the type — is **+6.1M WORSE**.
+
+**What separates them is whether the loop body was already register-resident.** §14.2's win is
+a length LOAD removed from a scalar walk. The fold's tile loop is eight iterations of
+register-held vector work; making the count constant lets LLVM unroll it fully, and the code
+size costs more than the eight compares saved. Instruction-cache pressure is the counter this
+port is already worst on (`docs/03-engine-eval.md`), so an unroll has to be measured against
+it rather than assumed free.
+
+### 18.3 Store the halves your consumers need separately
+
+**A sum forecloses every path that needs one of its terms.** The accumulator refresh cache
+held one whole accumulator per king square — the biases, the king-piece rows and the threat
+rows, added together — plus the feature set that produced it. That is everything the refresh
+path needs and it made the cheaper path impossible to write: a king move can be taken as a
+delta from `HalfKA(new) + parent − HalfKA(old)`, and neither `HalfKA` term can be recovered
+from a slot that only kept the sum.
+
+A SECOND cache holding the king-piece half alone — upstream's `AccumulatorCaches::Cache`,
+which is exactly this and not the other one — makes the delta expressible: **−22.9M**, and
+what it buys is not the arithmetic but that the delta path builds no feature set at all where
+a refresh had to materialise one and diff it.
+
+The cost side is worth stating because it is what such a decision usually trades: 64 slots per
+perspective at 2 KiB each, ~256 KiB per worker, against ~15.6 MiB a worker already carries.
+**When one consumer wants `a + b` and another wants `a`, storing `a + b` alone is a decision,
+not a default.** Ask which terms a future path could need before summing at rest.
+
+### 18.4 Two structures that both walk back can need OPPOSITE caps
+
+`HOP_CAP` bounds the accumulator roll-forward and sits at **12**; `HYBRID_HOP_CAP` bounds the
+king-move delta and sits at **3**. Sharing one constant costs **38M**, and the reason is a
+property of what each walk LEAVES BEHIND, not of the chain length:
+
+| | a longer chain |
+|---|---|
+| roll-forward — materialises every ply it steps through | leaves work done; the next evaluation starts one hop away |
+| king-move delta — materialises only its last ply | is pure cost, and drags two cache entries to a further board on every call, which thrashes them |
+
+The second row's curve is the readable one: 1,566M / 1,560M / **1,558M** / 1,559M / 1,563M /
+1,569M / 1,583M / 1,596M at caps 1 through 12. **Sweep a cap per PATH.** A constant named for
+the structure rather than for the traversal invites exactly this.
+
+### 18.5 A walk-back that writes only its last step is one you will walk again
+
+**The largest single row of the campaign, and it reads as a loop shape rather than a data
+one.** The roll-forward concatenated every hop's records into one fold and wrote only the
+destination ply, so a chain walked once was walked again by the next evaluation — and because
+records do not cancel before they are applied, a longer chain folded MORE rows, which is why
+its cap had been pinned at two. That cap then caused 92% of all accumulator refreshes.
+
+Materialising every ply on the way forward, as upstream's `AccumulatorStack::evaluate` does,
+inverts the cap's whole curve and is **−113.0M**. Instrumented, the walk was never blocked on
+a broken chain: of 59,054 failures the cause was the cap 54,527 times and a hop with no
+records **zero** times.
+
+**Measure the cap AFTER changing what a hop costs, never before** — and when a structure is
+written once per traversal rather than once per element, ask what the next traversal will
+find there.
+
+### 18.6 Fill only what a consumer will read
+
+`active_sets` fills both perspectives' feature sets, and the comment defending it is about the
+SCAN: which square attacks which is a fact about the position, so scanning twice recomputes
+every attack set twice. True, and it stays. What is not shared is the INDEX — every feature is
+numbered against its own perspective's king square — and a set nobody reads costs exactly what
+one that will costs.
+
+That did not matter while the hop cap caused most refreshes, because the cap hit both
+perspectives at once; it started mattering the moment a king move became the dominant cause,
+because a king move invalidates ONE side. Measured: **15,453 of 19,882 calls needed one
+side**, 78%. Passing which perspectives are wanted is **−10.9M**.
+
+**A shared producer is not a reason to produce both outputs.** Split the shared part from the
+per-consumer part and gate the second.
+
+### 18.7 A small output width is what defeats the vectoriser
+
+Two kernels emitted no vector instructions at all, both found by `objdump` rather than by
+reading, and neither is large enough to appear in a profile's symbol list:
+
+- **`fold_psqt` accumulates eight `i32`** — one AVX2 register exactly — and held 33 `mov`s and
+  not one vector instruction. LLVM will not turn an eight-lane integer loop into a `vpaddd` on
+  its own. Written as `Simd<i32, 8>`: **−3.3M**.
+- **`fc_2` is 128 → 1**, so a generic `propagate::<N>` instantiated at `Simd<i32, 1>`. LLVM
+  widened it to `xmm` and then put a HORIZONTAL REDUCTION inside the loop — `vpshufd`/`vpaddd`
+  twice per iteration, because the accumulator in the source is a scalar — for twelve
+  instructions per eight inputs on a serialised chain. A dedicated dot carrying sixteen `i32`
+  lanes and reducing once: **−6.0M**.
+
+Both siblings record the same two traps on the same two kernels
+(`nnue_acc_apply_psqt_delta`, `nnue_affine1_dot`). **Being small is what stops the vectoriser
+caring** — disassemble the narrow kernels, not the wide ones.
+
+### 18.8 Measure the constant the argument rests on
+
+The sparse layer's doc comment and `docs/03-engine-eval.md` both said "roughly 40% of the
+inputs non-zero", and the entire case against a group-of-four kernel rests on it. Counted with
+an instrumented build: **9,551,893 non-zero inputs over 62,975 evaluations — 151.7 of 1024,
+14.8%.** Nearly three times too high, and never measured.
+
+The conclusion survived (a group of four survives the zero test 47% of the time rather than
+87%, which still kills it), but nobody could have known that without counting. **A figure that
+decides a design and was never produced by a command is a figure to re-derive before you
+trust the design.** It costs one `AtomicU64` and one bench run.
