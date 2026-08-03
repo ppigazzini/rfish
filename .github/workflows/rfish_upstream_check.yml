@@ -156,5 +156,43 @@ jobs:
       # not at the pin, so this is not a duplicate of the build above.
       - name: Install valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      # `oracle` is `make profile-build COMP=clang`, so it needs clang++ AND the
+      # llvm-profdata that merges the raw profile clang writes -- both at rustc's LLVM major,
+      # or the ledger compares GCC against LLVM, or merges one LLVM's profile format with
+      # another's. The runner image ships neither at that major, so the step SKIPPED and
+      # exited 2, and the fingerprint behind it never ran at all.
+      #
+      # Derive the major from rustc rather than pinning one here: `rust-toolchain.toml` moves,
+      # and a hardcoded major would go quietly stale into the loose `llvm-profdata` fallback.
+      # apt.llvm.org lays the unversioned names down under /usr/lib/llvm-<major>/bin, so one
+      # path prepend serves `have("clang++")`, `COMP=clang` and `profdata_tool()` together.
+      - name: Install clang and llvm-profdata at rustc's LLVM major
+        shell: bash
+        run: |
+          set -euo pipefail
+          major=$(rustc -vV | sed -n 's/^LLVM version: \([0-9]*\).*/\1/p')
+          test -n "$major" || { echo "rustc -vV names no LLVM version"; exit 1; }
+          echo "rustc carries LLVM $major"
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh "$major"
+          # llvm.sh installs clang; llvm-profdata comes from the llvm package beside it.
+          sudo apt-get install -y "llvm-$major"
+          echo "/usr/lib/llvm-$major/bin" >> "$GITHUB_PATH"
+
+      # $GITHUB_PATH only applies to LATER steps, so assert here rather than trusting it.
+      # Without this the failure mode is silent: a mismatched clang builds an oracle that is
+      # not comparable, and nothing downstream says so.
+      - name: Verify the majors match
+        shell: bash
+        run: |
+          set -euo pipefail
+          want=$(rustc -vV | sed -n 's/^LLVM version: \([0-9]*\).*/\1/p')
+          got=$(clang++ --version | sed -n 's/.*clang version \([0-9]*\).*/\1/p' | head -n 1)
+          test "$got" = "$want" || { echo "clang++ is $got, rustc's LLVM is $want"; exit 1; }
+          command -v llvm-profdata >/dev/null || { echo "no llvm-profdata on the path"; exit 1; }
+          echo "clang++ $got and $(command -v llvm-profdata) match rustc's LLVM $want"
+
       - run: cargo xtask oracle --tier avx2
       - run: cargo xtask fingerprint --tier avx2
