@@ -611,37 +611,43 @@ impl FeatureTransformer {
         ka: (&[u32], &[u32]),
         tp: (&[u32], &[u32]),
     ) {
-        let ka_weights: &[i16] = &self.weights;
-        let tp_weights: &[i8] = &self.threat_and_pp_weights;
+        // Both weight tables as TILE-wide ROWS, exactly as [`FeatureTransformer::fold_into`]
+        // takes them: `index * ROWS_PER_FEATURE + t` indexes a `[_; TILE]` array, where a
+        // `base..base + TILE` range slice costs a bounds test per row and then walks a `zip`
+        // iterator over it. That shape was worth 19.3M on the delta path; the refresh path is
+        // the other half of the same fold and had been left behind, and it is worth 28.9M
+        // here because a refresh applies MORE rows than a one-hop delta does.
+        const ROWS_PER_FEATURE: usize = L1 / TILE;
+        let ka_rows = <[i16]>::as_chunks::<TILE>(&self.weights).0;
+        let tp_rows = <[i8]>::as_chunks::<TILE>(&self.threat_and_pp_weights).0;
         let mirror_tiles = mirror.as_chunks_mut::<TILE>().0;
         for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
-            let off = t * TILE;
             let mut tile = *chunk;
             for &index in ka.1 {
-                let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(ka_weights[base..base + TILE].iter()) {
+                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
                     // rather than a value to saturate.
-                    *a = a.wrapping_sub(*w);
+                    tile[j] = tile[j].wrapping_sub(w[j]);
                 }
             }
             for &index in ka.0 {
-                let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(ka_weights[base..base + TILE].iter()) {
-                    *a = a.wrapping_add(*w);
+                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_add(w[j]);
                 }
             }
             for &index in tp.1 {
-                let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(tp_weights[base..base + TILE].iter()) {
-                    *a = a.wrapping_sub(i16::from(*w));
+                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_sub(i16::from(w[j]));
                 }
             }
             for &index in tp.0 {
-                let base = index as usize * L1 + off;
-                for (a, w) in tile.iter_mut().zip(tp_weights[base..base + TILE].iter()) {
-                    *a = a.wrapping_add(i16::from(*w));
+                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_add(i16::from(w[j]));
                 }
             }
             *chunk = tile;
