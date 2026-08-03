@@ -101,7 +101,6 @@ impl LayerStack {
         let mut fc_0_out = [0i32; L2];
         let mut concat = [0u8; CONCAT];
         let mut fc_1_out = [0i32; L3];
-        let mut fc_2_out = [0i32; 1];
 
         self.fc_0.propagate_sparse(transformed, &mut fc_0_out);
         // The squared and the plain activation of the SAME accumulator are concatenated:
@@ -114,11 +113,14 @@ impl LayerStack {
         sqr_clipped_relu(&fc_1_out, WEIGHT_SCALE_BITS, &mut concat[L2 * 2..L2 * 2 + L3]);
         clipped_relu(&fc_1_out, WEIGHT_SCALE_BITS, &mut concat[L2 * 2 + L3..]);
 
-        self.fc_2.propagate(&concat, &mut fc_2_out);
+        // The one-output layer has its own dot: through the generic path it instantiated at
+        // a one-lane vector and LLVM put a horizontal reduction inside the loop. See
+        // [`AffineLayer::propagate_one`].
+        let fc_2_out = self.fc_2.propagate_one(&concat);
 
         // A skip connection: the last two outputs of the FIRST layer bypass everything and
         // are added as a difference. Dropping it costs the network its linear term.
-        let fwd = fc_2_out[0] + (fc_0_out[L2 - 2] - fc_0_out[L2 - 1]);
+        let fwd = fc_2_out + (fc_0_out[L2 - 2] - fc_0_out[L2 - 1]);
 
         // `fwd` is quantised so that 1.0 is `HIDDEN_ONE_VAL * 2^WEIGHT_SCALE_BITS * 2`, and
         // the caller wants 1.0 to be `600 * OUTPUT_SCALE`. The i64 is what makes the

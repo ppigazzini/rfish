@@ -30,6 +30,8 @@
 //! Golden: `Stockfish/src/nnue/nnue_feature_transformer.h`,
 //! `Stockfish/src/nnue/nnue_accumulator.cpp`.
 
+use core::simd::Simd;
+
 use crate::board::position::Position;
 use crate::board::threats::{DirtyPawnPairs, DirtyThreat};
 use crate::board::types::{COLOR_NB, Color, Key, MAX_PLY, Piece, SQUARE_NB, Square};
@@ -97,6 +99,12 @@ impl Default for Accumulator {
 struct Side {
     /// The king square these were computed for, or `None` when the slot holds nothing.
     king: Option<Square>,
+    /// Left a `Vec` on purpose. A `Box<[i16; L1]>` gives the fold's tile loop a trip count
+    /// of eight at compile time and drops the `resize` that says what the type already says
+    /// — and it measured 6.1M WORSE on `bench 16 1 8` at avx2, 1,592.2M to 1,598.3M, at an
+    /// identical node count. Fully unrolling a loop that was already eight tiles of
+    /// register-resident work buys nothing and costs code size, which is the counter this
+    /// port is already worst on. Do not re-derive it.
     acc: Vec<i16>,
     psqt: [i32; PSQT_BUCKETS],
     /// The placement that produced the above. The king-piece features are diffed straight
@@ -700,24 +708,30 @@ impl FeatureTransformer {
         // The head itself is held in a LOCAL for the whole call, so it is loaded and stored
         // once rather than once per feature -- `psqt` is behind a reference the compiler
         // must assume the weight reads could alias.
+        // The head is EIGHT `i32`, which is one AVX2 register exactly -- and the indexed
+        // loop below it did not vectorise. Disassembled, this function held 33 `mov`s and
+        // not one vector instruction: LLVM will not turn an eight-lane integer loop into a
+        // `vpaddd` on its own, and ../mcfish records hitting the same wall on the same
+        // kernel (`nnue_acc_apply_psqt_delta`, "the scalar 8-step loop these replaced stayed
+        // scalar"). Say it in vectors instead, which needs no `unsafe`.
+        //
+        // Bit-identical: the same eight integer additions in the same per-row order. `Simd`
+        // arithmetic WRAPS where the scalar `-=` would trap under the gate profile's
+        // overflow checks, so this drops a check the head cannot fail -- upstream carries
+        // the same accumulation in `std::int32_t` and relies on the trainer to keep it in
+        // range, exactly as the `i16` half above does.
         let ka_rows = <[i32]>::as_chunks::<PSQT_BUCKETS>(&self.psqt_weights).0;
         let tp_rows = <[i32]>::as_chunks::<PSQT_BUCKETS>(&self.threat_and_pp_psqt_weights).0;
-        let mut acc = *psqt;
+        let mut acc = Simd::<i32, PSQT_BUCKETS>::from_array(*psqt);
         for (rows, (adds, subs)) in [(ka_rows, ka), (tp_rows, tp)] {
             for &index in subs {
-                let w = &rows[index as usize];
-                for k in 0..PSQT_BUCKETS {
-                    acc[k] -= w[k];
-                }
+                acc -= Simd::from_array(rows[index as usize]);
             }
             for &index in adds {
-                let w = &rows[index as usize];
-                for k in 0..PSQT_BUCKETS {
-                    acc[k] += w[k];
-                }
+                acc += Simd::from_array(rows[index as usize]);
             }
         }
-        *psqt = acc;
+        *psqt = acc.to_array();
     }
 
     /// The active feature sets, one per perspective, in generation order.
