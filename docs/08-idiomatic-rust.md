@@ -873,11 +873,11 @@ swizzle) — gated on `cfg(target_feature = "avx2")` exactly as upstream gates o
 
 It is **bit-exact at both tiers**, which is the part worth keeping: the whole unit suite
 passes under `-C target-cpu=haswell`, and an avx2 build's `bench 16 1 13` reproduces the
-anchor, so the vector algorithm and the magic tables agree on every position in it. That is
-this repo's stand-in for mcfish's `arch-determinism` gate, and building it exposed a real
-hole: **`cargo xtask signature` builds at the DEFAULT arch, so it tests the PORTABLE arm and
-cannot see an avx2-gated path at all.** Any future member of this class has to be checked the
-way this one was, at both tiers, by hand.
+anchor, so the vector algorithm and the magic tables agree on every position in it. Building
+it exposed a real hole — **`cargo xtask signature` builds at the DEFAULT arch, so it tests
+the PORTABLE arm and cannot see an ISA-gated path at all** — and that hole now has a gate:
+`cargo xtask arch-determinism` holds every enumerated tier to the anchor, so a future member
+of this class is checked by a command rather than by hand.
 
 And it loses:
 

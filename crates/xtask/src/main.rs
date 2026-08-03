@@ -65,6 +65,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "signature-update" => gates::signature(true),
         "perft" => gates::perft(),
         "tsan" => gates::tsan(),
+        "arch-determinism" => gates::arch_determinism(),
         "golden" => gates::golden(false),
         "golden-audit" => gates::golden_audit(),
         "golden-update" => gates::golden(true),
@@ -113,6 +114,9 @@ cargo xtask <step> — the rfish build driver
     docs-lint             no dead doc links, no named paths that do not exist
     unsafe-lint           no `unsafe` and no allow(unsafe_code) anywhere
     tsan                  a 4-thread search under ThreadSanitizer, Linux only
+    arch-determinism      every enumerated tier benches the anchor -- the gate that makes a
+                          tier safe to add, since `signature` only ever builds the portable
+                          arm and cannot see an ISA-gated divergence
     nnue-check            the network's output equals upstream's, position by position
     tb                    Syzygy discovery, and that an empty path changes nothing
 
@@ -122,7 +126,9 @@ cargo xtask <step> — the rfish build driver
     perf [--tier T] [--spine] [--rounds N]
                                        the differential: callgrind instructions, then a
                                        paired interleaved A/B of search time
-                                       tiers: sse41, avx2 (default), native
+                                       tiers: sse41, avx2 (default), avx512, vnni512,
+                                       avx512icl; `native` SELECTS one of them rather than
+                                       compiling host-specific code
     perf-budget [--tier T] [--rounds N]
                                        hold this tier's absolute instruction count to
                                        tools/instr_budget.golden -- the cost regression

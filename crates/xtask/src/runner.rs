@@ -60,7 +60,7 @@ pub(crate) fn engine_path(profile: &str) -> PathBuf {
     crate::workspace_root().join("target").join(dir).join(engine_file_name())
 }
 
-fn engine_file_name() -> &'static str {
+pub(crate) fn engine_file_name() -> &'static str {
     if cfg!(windows) { "stockfish.exe" } else { "stockfish" }
 }
 

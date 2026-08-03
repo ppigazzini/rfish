@@ -162,6 +162,66 @@ pub(crate) fn signature(update: bool) -> Result<Outcome, String> {
     Ok(Outcome::check(nodes == expected, format!("bench {nodes} != golden {expected}")))
 }
 
+/// Every enumerated tier must reproduce the anchor.
+///
+/// **The gate that makes a tier safe to add.** rfish's NNUE kernels are `std::simd`, so the
+/// `-C target-cpu` decides how each lane operation lowers — a 512-bit build of the same
+/// source is a different instruction sequence over the same integers, and a saturation or a
+/// narrowing that behaves differently at one width produces a different tree while every
+/// other gate stays green. `signature` cannot see it: it builds at the DEFAULT arch, which is
+/// the portable arm, so an ISA-gated divergence is invisible to it by construction.
+///
+/// Local rather than part of `parity`: it builds the engine once per tier. ../mcfish carries
+/// the same check as `arch-determinism` and ran it to land its own tier expansion; this is
+/// rfish's, and `docs/08-idiomatic-rust.md` §16.4 records what it replaces — a by-hand check
+/// at two tiers.
+pub(crate) fn arch_determinism() -> Result<Outcome, String> {
+    let path = workspace_root().join("tools/signature.golden");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(Outcome::Skipped(format!("{} does not exist", path.display())));
+    };
+    let expected: u64 = text
+        .lines()
+        .find(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty())
+        .ok_or("signature.golden holds no number")?
+        .trim()
+        .parse()
+        .map_err(|e| format!("signature.golden does not parse: {e}"))?;
+
+    let tiers = crate::perf::enumerated_tiers();
+    println!("arch-determinism: {} tiers must all bench {expected}", tiers.len());
+    let cmd = format!("bench {SIGNATURE_HASH} {SIGNATURE_THREADS} {SIGNATURE_DEPTH}");
+    let mut checked = 0usize;
+    let mut failures = Vec::new();
+    for (name, cpu) in tiers {
+        // One target directory per tier, so a tier's binary cannot be measured as another's
+        // and `target/release` is left alone for the gates that own it.
+        let dir = workspace_root().join("target/arch").join(name);
+        run(Command::new(cargo())
+            .current_dir(workspace_root())
+            .env("RUSTFLAGS", format!("-C target-cpu={cpu}"))
+            .env("CARGO_TARGET_DIR", &dir)
+            .args(["build", "--release", "--package", "rfish", "--bin", "stockfish"]))?;
+        let engine = dir.join("release").join(crate::runner::engine_file_name());
+        let nodes = node_total(&drive_at(&engine, &resources_dir(), &[&cmd])?)?;
+        checked += 1;
+        if nodes == expected {
+            println!("  {name} ({cpu}): {nodes}");
+        } else {
+            println!("  {name} ({cpu}): {nodes} != {expected}");
+            failures.push(format!("{name} benched {nodes}"));
+        }
+    }
+
+    if let Some(refusal) = compared_something(checked, "tiers", "the tier table") {
+        return Ok(refusal);
+    }
+    Ok(Outcome::check(
+        failures.is_empty(),
+        format!("tiers that do not reproduce the anchor: {}", failures.join(", ")),
+    ))
+}
+
 /// A multi-threaded search under `ThreadSanitizer`.
 ///
 /// The one gate that can see a DATA RACE. `forbid(unsafe_code)` rules out the pointer
@@ -300,6 +360,19 @@ pub(crate) fn golden(update: bool) -> Result<Outcome, String> {
         // Drop the lines that legitimately differ run to run, or every golden would be a
         // record of one machine's timing rather than of the engine's behaviour.
         let out = filter_volatile(&out);
+
+        // A case that produced NOTHING is a dead engine, not a behaviour: every case here
+        // ends by printing something, so a blank side means the run failed. Refused in both
+        // modes, because the two failures compose — an update writes the blank golden, and
+        // the check then passes it against the next dead run (blank == blank). ../zfish
+        // a4f0b6e9 is the same shape one gate over.
+        if out.trim().is_empty() {
+            return Ok(Outcome::Fail(format!(
+                "{stem}: the engine printed nothing, so there is no behaviour to \
+                 {}. A blank golden would then match every future blank run",
+                if update { "record" } else { "compare" }
+            )));
+        }
 
         let golden_path = workspace_root().join(format!("tools/{stem}.golden"));
         if update {
@@ -460,6 +533,19 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
         let theirs = drive_oracle(&oracle, &oracle_dir, &lines)?;
         let theirs = strip_identity(&filter_volatile(&theirs));
         let ours = strip_identity(&want.replace('\r', ""));
+        // **TWO BLANK SIDES COMPARE EQUAL**, and every way a side can fail blanks it: an
+        // oracle that dies before its banner, a driver whose filter eats the output, a
+        // golden re-derived against a dead engine. That scores an `agree` — the gate does
+        // not merely pass having compared nothing, it reports a comparison it never made.
+        // ../zfish a4f0b6e9 found the same equality in its transcript gate. A rig fault, not
+        // a diff, and checked BEFORE the tally either side lands in.
+        if nothing_was_compared(&ours, &theirs) {
+            return Ok(Outcome::Fail(format!(
+                "{stem}: both the golden and upstream are blank, so nothing was compared. \
+                 Check the oracle runs and that the golden was not re-derived against a dead \
+                 engine"
+            )));
+        }
         if ours == theirs {
             agree += 1;
             continue;
@@ -496,6 +582,15 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
         differ.is_empty(),
         format!("goldens upstream does not agree with: {}", differ.join(", ")),
     ))
+}
+
+/// True when a comparison had nothing on EITHER side, which equality reports as agreement.
+///
+/// Named and separate so it can be tested: the end-to-end path needs an engine that dies
+/// before printing, and nothing in this corpus can produce one — every case here ends by
+/// printing something, and even an empty script gets the net banner.
+fn nothing_was_compared(ours: &str, theirs: &str) -> bool {
+    ours.trim().is_empty() && theirs.trim().is_empty()
 }
 
 /// Drive the oracle, WAITING for each search to finish before sending the next command.
@@ -1146,6 +1241,19 @@ fn capture_version() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_blank_sides_are_a_rig_fault_rather_than_agreement() {
+        // The equality the check exists to intercept: `"" == ""` is true, so a dead oracle
+        // and a blank golden agree perfectly about nothing.
+        assert!(nothing_was_compared("", ""));
+        assert!(nothing_was_compared("  \n\n", "\n"));
+        // One side blank is a real difference and must stay a DIFF, not a rig fault: it is
+        // the shape of an oracle that died against a golden that did not.
+        assert!(!nothing_was_compared("readyok", ""));
+        assert!(!nothing_was_compared("", "readyok"));
+        assert!(!nothing_was_compared("readyok", "readyok"));
+    }
 
     #[test]
     fn markdown_links_are_extracted_without_their_anchors() {

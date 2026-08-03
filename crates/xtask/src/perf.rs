@@ -38,6 +38,12 @@ struct Tier {
     rustc: &'static str,
     /// The `ARCH=` upstream's Makefile takes.
     upstream: &'static str,
+    /// The `target_feature`s a host must report before `native` may select this tier.
+    ///
+    /// Named individually rather than implied by the `-C target-cpu`: the selector must
+    /// answer "can this box RUN the tier", which is a question about the host, while the
+    /// target-cpu answers "what does the tier emit", which is a question about the build.
+    needs: &'static [&'static str],
     /// Whether valgrind can execute the code this tier emits.
     ///
     /// callgrind implements no AVX-512, and SIGILLs on the first instruction it does not
@@ -46,12 +52,64 @@ struct Tier {
     callgrind_safe: bool,
 }
 
-const TIERS: [Tier; 3] = [
-    Tier { name: "sse41", rustc: "nehalem", upstream: "x86-64-sse41-popcnt", callgrind_safe: true },
-    Tier { name: "avx2", rustc: "haswell", upstream: "x86-64-avx2", callgrind_safe: true },
-    // `native` is whatever the host is. It is the tier a player would build, and the tier a
-    // callgrind run cannot be trusted at on any box with AVX-512.
-    Tier { name: "native", rustc: "native", upstream: "native", callgrind_safe: false },
+/// The enumerated tiers, lowest first. **Every one is a FIXED `-C target-cpu`.**
+///
+/// `native` is not among them, and that is the point: `-C target-cpu=native` emits code that
+/// is a property of the machine that ran the build — znver4 tuning on this box — so two hosts
+/// reporting the same tier label ship different binaries, and every per-tier number in this
+/// repository is a comparison across builds. `native` is a SELECTOR over this table instead;
+/// see [`resolve_tier`]. ../mcfish 3b9fc8ae removed the same cause after patching the symptom
+/// first, and ../zfish has always resolved it this way.
+const TIERS: [Tier; 5] = [
+    Tier {
+        name: "sse41",
+        rustc: "nehalem",
+        upstream: "x86-64-sse41-popcnt",
+        needs: &["sse4.1", "popcnt"],
+        callgrind_safe: true,
+    },
+    Tier {
+        name: "avx2",
+        rustc: "haswell",
+        upstream: "x86-64-avx2",
+        needs: &["avx2", "bmi2"],
+        callgrind_safe: true,
+    },
+    // The rung between avx2 and VNNI, so an AVX-512 host without VNNI is not dropped two
+    // tiers by the selector's floor — ../mcfish added the same one for the same reason.
+    Tier {
+        name: "avx512",
+        rustc: "skylake-avx512",
+        upstream: "x86-64-avx512",
+        needs: &["avx512f", "avx512bw", "avx512dq", "avx512vl"],
+        callgrind_safe: false,
+    },
+    Tier {
+        name: "vnni512",
+        rustc: "cascadelake",
+        upstream: "x86-64-vnni512",
+        needs: &["avx512f", "avx512bw", "avx512dq", "avx512vl", "avx512vnni"],
+        callgrind_safe: false,
+    },
+    // Upstream's top x86-64 tier. Its vbmi2/bitalg/vpopcntdq paths were reachable here only
+    // through `target-cpu=native` on a capable box — which is to say by accident of the
+    // build machine rather than by asking for a tier.
+    Tier {
+        name: "avx512icl",
+        rustc: "icelake-server",
+        upstream: "x86-64-avx512icl",
+        needs: &[
+            "avx512f",
+            "avx512bw",
+            "avx512dq",
+            "avx512vl",
+            "avx512vnni",
+            "avx512vbmi2",
+            "avx512bitalg",
+            "avx512vpopcntdq",
+        ],
+        callgrind_safe: false,
+    },
 ];
 
 /// The bench the profile trains on and the differential measures.
@@ -80,21 +138,70 @@ const TIME_BENCH: [&str; 3] = ["16", "1", "13"];
 /// passing `avx2` straight to rustc is not a tier at all -- rustc has no such CPU, and the
 /// build fails with a rustc error that names neither the flag nor the tier.
 pub(crate) fn target_cpu_for(tier: &str) -> Option<&'static str> {
-    TIERS.iter().find(|t| t.name == tier).map(|t| t.rustc)
+    resolve_tier(tier).ok().map(|t| t.rustc)
 }
 
 /// Every tier name, for an error message that can list the alternatives.
 pub(crate) fn tier_names() -> Vec<&'static str> {
-    TIERS.iter().map(|t| t.name).collect()
+    TIERS.iter().map(|t| t.name).chain(std::iter::once("native")).collect()
+}
+
+/// Every ENUMERATED tier as `(name, target-cpu)`, lowest first — `native` is not one.
+///
+/// For a caller that has to build each of them, which is the arch-determinism gate.
+pub(crate) fn enumerated_tiers() -> Vec<(&'static str, &'static str)> {
+    TIERS.iter().map(|t| (t.name, t.rustc)).collect()
 }
 
 /// Resolve `--tier`, defaulting to the matched-ISA tier both ports have always quoted.
 fn tier_of(args: &[&str]) -> Result<&'static Tier, String> {
-    let want = arg_value(args, "--tier").unwrap_or("avx2");
-    TIERS.iter().find(|t| t.name == want).ok_or_else(|| {
-        let names: Vec<&str> = TIERS.iter().map(|t| t.name).collect();
-        format!("unknown tier '{want}'; want one of {}", names.join(", "))
-    })
+    resolve_tier(arg_value(args, "--tier").unwrap_or("avx2"))
+}
+
+/// A tier NAME to a tier — resolving `native` to the highest one this host can run.
+///
+/// **`native` selects; it never compiles `-C target-cpu=native`.** A build under that flag
+/// carries whatever tuning and ISA extensions the build machine has, none of which any tier
+/// label records, so a number filed under it cannot be reproduced anywhere — including on
+/// this box after a CPU change. Resolving to an enumerated tier costs some host-specific
+/// tuning and buys a build that is a property of its NAME.
+fn resolve_tier(want: &str) -> Result<&'static Tier, String> {
+    if want == "native" {
+        let features = host_features()?;
+        // Highest first: the selector's floor must not drop a capable host two rungs.
+        let tier = TIERS
+            .iter()
+            .rev()
+            .find(|t| t.needs.iter().all(|f| features.iter().any(|h| h == f)))
+            .ok_or_else(|| {
+                format!(
+                    "this host reports none of the tier feature sets; it cannot even run \
+                     '{}'. Name a tier explicitly",
+                    TIERS[0].name
+                )
+            })?;
+        println!("tier native resolves to {} ({})", tier.name, tier.rustc);
+        return Ok(tier);
+    }
+    TIERS
+        .iter()
+        .find(|t| t.name == want)
+        .ok_or_else(|| format!("unknown tier '{want}'; want one of {}", tier_names().join(", ")))
+}
+
+/// The `target_feature`s rustc says this host has.
+///
+/// Asked of rustc rather than read out of `/proc/cpuinfo`: rustc is the thing that decides
+/// what a feature name means to a build, the answer is already in its vocabulary, and no
+/// second parser has to be kept in step with a kernel's spelling. It is also the portable
+/// route — the siblings read cpuinfo because their toolchains offer nothing equivalent.
+fn host_features() -> Result<Vec<String>, String> {
+    let cfg = capture(Command::new("rustc").args(["--print", "cfg", "-C", "target-cpu=native"]))?;
+    Ok(cfg
+        .lines()
+        .filter_map(|l| l.strip_prefix("target_feature="))
+        .map(|f| f.trim_matches('"').to_string())
+        .collect())
 }
 
 /// The value following `flag`, when present.
@@ -622,20 +729,16 @@ const BUDGET_ROUNDS: usize = 2;
 /// much as of the code, so the pinned nightly moving legitimately moves it. Run it after a
 /// perf commit and after a toolchain bump.
 pub(crate) fn perf_budget(args: &[&str], update: bool) -> Result<Outcome, String> {
+    // `native` has already resolved to an enumerated tier, so a row is keyed by a name that
+    // decides the codegen — the reason ../zfish 7d4de85f could refuse a `native` key outright
+    // and ../mcfish 3b9fc8ae dropped the target-cpu it had folded INTO the key. What remains
+    // is an instrument limit and nothing to do with keys: callgrind implements no AVX-512.
     let tier = tier_of(args)?;
-    // A row keyed `native` is a number about ONE MACHINE, and ../zfish 7d4de85f is the shape
-    // to copy: REFUSE the key. Its `native` is a selector among enumerated tiers, so the
-    // codegen is a property of the tier either way; rfish's is real `-C target-cpu=native`,
-    // which is ../mcfish's shape, and mcfish's own fix — folding the resolved target-cpu
-    // into the key — records host-specific codegen rather than eliminating it. Do NOT copy
-    // that half. The end state is native as a selector; until then no row may be keyed by it.
-    // Here the tier table refuses the same tier for a second, independent reason: callgrind
-    // implements no AVX-512.
     if !tier.callgrind_safe {
         return Err(format!(
-            "tier '{}' cannot carry a budget: it resolves to a different binary on every host, \
-             so a row would name this machine rather than the code, and callgrind SIGILLs on \
-             the first instruction it does not know. Use a pinned tier: {}",
+            "tier '{}' cannot carry a budget: callgrind implements no AVX-512 and SIGILLs on \
+             the first instruction it does not know, so there is no count to record. Budget a \
+             tier it can execute: {}",
             tier.name,
             TIERS
                 .iter()

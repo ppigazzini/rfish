@@ -48,8 +48,10 @@ perf.data*
 # it explicitly.
 /config.json
 
-# A binary built outside target/. `cargo xtask arch-determinism` lands one per
-# ISA tier and callers redirect with --out; guard the plain names at the root.
+# A binary built outside target/. Every xtask step keeps its own output under
+# target/ -- `arch-determinism` in target/arch/<tier>, `perf-budget` in
+# target/budget/<tier> -- but a binary copied out by hand for a measurement
+# lands at the root, and that is routine. Guard the plain names.
 /rfish
 /rfish-*
 /stockfish
