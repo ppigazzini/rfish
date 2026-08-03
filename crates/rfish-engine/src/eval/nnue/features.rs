@@ -279,6 +279,19 @@ const THREAT_ORIENT: [u8; SQUARE_NB] = {
     t
 };
 
+/// Which mirror half a king square puts the threat and pawn-pair numbering in.
+///
+/// The orientation those two sets are indexed through is a function of the king's FILE HALF
+/// alone — `0` on a-d, `7` on e-h — and of nothing else about the square. So a king move
+/// that stays in one half leaves every threat and pawn-pair index exactly where it was,
+/// which is the condition under which a parent's accumulator can carry its threat rows
+/// across a king move. [`FeatureTransformer::hybrid`] is the only caller and that is what it
+/// tests.
+#[must_use]
+pub fn threat_mirror(ksq: Square) -> u8 {
+    THREAT_ORIENT[ksq.index()]
+}
+
 /// How many (attacker colour, attacked kind) target classes each attacker has.
 ///
 /// A pawn's diagonal threats only target knights and rooks — pawn-to-pawn relationships are

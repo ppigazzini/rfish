@@ -39,7 +39,7 @@ use crate::board::types::{COLOR_NB, Color, Key, MAX_PLY, Piece, SQUARE_NB, Squar
 use super::common::{Aligned, FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
 use super::features::{
     HALFKA_DIMENSIONS, THREAT_AND_PP_DIMENSIONS, halfka_delta, pawn_pair_active, pawn_pair_delta,
-    threat_active, threat_delta,
+    threat_active, threat_delta, threat_mirror,
 };
 
 /// The transformer's weights.
@@ -231,6 +231,21 @@ pub struct EvalScratch {
     /// Grown to 64 slots on first use rather than allocated up front, because a worker that
     /// never evaluates should not pay for it.
     cache: [Vec<CacheSlot>; COLOR_NB],
+    /// One slot per king square per perspective holding the KING-PIECE half ALONE.
+    ///
+    /// Upstream's `AccumulatorCaches::Cache` is this and not [`EvalScratch::cache`]: it holds
+    /// the biases plus the `HalfKA` rows and no threat rows at all. Keeping that separately is
+    /// what makes a king move cost a delta instead of a refresh — see
+    /// [`FeatureTransformer::hybrid`], which reaches the child from
+    ///
+    /// ```text
+    ///   HalfKA(live, new king) + parent - HalfKA(parent, old king) +- this move's threats
+    /// ```
+    ///
+    /// and needs the two `HalfKA` terms to exist without their threat rows mixed in. The full
+    /// cache beside it cannot serve: its entries are a whole accumulator and the two halves
+    /// cannot be separated once summed.
+    ka_cache: [Vec<Side>; COLOR_NB],
     /// Freshly computed sets, reused between calls to avoid reallocating.
     ///
     /// Written ONLY on the refresh path. The delta path never builds a set, which is the
@@ -239,6 +254,11 @@ pub struct EvalScratch {
     /// The king-piece features one diff or one delta adds and removes, per perspective.
     adds: [Vec<u32>; COLOR_NB],
     subs: [Vec<u32>; COLOR_NB],
+    /// A SECOND king-piece pair, because [`FeatureTransformer::hybrid`] holds two board
+    /// diffs live at once: one bringing the new king square's cache to this position and one
+    /// bringing the old king square's cache to the parent's.
+    adds2: [Vec<u32>; COLOR_NB],
+    subs2: [Vec<u32>; COLOR_NB],
     /// The same for the threat and pawn-pair features, collected SEPARATELY so that both
     /// kinds can be folded in one sweep of the accumulator: they read different weight
     /// tables, so they cannot share a list, but they can share the pass.
@@ -280,6 +300,16 @@ pub struct EvalScratch {
 /// every ply it covered ready for the next evaluation to reach in one.
 const HOP_CAP: usize = 12;
 
+/// How many hops the KING-MOVE delta will walk back through.
+///
+/// Separate from [`HOP_CAP`], and much smaller, because the two paths pay for a longer chain
+/// in opposite currencies. A roll-forward materialises every ply it steps through, so a long
+/// chain leaves work done; the king-move delta materialises only its last ply, so a long
+/// chain is pure cost — its threat records concatenate without cancelling, and its two
+/// king-piece cache entries get dragged to a FURTHER board on every call, which is what
+/// makes them thrash.
+const HYBRID_HOP_CAP: usize = 3;
+
 /// How many `u64` words cover the threat-and-pawn-pair feature space.
 const MARK_WORDS: usize = THREAT_AND_PP_DIMENSIONS.div_ceil(64);
 
@@ -297,9 +327,12 @@ impl Default for EvalScratch {
                 Err(_) => unreachable!("the vec was built with exactly PLY_SLOTS items"),
             },
             cache: [Vec::new(), Vec::new()],
+            ka_cache: [Vec::new(), Vec::new()],
             next_threats: [Vec::new(), Vec::new()],
             adds: [Vec::new(), Vec::new()],
             subs: [Vec::new(), Vec::new()],
+            adds2: [Vec::new(), Vec::new()],
+            subs2: [Vec::new(), Vec::new()],
             tp_adds: [Vec::new(), Vec::new()],
             tp_subs: [Vec::new(), Vec::new()],
             mark: Vec::new(),
@@ -323,6 +356,7 @@ impl EvalScratch {
         self.key = EMPTY_KEY;
         for i in 0..COLOR_NB {
             self.cache[i].clear();
+            self.ka_cache[i].clear();
         }
         self.invalidate_plies();
     }
@@ -690,6 +724,81 @@ impl FeatureTransformer {
         }
     }
 
+    /// Fold king-piece rows into an accumulator IN PLACE.
+    ///
+    /// The king-piece cache's own update: [`FeatureTransformer::hybrid`] brings two of its
+    /// entries to two different boards before combining them, and neither is a copy from
+    /// somewhere else. Same tile shape and same indexed rows as the folds above, with no
+    /// source to read and no threat table to touch.
+    fn fold_ka_inplace(&self, acc: &mut [i16], ka: (&[u32], &[u32])) {
+        const ROWS_PER_FEATURE: usize = L1 / TILE;
+        let ka_rows = <[i16]>::as_chunks::<TILE>(&self.weights).0;
+        for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
+            let mut tile = *chunk;
+            for &index in ka.1 {
+                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
+                    // Wrapping is upstream's behaviour: the accumulator is `i16` and the
+                    // trainer keeps the sum in range, so a wrap here means a corrupt net
+                    // rather than a value to saturate.
+                    tile[j] = tile[j].wrapping_sub(w[j]);
+                }
+            }
+            for &index in ka.0 {
+                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_add(w[j]);
+                }
+            }
+            *chunk = tile;
+        }
+    }
+
+    /// `dst = a + parent - b`, then this move's threat rows, in ONE sweep.
+    ///
+    /// The king-move delta's combining step. Three accumulators are read and one written,
+    /// and the tile stays in registers across all four the way
+    /// [`FeatureTransformer::fold_into`]'s does — folding the three-way sum and then the
+    /// threat rows in separate passes would sweep 1024 entries twice for one result.
+    ///
+    /// Why the sum is the child's accumulator is argued at [`FeatureTransformer::hybrid`];
+    /// the biases cancel to exactly one copy, which is the property that makes this a sum of
+    /// accumulators rather than of differences.
+    fn fold_hybrid(
+        &self,
+        a: &[i16],
+        parent: &[i16],
+        b: &[i16],
+        dst: &mut [i16],
+        tp: (&[u32], &[u32]),
+    ) {
+        const ROWS_PER_FEATURE: usize = L1 / TILE;
+        let tp_rows = <[i8]>::as_chunks::<TILE>(&self.threat_and_pp_weights).0;
+        let a_tiles = a.as_chunks::<TILE>().0;
+        let p_tiles = parent.as_chunks::<TILE>().0;
+        let b_tiles = b.as_chunks::<TILE>().0;
+        for (t, chunk) in dst.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
+            let (av, pv, bv) = (&a_tiles[t], &p_tiles[t], &b_tiles[t]);
+            let mut tile = [0i16; TILE];
+            for j in 0..TILE {
+                tile[j] = av[j].wrapping_add(pv[j]).wrapping_sub(bv[j]);
+            }
+            for &index in tp.1 {
+                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_sub(i16::from(w[j]));
+                }
+            }
+            for &index in tp.0 {
+                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_add(i16::from(w[j]));
+                }
+            }
+            *chunk = tile;
+        }
+    }
+
     /// The PSQT head's half of [`FeatureTransformer::fold_into`].
     ///
     /// Separate because it is eight values against 1024 and shares nothing with the sweep
@@ -865,6 +974,198 @@ impl FeatureTransformer {
         }
     }
 
+    /// The nearest computed ancestor a king move can be taken as a DELTA from, and its king.
+    ///
+    /// The same walk as [`FeatureTransformer::rollforward_base`] with the king test removed,
+    /// because that test is exactly what makes that one give up. It stops at the first
+    /// computed ply and takes it whatever square its king was on — the plies BETWEEN do not
+    /// matter, since unlike a roll-forward this path materialises only `ply` and steps over
+    /// the rest.
+    ///
+    /// **Asking only about the immediate parent was worth a 17% hit rate**, 4,219 of 24,311.
+    /// A king moves once and every later ply then differs from every ancestor before the
+    /// move, so "the king moved on THIS hop" describes a small fraction of the plies that
+    /// cannot roll forward, while "the nearest computed ancestor is on another square"
+    /// describes nearly all of them.
+    ///
+    /// Two conditions remain:
+    ///
+    /// - the ancestor's king square must DIFFER, or `rollforward_base` would have taken it;
+    /// - **both squares must put the threat numbering in the same MIRROR HALF.** The
+    ///   ancestor's accumulator carries its threat rows indexed against ITS king square and
+    ///   this path keeps them, which is sound only while the two squares number them
+    ///   identically. That numbering is a function of the king's file half alone (see
+    ///   [`threat_mirror`]), so a king crossing the d/e boundary is the one king move that
+    ///   still has to refresh.
+    fn hybrid_base(
+        scratch: &EvalScratch,
+        p: Color,
+        ply: usize,
+        ksq: Square,
+    ) -> Option<(usize, Square)> {
+        let i = p.index();
+        let mut at = ply;
+        loop {
+            let slot = &scratch.plies[at];
+            let side = &slot.side[i];
+            if side.computed_for != EMPTY_KEY && side.computed_for == slot.reached {
+                let anc = side.king?;
+                if anc == ksq || threat_mirror(anc) != threat_mirror(ksq) {
+                    return None;
+                }
+                return Some((at, anc));
+            }
+            if at == 0 || !slot.recorded || ply - at >= HYBRID_HOP_CAP {
+                return None;
+            }
+            at -= 1;
+        }
+    }
+
+    /// Bring one king-piece cache entry to `board`, and return nothing but the side effect.
+    ///
+    /// The entry describes whatever board it was last brought to, so the update is a board
+    /// DIFF — the same shape the refresh cache uses, over the king-piece half alone. An
+    /// unseeded entry starts from the biases against an empty board, which makes the diff
+    /// the whole placement and one code path serve both.
+    fn ka_cache_to(
+        &self,
+        p: Color,
+        ksq: Square,
+        board: &[Piece; SQUARE_NB],
+        second: bool,
+        scratch: &mut EvalScratch,
+    ) {
+        let i = p.index();
+
+        // The base placement, read out before anything is borrowed mutably. An unseeded
+        // entry starts from the biases against an EMPTY board, so its diff is the whole
+        // placement and one code path serves the seeded and the from-scratch case.
+        let slot = &scratch.ka_cache[i][ksq.index()];
+        let seeded = slot.king.is_some();
+        let base_board = if seeded { slot.board } else { [Piece::NONE; SQUARE_NB] };
+
+        // `second` picks which of the two king-piece buffer pairs to fill, because the
+        // caller holds two of these diffs live at once. Split the borrow by FIELD: the cache
+        // is read while the buffers are written.
+        let (add_buf, sub_buf) = if second {
+            (&mut scratch.adds2[i], &mut scratch.subs2[i])
+        } else {
+            (&mut scratch.adds[i], &mut scratch.subs[i])
+        };
+        add_buf.clear();
+        sub_buf.clear();
+        halfka_delta(&base_board, board, p, ksq, add_buf, sub_buf);
+
+        let ka = if second {
+            (&scratch.adds2[i][..], &scratch.subs2[i][..])
+        } else {
+            (&scratch.adds[i][..], &scratch.subs[i][..])
+        };
+        let slot = &mut scratch.ka_cache[i][ksq.index()];
+        if !seeded {
+            slot.acc.clear();
+            slot.acc.extend_from_slice(&self.biases);
+            slot.psqt = [0; PSQT_BUCKETS];
+        }
+        slot.king = Some(ksq);
+        slot.board = *board;
+        self.fold_psqt(&mut slot.psqt, ka, (&[], &[]));
+        self.fold_ka_inplace(&mut slot.acc, ka);
+    }
+
+    /// Reach a king move as a DELTA rather than as a refresh.
+    ///
+    /// Upstream's `update_accumulator_hybrid`, and ../mcfish's `nnue_acc_apply_hybrid_delta`.
+    /// A king move re-indexes every king-piece feature this perspective sees, so the parent's
+    /// accumulator looks worthless — but only its KING-PIECE half is. Its threat half is
+    /// still exactly right, because [`FeatureTransformer::hybrid_source`] has already checked
+    /// that both king squares index the threat set identically. So the child is reachable by
+    /// swapping the king-piece half out and leaving the threat half in place:
+    ///
+    /// ```text
+    ///   a       = biases + HalfKA(this position, new king)        the new king's cache
+    ///   parent  = biases + HalfKA(parent, old king) + threats(parent)
+    ///   b       = biases + HalfKA(parent, old king)               the old king's cache
+    ///
+    ///   a + parent - b = biases + HalfKA(this position, new king) + threats(parent)
+    /// ```
+    ///
+    /// The biases cancel to exactly one copy, which is what makes the three-way sum an
+    /// accumulator rather than a difference. Applying this move's own threat records to it
+    /// turns `threats(parent)` into `threats(this position)`, and that is the child.
+    ///
+    /// **What it costs, against the refresh it replaces:** two king-piece cache updates and a
+    /// three-way sweep, all of them board diffs and fold rows — and NO feature set. The
+    /// refresh has to materialise the whole threat and pawn-pair set through `active_sets`
+    /// and diff it through `collect_diff`, and those two are the reason a king move was the
+    /// dearest thing this evaluation did.
+    fn hybrid(
+        &self,
+        pos: &Position,
+        p: Color,
+        ply: usize,
+        base: usize,
+        ksq: Square,
+        src_ksq: Square,
+        scratch: &mut EvalScratch,
+    ) {
+        let i = p.index();
+        if scratch.ka_cache[i].is_empty() {
+            scratch.ka_cache[i].resize(SQUARE_NB, Side::empty());
+        }
+
+        // `a`: the NEW king square's cache, brought to this position.
+        let live = *pos.board();
+        self.ka_cache_to(p, ksq, &live, false, scratch);
+        // `b`: the ANCESTOR's king square's cache, brought to the ancestor's position.
+        let base_board = scratch.plies[base].board;
+        self.ka_cache_to(p, src_ksq, &base_board, true, scratch);
+
+        // Every hop's threat and pawn-pair records, indexed against the NEW king square.
+        // Concatenated rather than netted for the reason `roll_forward` gives, and bounded
+        // by the same `HOP_CAP` the walk above stops at.
+        scratch.tp_adds[i].clear();
+        scratch.tp_subs[i].clear();
+        for hop in base + 1..=ply {
+            let (plies, tp_adds, tp_subs) =
+                (&scratch.plies, &mut scratch.tp_adds[i], &mut scratch.tp_subs[i]);
+            threat_delta(&plies[hop].dts, p, ksq, tp_adds, tp_subs);
+            pawn_pair_delta(&plies[hop].dpp, p, ksq, tp_adds, tp_subs);
+        }
+
+        // Split every borrow by FIELD. The two cache entries are read (they were written
+        // above and are only read now, so both can be shared), the parent ply is read, the
+        // destination ply is written, and the record lists are read.
+        let tp = (&scratch.tp_adds[i][..], &scratch.tp_subs[i][..]);
+        let a_psqt = scratch.ka_cache[i][ksq.index()].psqt;
+        let b_psqt = scratch.ka_cache[i][src_ksq.index()].psqt;
+        let parent_psqt = scratch.plies[base].side[i].psqt;
+        let mut psqt = [0i32; PSQT_BUCKETS];
+        for k in 0..PSQT_BUCKETS {
+            psqt[k] = a_psqt[k] + parent_psqt[k] - b_psqt[k];
+        }
+        self.fold_psqt(&mut psqt, (&[], &[]), tp);
+
+        let (ka_cache, plies) = (&scratch.ka_cache[i], &mut scratch.plies);
+        let (below, at) = plies.split_at_mut(ply);
+        let parent_acc = &below[base].side[i];
+        let PlySlot { side, board, reached, .. } = &mut at[0];
+        let dst = &mut side[i];
+        dst.acc.resize(L1, 0);
+        dst.psqt = psqt;
+        dst.king = Some(ksq);
+        dst.board = *board;
+        dst.computed_for = *reached;
+        self.fold_hybrid(
+            &ka_cache[ksq.index()].acc,
+            &parent_acc.acc,
+            &ka_cache[src_ksq.index()].acc,
+            &mut dst.acc,
+            tp,
+        );
+    }
+
     /// Rebuild this perspective's accumulator against the refresh cache.
     ///
     /// The ONLY path that materialises a feature set, and the only one that needs to: a
@@ -990,22 +1291,36 @@ impl FeatureTransformer {
             // every set twice when both refreshed, and built the other perspective's for
             // nothing when only one did.
             let bases = [0, 1].map(|i| Self::rollforward_base(scratch, Color::ALL[i], ply, ksq[i]));
+            // A perspective with no roll-forward base may still be reachable as a KING-MOVE
+            // delta, which costs no feature set either. Decide that before `wanted`, or the
+            // set would be built for a perspective that is not going to read it.
+            let hybrids = [0, 1].map(|i| match bases[i] {
+                Some(_) => None,
+                None => Self::hybrid_base(scratch, Color::ALL[i], ply, ksq[i]),
+            });
+
             // Only the perspectives that will actually REFRESH need a set. A king move
             // invalidates one side and leaves the other rolling forward, and a king move is
-            // what 99.3% of refreshes now are.
-            let wanted = [bases[0].is_none(), bases[1].is_none()];
+            // what 99.3% of refreshes were before the hybrid path took most of them.
+            let wanted = [
+                bases[0].is_none() && hybrids[0].is_none(),
+                bases[1].is_none() && hybrids[1].is_none(),
+            ];
             if wanted[0] || wanted[1] {
                 Self::active_sets(pos, wanted, &mut scratch.next_threats);
             }
 
             for p in Color::ALL {
                 let i = p.index();
-                match bases[i] {
+                match (bases[i], hybrids[i]) {
                     // Already this position, for this perspective: the other one had to be
                     // recomputed, this one did not.
-                    Some(base) if base == ply => {}
-                    Some(base) => self.roll_forward(pos, p, ply, base, ksq[i], scratch),
-                    None => self.refresh(pos, p, ply, ksq[i], scratch),
+                    (Some(base), _) if base == ply => {}
+                    (Some(base), _) => self.roll_forward(pos, p, ply, base, ksq[i], scratch),
+                    (None, Some((base, src))) => {
+                        self.hybrid(pos, p, ply, base, ksq[i], src, scratch);
+                    }
+                    (None, None) => self.refresh(pos, p, ply, ksq[i], scratch),
                 }
                 scratch.plies[ply].side[i].computed_for = key;
             }
