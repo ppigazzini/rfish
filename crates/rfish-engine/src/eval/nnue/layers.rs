@@ -160,23 +160,33 @@ impl AffineLayer {
         let mut acc = Simd::<i32, N>::from_slice(&self.biases);
         let blocks = self.sparse.as_chunks::<N>().0;
         let (scans, tail) = input[..self.input_dims].as_chunks::<SCAN>();
+        // The weight rows chunked the SAME way the inputs are, so the bitmask walk indexes a
+        // fixed-size array rather than a runtime-length slice.
+        //
+        // `blocks[c * SCAN + lane]` cost 66.9M on this one line and 19.1M on the index that
+        // fed it, against 9.6M for the multiply-accumulate it existed to reach: `blocks`
+        // takes its length from `self.sparse` at run time, so every visit paid a bounds test
+        // and a scaled address. Through `&[[i8; N]; SCAN]` the bound is a CONSTANT and
+        // `lane` came out of `trailing_zeros()` on a `u64`, so it cannot reach it -- LLVM
+        // drops the test, and the row address is one displacement off a base the loop
+        // already holds. Same shape, and the same reason, as the weight rows in
+        // `FeatureTransformer::fold_into`.
+        let (row_scans, row_tail) = blocks.as_chunks::<SCAN>();
 
-        for (c, chunk) in scans.iter().enumerate() {
+        for (chunk, rows) in scans.iter().zip(row_scans.iter()) {
             // One compare answers SCAN inputs, and the bitmask walk visits only the inputs
             // that are actually non-zero -- no branch is taken for the ones that are not.
             let mut nnz = Simd::<u8, SCAN>::from_array(*chunk).simd_ne(Simd::splat(0)).to_bitmask();
             while nnz != 0 {
                 let lane = nnz.trailing_zeros() as usize;
                 nnz &= nnz - 1;
-                let i = c * SCAN + lane;
-                let w: Simd<i8, N> = Simd::from_array(blocks[i]);
+                let w: Simd<i8, N> = Simd::from_array(rows[lane]);
                 acc += w.cast::<i32>() * Simd::splat(i32::from(chunk[lane]));
             }
         }
-        for (k, &x) in tail.iter().enumerate() {
+        for (&x, row) in tail.iter().zip(row_tail.iter()) {
             if x != 0 {
-                let i = scans.len() * SCAN + k;
-                let w: Simd<i8, N> = Simd::from_array(blocks[i]);
+                let w: Simd<i8, N> = Simd::from_array(*row);
                 acc += w.cast::<i32>() * Simd::splat(i32::from(x));
             }
         }
