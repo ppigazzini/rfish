@@ -583,6 +583,14 @@ fn patch_material_eval(path: &Path) -> Result<(), String> {
 /// The node count is unchanged either way, and `instruction_differential` re-asserts that: it
 /// refuses to quote a ratio across two different trees. That is what proves the scan is dead
 /// under a material evaluation rather than load-bearing.
+///
+/// **This patch is one HALF of a pair and is void without the other.** The clause above —
+/// "rfish recomputes threats inside its evaluation" — stopped being true the day the
+/// accumulator moved to a per-ply delta, and for a while this side was stubbed while rfish's
+/// own recording still ran on every node: the harness then charged rfish 380M the oracle
+/// never paid, and reported 1.291 for a spine that measures 0.999. `SearchWorker::do_move`
+/// carries the mirror under the same `eval-material` feature, and
+/// [`the_spine_stub_has_its_mirror`] fails if it is ever deleted.
 fn patch_out_threat_scan(path: &Path) -> Result<(), String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let signature = "void Position::update_piece_threats(";
@@ -1446,5 +1454,40 @@ fn split_compressed(rest: &str) -> (&str, Option<&str>) {
             (id, (!tail.is_empty()).then_some(tail))
         }
         None => (rest, Some(rest)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The oracle-side stub and the engine-side one are a PAIR, and half a pair is worse
+    /// than neither half: it produces a plausible ratio measured over two different amounts
+    /// of work. This asserts the engine still carries its half, because the failure is
+    /// silent — the harness reports a number either way, and the number it reported while
+    /// the pair was broken was 1.291 for a spine that measures 0.999.
+    #[test]
+    fn the_spine_stub_has_its_mirror() {
+        let path = workspace_root().join("crates/rfish-engine/src/search/worker.rs");
+        let src = std::fs::read_to_string(&path).expect("the search worker is in the tree");
+        let stubbed = src
+            .split("fn do_move(")
+            .nth(1)
+            .expect("SearchWorker::do_move is where the recording is made");
+        let body = &stubbed[..stubbed.find("\n    fn ").unwrap_or(stubbed.len())];
+        assert!(
+            body.contains(r#"#[cfg(feature = "eval-material")]"#),
+            "{}: SearchWorker::do_move no longer stubs its threat recording under \
+             `eval-material`. The spine differential stubs the ORACLE's half in \
+             `patch_out_threat_scan`; without this half it charges rfish for bookkeeping \
+             upstream is excused from and the ratio it prints is void.",
+            path.display()
+        );
+        assert!(
+            body.contains("do_move_recording(mv, gives_check, None)"),
+            "{}: the `eval-material` arm must still MAKE the move without recording, not \
+             skip the recording by skipping the move.",
+            path.display()
+        );
     }
 }

@@ -436,9 +436,23 @@ impl SearchWorker {
         // Record what the child's accumulator will roll forward from. Split the borrow by
         // FIELD: the record list belongs to the scratch and the pieces to the position.
         let ply = si - STACK_BASE + 1;
-        let dts = self.scratch.record_threats(ply);
-        let dpp = self.pos.do_move_recording(mv, gives_check, Some(dts));
-        self.scratch.record(ply, &self.pos, self.pos.raw_key(), dpp);
+        #[cfg(not(feature = "eval-material"))]
+        {
+            let dts = self.scratch.record_threats(ply);
+            let dpp = self.pos.do_move_recording(mv, gives_check, Some(dts));
+            self.scratch.record(ply, &self.pos, self.pos.raw_key(), dpp);
+        }
+        // MEASUREMENT HARNESS, the mirror of `oracle --spine`'s `patch_out_threat_scan`: the
+        // threat records and the accumulator slot are read only by the NNUE evaluation, which
+        // a material build never runs. Stubbing the oracle's half and not this one charges
+        // rfish for bookkeeping upstream is excused from, which is the asymmetry the spine
+        // ratio is there to avoid. The slot write STAYS on both sides -- upstream's stub
+        // leaves its own `DirtyPiece` in place.
+        #[cfg(feature = "eval-material")]
+        {
+            let dpp = self.pos.do_move_recording(mv, gives_check, None);
+            self.scratch.record(ply, &self.pos, self.pos.raw_key(), dpp);
+        }
         self.stack[si].current_move = mv;
         self.stack[si].continuation = cont_plane_index(in_check, capture, moved, mv.to());
         self.stack[si].continuation_correction = corr_plane_index(moved, mv.to());
