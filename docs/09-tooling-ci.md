@@ -238,6 +238,26 @@ from the start position is a rig fault, not a verdict. 4 of 4, in 7s.
 goes red in 59s. The mutant is bounded by the GATE rather than by the engine — `async-check`
 caps its own wait at 30s and reports a broken invariant instead of hanging the run.
 
+### Two framework checks with no subject here
+
+The sibling ports carry two more meta-gates. Neither is ported, and the reason is the same in
+both cases — **a gate with no subject is a gate that compares nothing**, which is the failure
+the section below refuses:
+
+- **`tools-smoke`** asserts that a tool no lane invokes still runs. ../mcfish had four such
+  tools in `tools/`, one of which had rotted exactly as predicted. rfish has none: every tool
+  here IS an `xtask` step, so `lane-coverage` covers the whole set and a broken one fails to
+  compile in the same CI lane that checks the engine.
+- **`counter-validate`** validates a `perf_event_open` counter against two workloads with
+  known bottlenecks, because an instrument is a hypothesis until something confirms it. rfish
+  measures with **callgrind**, which counts retired instructions deterministically rather than
+  sampling a hardware counter, so there is no counter to validate. What that leaves unchecked
+  is different and is stated where it belongs: `perf-budget` subtracts startup by measurement,
+  and the paired A/B reports its spread.
+
+If either acquires a subject — a shell tool in `tools/`, a sampling profiler in the loop —
+it acquires a gate at the same time.
+
 ### A gate that compared nothing must not pass
 
 `no mismatches` is true of an empty corpus, so every gate above whose verdict is a
