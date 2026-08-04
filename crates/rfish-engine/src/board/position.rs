@@ -247,8 +247,17 @@ pub struct Position {
     /// The squares the king and rook must find EMPTY for each right, minus the two movers
     /// themselves. Precomputed so the test is one AND against the occupancy.
     castling_path: [Bitboard; 16],
-    /// The CURRENT state, held directly the way upstream's `StateInfo*` is. Reading it is
-    /// a field offset, not a walk to the end of a chain.
+    /// The CURRENT state, held BY VALUE rather than behind the pointer upstream uses.
+    ///
+    /// Reading it is a field offset, and that is the whole reason for the shape: the archive
+    /// below therefore has to copy the parent in on `do_move` and back out on `undo_move`,
+    /// about 300 bytes a pair that upstream — which copies only the prefix into a fresh slot
+    /// and unmakes by moving a pointer — does not pay. Upstream's arena was measured and is
+    /// SLOWER here. Giving `st` the cheapest indirection there is, a `Box`, cost 5.60M
+    /// instructions at avx2 and 6.22M at sse41 on a `bench 16 1 8`, against a ceiling of
+    /// about 4M on the copies an arena would remove; an index into a slot array is dearer
+    /// still, because it loads a length and tests it where the `Box` only loads a pointer.
+    /// Do not re-derive this: price `st()` before redesigning what is behind it.
     st: StateInfo,
     /// Every state BEFORE the current one, oldest first. `prev.len()` is the current state's
     /// own index, so a backwards walk starts inside `prev` and never asks which half of the
