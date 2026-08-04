@@ -1,4 +1,4 @@
-name: CI
+name: rfish parity
 
 # Every lane below runs a gate that also exists locally, and nothing local is weaker than
 # what runs here: a contributor who sees a green `cargo xtask parity` should not be
@@ -32,7 +32,7 @@ env:
 
 jobs:
   lint:
-    name: lint
+    name: Format, clippy and the unsafe gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -67,11 +67,20 @@ jobs:
       - run: cargo xtask docs-lint
 
   test:
-    name: test (${{ matrix.os }})
+    # Named per ROW rather than per runner label, as ../zfish's native-os lane is: the label
+    # says which image GitHub boots, and the architecture it boots on is the thing a reader
+    # of a red lane needs -- `macos-latest` has been aarch64 since the Intel images retired.
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            name: Linux x86-64 test
+          - os: macos-latest
+            name: macOS aarch64 test
+          - os: windows-latest
+            name: Windows x86-64 test
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -102,7 +111,7 @@ jobs:
       - run: cargo xtask test
 
   gates:
-    name: gates
+    name: Linux x86-64 parity
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -161,7 +170,7 @@ jobs:
   # node counters are `Relaxed` by design, and an ordering that is too weak is a logic bug the
   # type system is happy with.
   tsan:
-    name: ThreadSanitizer race gate
+    name: Linux TSan race gate
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -189,7 +198,7 @@ jobs:
       - run: cargo xtask tsan
 
   valgrind:
-    name: valgrind memcheck
+    name: Linux valgrind memcheck
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -228,7 +237,7 @@ jobs:
   # pin does not already fix. See docs/09-tooling-ci.md.
 
   cross-build:
-    name: cross-build (${{ matrix.target }})
+    name: Cross-build (${{ matrix.target }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:

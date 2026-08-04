@@ -1,4 +1,4 @@
-name: upstream check
+name: rfish upstream check
 
 # Scheduled upstream-drift detection, which both sibling ports carry and this one did not.
 #
