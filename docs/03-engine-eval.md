@@ -972,7 +972,7 @@ exists to serve, and the per-ply stack that would fix that has been measured twi
 twice (see the falsified table above). Anyone taking this on should cost the bookkeeping
 first: the prize is the ~158M row, not the whole evaluation gap.
 
-### The search spine is a SEPARATE gap, and it is not closed
+### The search spine is a SEPARATE axis, and it is at parity
 
 Swap both sides to a material evaluation — `eval-material` here, and on the oracle the same
 formula plus a stubbed threat scan, both patched in by `cargo xtask oracle --spine` — and what
@@ -985,11 +985,21 @@ tier, same toolchain, same PGO, identical trees:
 | with the NNUE threat scan compiled out | 1,445,638,857 | 1,297,100,189 | 1.115 |
 | the same, after the two dispatch fixes below | 1,405,589,511 | 1,297,103,102 | 1.084 |
 | the same, re-measured at the `c5aef2bf1` pin | 1,421,995,718 | 1,301,230,180 | 1.093 |
-| **the same, at HEAD, with the harness stubbing the scan** | **1,424,139,177** | **1,301,234,036** | **1.094** |
+| the same, with only the ORACLE's half of the stub | 1,424,139,177 | 1,301,234,036 | 1.094 |
+| **the same, once BOTH halves stub** | **1,300,345,775** | **1,301,236,589** | **0.999** |
 
-The first three rows were measured at the previous pin, over 625,992 nodes; the last two are
-at `c5aef2bf1`, over 657,500. Rows from different pins are different workloads and only their
+The first three rows were measured at the previous pin, over 625,992 nodes; the rest are at
+`c5aef2bf1`, over 657,500. Rows from different pins are different workloads and only their
 RATIOS are comparable.
+
+**The last two rows are the same tree measured against a harness that was half built.** The
+row above the last is what the command printed while `patch_out_threat_scan` stubbed the
+oracle's threat scan and nothing stubbed rfish's — which was true from the moment the
+accumulator moved to a per-ply delta, seven hours after the stub landed. Re-running the
+command in that state at HEAD reads **1.291**, not 1.094, because rfish's own recording had
+grown to 380M by then. `SearchWorker::do_move` now carries the mirror under the same
+`eval-material` feature and `the_spine_stub_has_its_mirror` fails if it is deleted. **A stub
+on one side of a differential is not a measurement; it is a subsidy.**
 
 **The first row is the trap, and this page published its ancestor for a long time.** Upstream
 maintains the threat feature set inside `do_move`, writing a `DirtyThreats` that
@@ -1009,12 +1019,27 @@ instructions of the row above it, which is what establishes that the stub is the
 been missing rather than a new one. A number this page publishes has to come from a command,
 not from a step someone remembers taking.
 
-So the spine is **not** at parity, and the earlier "1.022x and ahead on every cache axis" was
-an artefact of that asymmetry plus a `g++` oracle. Paired time at depth 13 reads 1.31x, worse
-than the instruction ratio — the spine has an IPC deficit on top of its instruction deficit.
-`../mcfish` measures 1.074x on the same corrected harness against its own base, so roughly a
-tenth over upstream is what both ports currently pay for the spine, and neither port's
-constraint explains the other's number.
+So the spine IS at parity on the instruction axis, and the "not closed" this section carried
+for a fortnight was the missing half of the stub rather than the port. Paired time at depth 13
+read 1.31x when the instruction ratio read 1.094, and that reading has not been re-taken
+against the corrected pair — the spine may still have an IPC deficit, but no time number on
+this page currently describes the same workload as the table above it.
+
+What the corrected harness does show is that the deficit moved rather than vanished. Measured
+the same way, all three engines at avx2 with PGO over the identical 657,500-node tree, split
+into the spine and the threat recording that sits on `do_move`:
+
+| | spine | recording | both |
+|---|---:|---:|---:|
+| `../mcfish` | 1,200,951,357 | 248,777,576 | 1,449,728,933 |
+| upstream | 1,301,236,589 | 263,435,937 | 1,564,672,526 |
+| rfish | 1,300,345,775 | **380,280,100** | 1,680,625,875 |
+| rfish ÷ upstream | **0.999** | **1.443** | 1.074 |
+| rfish ÷ `../mcfish` | 1.083 | 1.528 | 1.159 |
+
+**Both remaining gaps are real and neither is the spine's pruning or its tables.** The
+recording is priced in the section above it; the 1.083 against `../mcfish` is the move picker,
+whose zone is 29.0% of rfish's spine against 16.6% of `../mcfish`'s.
 
 ### What the counters say after the dispatch fixes
 
