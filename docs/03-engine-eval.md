@@ -986,7 +986,8 @@ tier, same toolchain, same PGO, identical trees:
 | the same, after the two dispatch fixes below | 1,405,589,511 | 1,297,103,102 | 1.084 |
 | the same, re-measured at the `c5aef2bf1` pin | 1,421,995,718 | 1,301,230,180 | 1.093 |
 | the same, with only the ORACLE's half of the stub | 1,424,139,177 | 1,301,234,036 | 1.094 |
-| **the same, once BOTH halves stub** | **1,300,345,775** | **1,301,236,589** | **0.999** |
+| the same, once BOTH halves stub | 1,300,345,775 | 1,301,236,589 | 0.999 |
+| **the same, after the picker outlining** | **1,294,519,943** | **1,301,236,589** | **0.995** |
 
 The first three rows were measured at the previous pin, over 625,992 nodes; the rest are at
 `c5aef2bf1`, over 657,500. Rows from different pins are different workloads and only their
@@ -1029,13 +1030,17 @@ What the corrected harness does show is that the deficit moved rather than vanis
 the same way, all three engines at avx2 with PGO over the identical 657,500-node tree, split
 into the spine and the threat recording that sits on `do_move`:
 
-| | spine | recording | both |
-|---|---:|---:|---:|
-| `../mcfish` | 1,200,951,357 | 248,777,576 | 1,449,728,933 |
-| upstream | 1,301,236,589 | 263,435,937 | 1,564,672,526 |
-| rfish | 1,300,345,775 | **380,280,100** | 1,680,625,875 |
-| rfish ÷ upstream | **0.999** | **1.443** | 1.074 |
-| rfish ÷ `../mcfish` | 1.083 | 1.528 | 1.159 |
+| | spine | recording |
+|---|---:|---:|
+| `../mcfish` | 1,200,951,357 | 248,777,576 |
+| upstream | 1,301,236,589 | 263,435,937 |
+| rfish | **1,294,519,943** | **380,280,100** |
+| rfish ÷ upstream | **0.995** | **1.443** |
+| rfish ÷ `../mcfish` | 1.078 | 1.528 |
+
+The recording column was taken before the picker outlining and is carried rather than
+re-taken: that change is in `movepick`, which is not on the `do_move` recording path. The two
+columns are separate measurements and adding them is arithmetic, not a reading.
 
 **Both remaining gaps are real and neither is the spine's pruning or its tables.** The
 recording is priced in the section above it; the 1.083 against `../mcfish` is the move picker,
