@@ -89,6 +89,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "fuzz" => fuzz::fuzz(args),
         "lane-coverage" => meta::lane_coverage(),
         "fixture-coverage" => meta::fixture_coverage(),
+        "negative-control" => meta::negative_control(args),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
     }
@@ -150,6 +151,12 @@ cargo xtask <step> — the rfish build driver
                                        count moves with the toolchain as well as the code
     perf-budget-update [--tier T]       re-record this tier's row. DANGEROUS on a red gate,
                                        exactly as signature-update is
+
+  The gates on the gates — LOCAL: they mutate the tree, so they cannot share a checkout
+    negative-control [GATE...]
+                          break the engine on purpose and require each named gate to go
+                          RED. A gate is done when it has been SEEN TO FAIL, not when it
+                          passes
 
   Scheduled — a wall-clock budget, so NOT part of parity
     fuzz [SECONDS]        random UCI text at the shell, random positions at the search
