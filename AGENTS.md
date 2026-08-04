@@ -141,8 +141,9 @@ audit for — the compiler is the audit.
 **A behaviour-changing edit is not done until a gate says so.**
 
 ```sh
-cargo xtask parity           # fmt, clippy, unsafe-lint, docs-lint, test, perft, golden,
-                             # signature
+cargo xtask parity           # fmt, clippy, unsafe-lint, docs-lint, lane-coverage,
+                             # fixture-coverage, async-check, test, perft, golden,
+                             # golden-audit, nnue-check, tb, signature
 cargo xtask signature        # just the anchor
 cargo xtask test             # unit and property suite, under the gate profile
 ```
@@ -154,17 +155,39 @@ proves nothing — never report it as a pass.
 reads 0 from `tail` while the gate is red; this has laundered red gates in both sibling
 ports. Run it unpiped, or redirect to a log and test `$?`.
 
+### Editing a GATE is the case where being wrong is silent
+
+A broken engine reddens a gate. A broken gate reports success — which is what everyone was
+hoping for, so nobody looks. These three ask the questions a green `parity` cannot:
+
+```sh
+cargo xtask negative-control  # break the engine on purpose; each named gate must go RED
+cargo xtask lane-coverage     # does anything actually RUN this check?
+cargo xtask sync-status       # is ../Stockfish still AT the pin every oracle assumes?
+```
+
+**A gate is done when it has been SEEN TO FAIL, by mutation rather than by argument** — not
+when it passes. And every allowance a gate grants (a skip, an excuse, an exemption) needs an
+owner that EXPIRES it: `lane-coverage` reports an excuse for a step that plainly runs, a unit
+test refuses an excuse for a step that no longer exists, and `docs-lint`'s internal-area sweep
+asserts each of its two exempt files still contains what it is exempt for.
+
+Each of these found something on its first run that reading it had not — `arch-determinism`
+was in no lane at all, six tracked files named the gitignored working area — and in two cases
+the defect was in the gate BEING WRITTEN rather than in the code it was aimed at.
+
 ## Traps that cost real time
 
 | trap | where |
 |---|---|
-| `signature-update` / `golden-update` on a **red** gate launders a bug into the anchor. Fix the code, then re-derive. | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| `signature-update` on a **red** gate launders a bug into the anchor. Fix the code, then re-derive. `golden-update` now REFUSES, because it drives rfish and writes a photograph of rfish; `golden-audit --write` drives the oracle. Do NOT reach for its override to get past a red gate — that is the one way around the refusal, and it deletes the finding. | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| A `.uci` fixture is piped **RAW**, so a `#` line is a COMMAND, not a comment. `fixture-coverage` refuses one; the `.fens` corpora are read by a gate rather than piped and do carry headers. | `tools/fixture_properties.tsv` |
 | `tools/perft.table` is **not** a golden. Those counts are facts about chess; a mismatch is always a movegen bug. | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | The engine must run from `resources/` — it looks for its net relative to the working directory, and a run from the repo root silently finds none, falls back to the classical scaffolding, and reports a node count that looks entirely plausible. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
 | A measurement without a net is a measurement of a different engine. Check for the `info string NNUE evaluation using …` line before believing any node count. | [docs/03-engine-eval.md](docs/03-engine-eval.md) |
 | Release builds have `overflow-checks = false`; every intended wrap says `wrapping_*` in the source. A bare `+` that wraps in release and traps in `gate` is a bug the gate profile is there to catch. | [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) |
 | The default build sets no `-C target-cpu`. `cargo xtask build --arch <tier>` does, and it changes what the NNUE loops vectorise to — so a perf number without its tier is not a number. Every tier is ENUMERATED and `native` only selects one of them; a number filed under host-specific codegen is reproducible nowhere. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
-| `signature` builds at the DEFAULT arch, so it tests the portable arm and cannot see an ISA-gated divergence — and the NNUE kernels are `std::simd`, whose lowering the tier decides. `cargo xtask arch-determinism` is the gate that can; run it after touching a kernel. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
+| `signature` builds at the DEFAULT arch, so it tests the portable arm and cannot see an ISA-gated divergence — and the NNUE kernels are `std::simd`, whose lowering the tier decides. `cargo xtask arch-determinism` is the gate that can. It blocks in CI now, but run it locally after touching a kernel rather than finding out at the merge gate. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
 | A cost regression is invisible to every gate in `parity`: the anchor pins the NODE count, not what a node costs. `cargo xtask perf-budget` holds the instruction count to a recorded row. | [docs/09-tooling-ci.md](docs/09-tooling-ci.md) |
 | **`perf-budget` SUBTRACTS startup, so it cannot see the net load or the magic tables.** Those were 1,281M instructions against a 1,524M search — nearly half a `bench` before it searches a node — and 17% of it was defect. Measure that axis with the `quit`-only profile the budget subtracts, and `/usr/bin/time -f "%M"` for peak RSS. A gate that subtracts a cost is a gate that hides it. | [docs/03-engine-eval.md](docs/03-engine-eval.md) |
 | "Improving" on upstream. A cleaner formulation that moves a rounding boundary moves the node count. | [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) |
