@@ -35,7 +35,8 @@ Listed in the order `parity` runs them. See [CONTRIBUTING.md](../CONTRIBUTING.md
 each asserts.
 
 `fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `lane-coverage` → `fixture-coverage` →
-`test` → `perft` → `golden` → `golden-audit` → `nnue-check` → `tb` → `signature`
+`async-check` → `test` → `perft` → `golden` → `golden-audit` → `nnue-check` → `tb` →
+`signature`
 
 Cheap and structural first, so a formatting mistake is reported in seconds rather than
 after a two-minute bench. `fmt-fix` is the same gate with the fix applied, and is not one
@@ -207,6 +208,35 @@ exactly that.
 **What it cannot do** is prove that presenting a property exercises the owner's branch. That
 needs coverage data this tree does not collect, and a green run says only that the fixtures
 still present what the table claims.
+
+### `async-check`
+
+**No byte-golden can reach the interrupted-search path.** Every case in `tools/cases/` is
+driven by writing all its lines and closing the pipe, so a `stop` there is read after the
+search has already ended — and a stop that lands inside a *running* search ends it wherever
+the clock got to, which moves the final `info` line's node count run to run. There is nothing
+to pin.
+
+So this gate asserts **invariants** rather than values, which needs no reference at all. They
+are not rfish-authored expectations of upstream's output; they are properties of the UCI
+contract:
+
+1. a `stop` inside a running search yields exactly one `bestmove`, it is legal, and the
+   engine still answers `isready`;
+2. a bare `stop` with no search running answers nothing and stays up — an engine that replied
+   here would be inventing a move;
+3. `ponderhit` converts a pondering search and it still ends with exactly one `bestmove`;
+4. `quit` during a running search exits. **The timeout is the assertion**: before `go` ran off
+   the UCI thread this would have hung, and a hang in CI reads as an infrastructure flake
+   rather than as the engine ignoring `quit`.
+
+The legal move list comes from the engine's own `go perft 1` rather than being written down
+here, so the gate carries no expectation of its own — and reading anything but 20 root moves
+from the start position is a rig fault, not a verdict. 4 of 4, in 7s.
+
+`negative-control` covers it: with `quit` no longer stopping an unbounded search, the gate
+goes red in 59s. The mutant is bounded by the GATE rather than by the engine — `async-check`
+caps its own wait at 30s and reports a broken invariant instead of hanging the run.
 
 ### A gate that compared nothing must not pass
 

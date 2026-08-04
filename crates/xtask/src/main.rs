@@ -91,6 +91,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "fixture-coverage" => meta::fixture_coverage(),
         "negative-control" => meta::negative_control(args),
         "sync-status" => meta::sync_status(),
+        "async-check" => meta::async_check(),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
     }
@@ -135,6 +136,9 @@ cargo xtask <step> — the rfish build driver
                           arm and cannot see an ISA-gated divergence
     nnue-check            the network's output equals upstream's, position by position
     tb                    Syzygy discovery, and that an empty path changes nothing
+    async-check           stop, ponderhit and quit on a RUNNING search. INVARIANTS, not
+                          values: no golden can reach this path, because an interrupted
+                          search ends wherever the clock got to
     sync-status           the golden checkout at ../Stockfish is AT tools/upstream/
                           UPSTREAM_BASE -- BEHIND the pin is red, because every oracle
                           built from it would then answer from source already ported past
