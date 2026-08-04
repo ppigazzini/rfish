@@ -1259,3 +1259,33 @@ cd resources && echo quit | valgrind --tool=callgrind --callgrind-out-file=/dev/
 Two blocks own it, and both turned out to be §18.1's defect: the LEB128 decode and the magic
 search. **A gate that subtracts a cost is a gate that hides it.** State what each instrument
 excludes before trusting a zero from it.
+
+### 18.12 Outline what runs once per STAGE out of what runs once per MOVE
+
+`MovePicker::next_move` is called **1,268,056 times** on a `bench 16 1 8`. The three `*Init`
+arms of its stage machine run **once per picker**. Inlined into it, the generator, the scoring
+loop and both insertion sorts sat inside the body every one of those calls entered, and the
+bill was frame size rather than work: a 30-instruction prologue, a 21-instruction dispatch and
+an epilogue, on a call that usually only advances a cursor and returns.
+
+`#[inline(never)]` on the three init bodies:
+
+| | before | after | delta |
+|---|---:|---:|---:|
+| avx2 | 1,523,668,306 | 1,511,299,226 | **−12.37M, −0.81%** |
+| sse41 | 2,435,849,501 | 2,423,676,659 | **−12.17M, −0.50%** |
+
+Bit-exact — this is code motion, not a reformulation — and `arch-determinism` benched the
+anchor on all five tiers.
+
+**The shape: a cold body inlined into a hot caller is not free even when it never runs.** It
+costs the caller its register allocation and its frame on every call, and neither shows up as
+a line in the profile — the cost lands on the caller's prologue, which reads as overhead
+nobody wrote. Look for it wherever a state machine's setup arm and its steady-state arm live
+in one function.
+
+**And the counter-rule from the same session: `#[inline(never)]` is a claim about CALL
+FREQUENCY, not about size.** [§18.2](#182-boxtn-is-not-automatically-better-than-vect) is the
+mirror image, where forcing a shape on a loop that was already register-resident cost 6.1M.
+The test is whether the outlined body runs on a different schedule from its caller, and here
+it is once per stage against once per move.

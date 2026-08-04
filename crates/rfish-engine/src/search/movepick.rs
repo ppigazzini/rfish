@@ -324,6 +324,62 @@ impl MovePicker {
         self.skip_quiets = true;
     }
 
+    /// Generate, score and sort the captures, and enter the stage that yields them.
+    ///
+    /// **Outlined deliberately, and the `inline(never)` is the point of the function.** This
+    /// runs ONCE per picker; [`MovePicker::next_move`] runs once per move yielded, 1,268,056
+    /// times on a `bench 16 1 8`. Inlined, the generator, the scoring loop and the whole
+    /// insertion sort sit inside `next_move`'s body, and every one of those calls pays for
+    /// them in frame size: the prologue alone measured 30 instructions a call. Hoisting the
+    /// once-per-stage work out leaves the per-move path a short walk over a cursor.
+    ///
+    /// The three `*Init` stages share this body because they differ only in which stage they
+    /// hand over to, which is upstream's structure (`movepick.cpp`'s fallthrough) and not a
+    /// merge done here.
+    #[inline(never)]
+    fn init_captures(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
+        Self::generate(pos, GenType::Captures, buf);
+        Self::score_captures(pos, h, buf);
+        self.cur = 0;
+        self.end_bad_captures = 0;
+        self.end_cur = buf.len();
+        self.end_captures = buf.len();
+        self.end_generated = buf.len();
+        full_insertion_sort(&mut buf[..self.end_cur]);
+        self.stage = match self.stage {
+            Stage::CaptureInit => Stage::GoodCapture,
+            Stage::ProbCutInit => Stage::ProbCut,
+            _ => Stage::QCapture,
+        };
+    }
+
+    /// Append, score and partially sort the quiet moves. Outlined for the reason above.
+    ///
+    /// The caller keeps the `skip_quiets` test and the stage handover: this must not run at
+    /// all when quiets are skipped, and a call that returned immediately would still cost the
+    /// call.
+    #[inline(never)]
+    fn init_quiets(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
+        Self::generate_append(pos, GenType::Quiets, buf);
+        self.score_quiets(pos, h, buf);
+        self.end_cur = buf.len();
+        self.end_generated = buf.len();
+        let from = self.cur;
+        let to = self.end_cur;
+        partial_insertion_sort(&mut buf[from..to], -3560i32.saturating_mul(self.depth));
+    }
+
+    /// Generate, score and sort the evasions. Outlined for the reason above.
+    #[inline(never)]
+    fn init_evasions(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
+        Self::generate(pos, GenType::Evasions, buf);
+        self.score_evasions(pos, h, buf);
+        self.cur = 0;
+        self.end_cur = buf.len();
+        self.end_generated = buf.len();
+        full_insertion_sort(&mut buf[..self.end_cur]);
+    }
+
     /// The next move, or [`Move::NONE`] when the sequence is exhausted.
     pub fn next_move(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) -> Move {
         loop {
@@ -339,19 +395,7 @@ impl MovePicker {
                 }
 
                 Stage::CaptureInit | Stage::ProbCutInit | Stage::QCaptureInit => {
-                    Self::generate(pos, GenType::Captures, buf);
-                    Self::score_captures(pos, h, buf);
-                    self.cur = 0;
-                    self.end_bad_captures = 0;
-                    self.end_cur = buf.len();
-                    self.end_captures = buf.len();
-                    self.end_generated = buf.len();
-                    full_insertion_sort(&mut buf[..self.end_cur]);
-                    self.stage = match self.stage {
-                        Stage::CaptureInit => Stage::GoodCapture,
-                        Stage::ProbCutInit => Stage::ProbCut,
-                        _ => Stage::QCapture,
-                    };
+                    self.init_captures(pos, h, buf);
                 }
 
                 Stage::GoodCapture => {
@@ -378,16 +422,7 @@ impl MovePicker {
 
                 Stage::QuietInit => {
                     if !self.skip_quiets {
-                        Self::generate_append(pos, GenType::Quiets, buf);
-                        self.score_quiets(pos, h, buf);
-                        self.end_cur = buf.len();
-                        self.end_generated = buf.len();
-                        let from = self.cur;
-                        let to = self.end_cur;
-                        partial_insertion_sort(
-                            &mut buf[from..to],
-                            -3560i32.saturating_mul(self.depth),
-                        );
+                        self.init_quiets(pos, h, buf);
                     }
                     self.stage = Stage::GoodQuiet;
                 }
@@ -426,12 +461,7 @@ impl MovePicker {
                 }
 
                 Stage::EvasionInit => {
-                    Self::generate(pos, GenType::Evasions, buf);
-                    self.score_evasions(pos, h, buf);
-                    self.cur = 0;
-                    self.end_cur = buf.len();
-                    self.end_generated = buf.len();
-                    full_insertion_sort(&mut buf[..self.end_cur]);
+                    self.init_evasions(pos, h, buf);
                     self.stage = Stage::Evasion;
                 }
 

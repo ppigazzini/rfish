@@ -267,6 +267,18 @@ blind spots) before proposing any optimisation. Four rules that outrank intuitio
   elements matter. [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) sections 14, 15 and
   17 record thirteen such shapes, what each was worth, and the ten of the same shape that
   measured WORSE — read them before hand-optimising anything, in either zone.
+- **A cold body inlined into a hot caller costs that caller its frame on every call, even
+  though it never runs.** `MovePicker::next_move` is entered 1,268,056 times a bench and its
+  three stage-setup arms run once per picker; `#[inline(never)]` on those three was worth
+  −12.37M at avx2 and −12.17M at sse41, bit-exact. The cost never appears as a line — it lands
+  on the caller's prologue, which reads as overhead nobody wrote. The test is whether the body
+  runs on a DIFFERENT SCHEDULE from its caller, not whether it is large.
+- **A candidate sized from a `--profile profiling` build is a ceiling, not an estimate.** That
+  profile gives up inlining to keep symbols, so a `Vec::push` the release build hoists out of a
+  loop entirely still shows there, line by line, in exactly the shape the defect table tells
+  you to grep for. One such candidate was sized at 112M and measured a wash. Confirm against
+  `perf-budget`, on BOTH tiers, before spending a session — a change that improves one tier and
+  regresses the other moved code layout rather than removing work.
 - **In a kernel that already vectorises, attack the ADDRESSING before the arithmetic.** The
   NNUE folds emit upstream's own instruction shape, and an explicit `std::simd` rewrite of one
   cost +177M — while indexing fixed-width weight rows instead of range-slicing and zipping
