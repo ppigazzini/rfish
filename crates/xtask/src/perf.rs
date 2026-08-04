@@ -146,11 +146,36 @@ pub(crate) fn tier_names() -> Vec<&'static str> {
     TIERS.iter().map(|t| t.name).chain(std::iter::once("native")).collect()
 }
 
-/// Every ENUMERATED tier as `(name, target-cpu)`, lowest first — `native` is not one.
+/// An enumerated tier, and what the CURRENT host lacks before it could execute one.
+pub(crate) struct TierRun {
+    /// What this repository calls the tier.
+    pub(crate) name: &'static str,
+    /// The `-C target-cpu` rustc takes.
+    pub(crate) rustc: &'static str,
+    /// The `target_feature`s the tier needs and this host does not report.
+    ///
+    /// Empty when the host can execute a binary built at the tier; otherwise every name in
+    /// it is a reason the binary would SIGILL on the first kernel that reaches for one.
+    pub(crate) missing: Vec<&'static str>,
+}
+
+/// Every ENUMERATED tier, lowest first — `native` is not one — against this host.
 ///
-/// For a caller that has to build each of them, which is the arch-determinism gate.
-pub(crate) fn enumerated_tiers() -> Vec<(&'static str, &'static str)> {
-    TIERS.iter().map(|t| (t.name, t.rustc)).collect()
+/// For a caller that has to build each of them, which is the arch-determinism gate. That
+/// gate also has to RUN each of them, and building a tier says nothing about whether this
+/// box can execute it: `-C target-cpu=skylake-avx512` emits AVX-512 on any host, so driving
+/// one on a host without AVX-512 is a SIGILL rather than a verdict. The answer comes from
+/// the same feature list [`resolve_tier`] reads for `native`, so the two cannot drift apart.
+pub(crate) fn enumerated_tiers() -> Result<Vec<TierRun>, String> {
+    let features = host_features()?;
+    Ok(TIERS
+        .iter()
+        .map(|t| TierRun {
+            name: t.name,
+            rustc: t.rustc,
+            missing: t.needs.iter().copied().filter(|f| !features.iter().any(|h| h == f)).collect(),
+        })
+        .collect())
 }
 
 /// Resolve `--tier`, defaulting to the matched-ISA tier both ports have always quoted.

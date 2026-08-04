@@ -203,8 +203,13 @@ jobs:
   # only lane that can see one, and both sibling ports run their equivalent in the blocking
   # lane for exactly that reason. Measured at 90s locally over all five tiers, which is what
   # makes it affordable to block on.
+  #
+  # It benches only the tiers THIS RUNNER can execute, and the hosted fleet is mixed: an AMD
+  # runner has no AVX-512, so the three 512-bit tiers build there and cannot be driven. That
+  # is what `--host-tiers` accepts, and the gate names every tier it left unbenched rather
+  # than counting it checked. Full five-tier coverage is a LOCAL run on an AVX-512 box.
   arch-determinism:
-    name: Every enumerated tier benches the anchor
+    name: Every tier builds, and every tier the runner can execute benches the anchor
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -227,9 +232,10 @@ jobs:
           path: resources/*.nnue
           key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
       - run: cargo xtask net
-      # The tiers are ENUMERATED and each is built here; the binaries only have to BENCH on
-      # this runner, not run natively, so no host feature is assumed.
-      - run: cargo xtask arch-determinism
+      # A BENCH is a native run: a binary built at `-C target-cpu=skylake-avx512` raises
+      # SIGILL on a runner without AVX-512, which is a fact about the fleet rather than about
+      # the anchor. This lane's first run died exactly there.
+      - run: cargo xtask arch-determinism --host-tiers
 
   valgrind:
     name: Linux valgrind memcheck

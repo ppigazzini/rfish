@@ -175,6 +175,11 @@ touching an NNUE kernel and the only one that can see an ISA-gated divergence, s
 `rfish_parity.yml`, where both siblings run their equivalent — 90s locally over all five
 tiers is what makes that affordable.
 
+Giving a local gate its first lane is where it meets a host it had never met. This one had
+only ever run on AVX-512 boxes, so nobody had asked whether a runner could EXECUTE the tier
+it builds; the first CI run drew an AMD runner and died on SIGILL at the third tier. See
+[`arch-determinism`](#arch-determinism) for what the gate now derives from the host.
+
 The excused list is the hole, so it expires in its own direction: a step excused that DOES
 run somewhere is reported as a stale excuse, and a unit test refuses an excuse naming a step
 the dispatch table no longer has. Two extraction bugs the sibling ports paid for are held
@@ -337,8 +342,28 @@ how each lane operation lowers — a saturation or a narrowing that behaves diff
 bits produces a different tree with every other gate green. Run it after touching a kernel,
 and before adding a tier: that is what makes a new rung a checked change.
 
-Local rather than in `parity` because it is five release builds. All five reproduce the
-anchor today, including the three AVX-512 rungs.
+Outside `parity` because it is five release builds, and a blocking job of its own in
+`rfish_parity.yml`. All five reproduce the anchor today, including the three AVX-512 rungs.
+
+**A tier BUILDS anywhere and BENCHES only where the host can execute it.** A build at
+`-C target-cpu=skylake-avx512` emits AVX-512 whatever the machine doing the building is, so
+driving that binary on a box without AVX-512 raises SIGILL before the first node — a fact
+about the host, not a verdict on the anchor. The gate therefore derives its executable set
+from the host's own `target_feature` list, the same one `native` resolves through, builds
+every tier regardless (a tier that stops compiling is still caught), and NAMES the tiers it
+left unbenched:
+
+```
+  avx512 (skylake-avx512): BUILT, NOT benched — this host lacks avx512f, avx512bw, …
+```
+
+A host short of the top tier reports SKIPPED and exits 2, because the anchor is unasserted
+for the tiers it could not drive. `--host-tiers` accepts that reduced coverage and passes,
+still printing the hole. **The hosted CI fleet is mixed** — an AMD runner has no AVX-512 —
+so the lane passes the flag, and the lane's first run had already died at the third tier
+without it. The flag expires by itself: a runner that gains AVX-512 benches all five and it
+stops excusing anything. Full five-tier coverage is a LOCAL run on an AVX-512 box, which is
+the run to make after touching a kernel.
 
 ### `perf-budget`
 
@@ -429,6 +454,12 @@ DEFAULT arch, so it tests the portable arm and nothing else, while rfish's NNUE 
 `std::simd` whose lowering the tier decides. `cargo xtask arch-determinism` builds every
 enumerated tier and holds each to the anchor — that is what makes adding a tier a checked
 change rather than a hopeful one. All five reproduce the anchor today.
+
+**Add the rung on a host that can EXECUTE it.** The gate benches only the tiers the host
+can run, and passes in CI over the reduced set the runner allows, so a new AVX-512 rung
+added and checked on a runner without AVX-512 is a rung nothing benched. The gate names
+what it left unbenched for exactly this reason — read that line, do not read the exit code
+alone.
 
 ## Resyncing to a newer upstream
 

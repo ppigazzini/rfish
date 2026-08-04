@@ -69,7 +69,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "signature-update" => gates::signature(true),
         "perft" => gates::perft(),
         "tsan" => gates::tsan(),
-        "arch-determinism" => gates::arch_determinism(),
+        "arch-determinism" => gates::arch_determinism(args),
         "golden" => gates::golden(false),
         "golden-audit" => gates::golden_audit(args),
         "golden-update" => gates::golden_update(),
@@ -131,9 +131,13 @@ cargo xtask <step> — the rfish build driver
                           fixture that presents it, and every fixture is classified
     unsafe-lint           no `unsafe` and no allow(unsafe_code) anywhere
     tsan                  a 4-thread search under ThreadSanitizer, Linux only
-    arch-determinism      every enumerated tier benches the anchor -- the gate that makes a
+    arch-determinism [--host-tiers]
+                          every enumerated tier benches the anchor -- the gate that makes a
                           tier safe to add, since `signature` only ever builds the portable
-                          arm and cannot see an ISA-gated divergence
+                          arm and cannot see an ISA-gated divergence. Every tier BUILDS on
+                          any host; a tier only BENCHES on a host whose ISA can execute it,
+                          so a host below the top tier skips unless --host-tiers accepts a
+                          run that builds those tiers and benches the rest
     nnue-check            the network's output equals upstream's, position by position
     tb                    Syzygy discovery, and that an empty path changes nothing
     async-check           stop, ponderhit and quit on a RUNNING search. INVARIANTS, not
