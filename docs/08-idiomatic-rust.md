@@ -1289,3 +1289,36 @@ FREQUENCY, not about size.** [§18.2](#182-boxtn-is-not-automatically-better-tha
 mirror image, where forcing a shape on a loop that was already register-resident cost 6.1M.
 The test is whether the outlined body runs on a different schedule from its caller, and here
 it is once per stage against once per move.
+
+### 18.13 Software prefetch is out of reach, and a discarded load is not a substitute
+
+Upstream issues `prefetch(tt.first_entry(posKey))` inside `do_move`, so the child's cluster is
+resident by the time it probes (`search.cpp:642`); `../mcfish` restored the same placement as a
+fidelity fix. **rfish cannot emit that instruction.** Every `std::arch` intrinsic is an
+`unsafe fn`, and so is every crate that wraps one — the same wall as `mmap` in
+[§18.11](#1811-startup-is-an-axis-the-instruction-budget-subtracts).
+
+The obvious surrogate is safe: read one word of the cluster and throw it away through
+`black_box`. A `Cluster` is 32 bytes at `repr(align(32))`, so it never straddles a line and one
+word brings the whole thing in. It was built, wired at upstream's own point in the make, and
+measured. It is bit-exact: `cargo xtask signature` passed with it in.
+
+| axis | reading |
+|---|---|
+| instructions, avx2 | 1,511,299,226 → 1,512,637,391, **+1.34M** |
+| instructions, sse41 | 2,423,676,659 → 2,425,270,734, **+1.59M** |
+| paired clock, `bench 256 1 13`, 15 warm interleaved rounds | median **0.9992**, spread 0.9171..1.0397, 9 of 15 favouring |
+
+**A certain cost and no measurable return, so it is not in the tree.**
+
+Two things to carry forward rather than re-derive:
+
+- **A load is not a prefetch, and the difference is retirement.** A `prefetcht0` retires
+  immediately; a load cannot retire until its data arrives, so on the DRAM miss this was meant
+  to hide it can block the reorder buffer instead of hiding anything. The construct that looks
+  equivalent in the source is the opposite of equivalent in the pipeline.
+- **The first run of a paired A/B on this box is worth nothing, and so are the next two.** The
+  same pair read median 0.9700 with the spread 0.7010..2.4915 before a warm-up, and 0.9992 with
+  a tenth of the spread after — with the absolute times drifting 2868 ms to 2356 ms ACROSS the
+  warm run as the machine settled. A three-per-cent "win" is what a warming box looks like.
+  Discard until the absolutes stop falling, then alternate.
