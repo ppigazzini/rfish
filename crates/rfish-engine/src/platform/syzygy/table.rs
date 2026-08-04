@@ -107,6 +107,10 @@ pub struct TbTable {
     pub has_unique_pieces: bool,
     /// Pawns of the leading colour, then of the other.
     pub pawn_count: [u8; 2],
+    /// The leading colour, from the MATERIAL rather than from a byte of the file — the same
+    /// reference `pawn_count` is ordered by. A pawnful file's piece list has to begin with
+    /// this colour's pawn, and [`TbTable::parse`] is where that claim is checked.
+    pub lead_color: Color,
     /// Where the file lives.
     pub path: std::path::PathBuf,
     /// The file's bytes and parsed layout, read on first probe.
@@ -166,6 +170,7 @@ impl TbTable {
         } else {
             [counts[1][1] as u8, counts[0][1] as u8]
         };
+        let lead_color = if lead_white { Color::White } else { Color::Black };
 
         let key = material_key(&counts);
         let swapped = [counts[1], counts[0]];
@@ -179,6 +184,7 @@ impl TbTable {
             has_pawns,
             has_unique_pieces,
             pawn_count,
+            lead_color,
             path,
             loaded: OnceLock::new(),
             load_lock: Mutex::new(()),
@@ -208,6 +214,68 @@ impl TbTable {
         self.parse(bytes)
     }
 
+    /// Read one piece list per colour view per leading-pawn file, and group them.
+    ///
+    /// Returns the sub-tables and the offset just past the last list, or `None` for a file
+    /// that runs out of bytes or names a leading piece the material rules out. Split out of
+    /// [`TbTable::parse`] because it is the half a corrupt header is caught in, and the only
+    /// half a test can drive without a whole valid file behind it.
+    fn piece_lists(
+        &self,
+        bytes: &[u8],
+        mut off: usize,
+        max_file: usize,
+    ) -> Option<(Vec<Vec<PairsData>>, usize)> {
+        let sides = if self.kind.sides() == 2 && self.key != self.key2 { 2 } else { 1 };
+        let pp = self.has_pawns && self.pawn_count[1] != 0;
+        let lead_pawn = Piece::new(self.lead_color, PieceType::Pawn).raw();
+
+        let mut items: Vec<Vec<PairsData>> =
+            (0..sides).map(|_| (0..=max_file).map(|_| PairsData::default()).collect()).collect();
+
+        for f in 0..=max_file {
+            let b0 = *bytes.get(off)?;
+            let b1 = if pp { *bytes.get(off + 1)? } else { 0 };
+            let order = [
+                [i32::from(b0 & 0xF), if pp { i32::from(b1 & 0xF) } else { 0xF }],
+                [i32::from(b0 >> 4), if pp { i32::from(b1 >> 4) } else { 0xF }],
+            ];
+            off += 1 + usize::from(pp);
+
+            for k in 0..self.piece_count {
+                let byte = *bytes.get(off)?;
+                for (i, side) in items.iter_mut().enumerate() {
+                    side[f].pieces[k] = if i != 0 { byte >> 4 } else { byte & 0xF };
+                }
+                off += 1;
+            }
+            // A pawnful table leads with the LEAD COLOUR's pawn in every colour view — the
+            // index computation reads `pieces[0]` as the lead pawn's piece code and the whole
+            // file split is built on it. Upstream never checks, because its own writer produced
+            // the file; a corrupt one names something else, and asking only whether the piece
+            // is a PAWN leaves half the hole open. Name the pawn of the colour that has none
+            // and `do_probe_table` collects an empty leading group, then sorts `squares[1..0]`
+            // and indexes `lead_pawn_idx[0]` with a square it never wrote. Refuse it here,
+            // where there is still an error channel to refuse through, so the invariant the
+            // prober relies on is one the parse established.
+            if self.has_pawns && items.iter().any(|side| side[f].pieces[0] != lead_pawn) {
+                return None;
+            }
+            for (i, side) in items.iter_mut().enumerate() {
+                set_groups(
+                    &mut side[f],
+                    self.piece_count,
+                    self.has_pawns,
+                    self.has_unique_pieces,
+                    self.pawn_count,
+                    order[i],
+                    f,
+                );
+            }
+        }
+        Some((items, off))
+    }
+
     /// Lay out the sub-tables over the file's bytes.
     ///
     /// The order is the format's and every step consumes exactly what the previous one
@@ -229,52 +297,8 @@ impl TbTable {
         }
         off += 1;
 
-        let sides = if self.kind.sides() == 2 && self.key != self.key2 { 2 } else { 1 };
         let max_file = if self.has_pawns { 3 } else { 0 };
-        let pp = self.has_pawns && self.pawn_count[1] != 0;
-
-        let mut items: Vec<Vec<PairsData>> =
-            (0..sides).map(|_| (0..=max_file).map(|_| PairsData::default()).collect()).collect();
-
-        for f in 0..=max_file {
-            let b0 = *bytes.get(off)?;
-            let b1 = if pp { *bytes.get(off + 1)? } else { 0 };
-            let order = [
-                [i32::from(b0 & 0xF), if pp { i32::from(b1 & 0xF) } else { 0xF }],
-                [i32::from(b0 >> 4), if pp { i32::from(b1 >> 4) } else { 0xF }],
-            ];
-            off += 1 + usize::from(pp);
-
-            for k in 0..self.piece_count {
-                let byte = *bytes.get(off)?;
-                for (i, side) in items.iter_mut().enumerate() {
-                    side[f].pieces[k] = if i != 0 { byte >> 4 } else { byte & 0xF };
-                }
-                off += 1;
-            }
-            // A pawnful table leads with a PAWN in both colour views -- the index computation
-            // reads `pieces[0]` as the lead pawn's piece code and the whole file split is
-            // built on it. Upstream never checks, because its own writer produced the file;
-            // a corrupt one names something else, and the probe would then index a pawn table
-            // by a knight. Refuse it here, where there is still an error channel to refuse
-            // through, so the invariant the prober asserts on is one the parse established.
-            if self.has_pawns
-                && items.iter().any(|side| side[f].pieces[0] & 0x7 != PieceType::Pawn.index() as u8)
-            {
-                return None;
-            }
-            for (i, side) in items.iter_mut().enumerate() {
-                set_groups(
-                    &mut side[f],
-                    self.piece_count,
-                    self.has_pawns,
-                    self.has_unique_pieces,
-                    self.pawn_count,
-                    order[i],
-                    f,
-                );
-            }
-        }
+        let (mut items, mut off) = self.piece_lists(&bytes, off, max_file)?;
 
         off += off & 1; // word alignment
 
@@ -398,10 +422,63 @@ mod tests {
         // White has two pawns, Black one: Black leads, so pawn_count is [1, 2].
         let t = TbTable::new(TbType::Wdl, "KPPvKP", "x".into()).expect("built");
         assert_eq!(t.pawn_count, [1, 2]);
+        assert_eq!(t.lead_color, Color::Black);
         // No black pawns at all: White leads.
         let t = TbTable::new(TbType::Wdl, "KPvK", "x".into()).expect("built");
         assert_eq!(t.pawn_count, [1, 0]);
+        assert_eq!(t.lead_color, Color::White);
         assert!(t.has_pawns);
+    }
+
+    /// The header of a pawnful `.rtbw` of `men` men, with `pieces[0]` under the caller's
+    /// control.
+    ///
+    /// Four leading-pawn files, each carrying the group order and one nibble pair per man —
+    /// the two colour views. Upstream's own `KPvK.rtbw` carries `21 11 66 ee` per file:
+    /// order, then pawn, king, king. Enough for [`TbTable::piece_lists`] and no more, since
+    /// everything after it needs a whole valid file.
+    fn pawnful_header(pieces0: u8, men: usize) -> Vec<u8> {
+        let mut b = TbType::Wdl.magic().to_vec();
+        b.push(0x03); // Split | HasPawns
+        for _ in 0..4 {
+            b.push(0x21); // group order
+            b.push(pieces0);
+            b.push(0x66); // the kings, in both views
+            b.extend(std::iter::repeat_n(0xEE, men.saturating_sub(2)));
+        }
+        b
+    }
+
+    /// A pawnful file has to lead with the LEAD COLOUR's pawn, not merely with a pawn.
+    ///
+    /// Asking only whether that nibble is a pawn accepts the pawn of the colour that has
+    /// none, and `do_probe_table` then collects an empty leading group: it sorts
+    /// `squares[1..0]` and indexes `lead_pawn_idx[0]` with a square it never wrote. One
+    /// flipped nibble in a downloaded `KPvK.rtbw` — byte 6, `0x11` to `0x99` — reached it and
+    /// killed the engine from a file the mirror served.
+    #[test]
+    fn a_pawnful_file_that_does_not_lead_with_the_lead_colours_pawn_is_refused() {
+        let t = TbTable::new(TbType::Wdl, "KPvK", "x".into()).expect("built");
+        assert_eq!(t.lead_color, Color::White);
+
+        // Upstream's own nibbles: a white pawn in both colour views, and the headers parse.
+        let (items, off) =
+            t.piece_lists(&pawnful_header(0x11, 3), 5, 3).expect("the real file's byte");
+        assert_eq!(off, 21, "four files of one order byte and three piece bytes");
+        assert_eq!(items[0][0].pieces[0], Piece::W_PAWN.raw());
+
+        // The same pawn, the other colour. A type-only check takes it, and the position it is
+        // probed against has no black pawn at all.
+        assert!(t.piece_lists(&pawnful_header(0x99, 3), 5, 3).is_none());
+        // Not a pawn at all, which is the half that was already refused.
+        assert!(t.piece_lists(&pawnful_header(0x66, 3), 5, 3).is_none());
+
+        // Black leads when White has no pawns, and then `0x99` is the correct nibble and
+        // `0x11` the refused one — the check is against the MATERIAL, not a fixed colour.
+        let t = TbTable::new(TbType::Wdl, "KNvKP", "x".into()).expect("built");
+        assert_eq!(t.lead_color, Color::Black);
+        assert!(t.piece_lists(&pawnful_header(0x99, 4), 5, 3).is_some());
+        assert!(t.piece_lists(&pawnful_header(0x11, 4), 5, 3).is_none());
     }
 
     #[test]
