@@ -10,8 +10,8 @@
 //!
 //! The classical term is not a feature and must not be treated as one. Do not tune it, do
 //! not extend it, and do not let it acquire callers that NNUE will not satisfy — it exists
-//! so the search has a score to order by while the network is being ported, and it is
-//! deleted when M3 completes. See `__DEV/PORTING.md`.
+//! so a checkout with no net still plays, and it has a scheduled deletion date. AGENTS.md
+//! carries that limitation with the rest of them.
 //!
 //! Golden: `Stockfish/src/evaluate.cpp`, `Stockfish/src/nnue/`.
 

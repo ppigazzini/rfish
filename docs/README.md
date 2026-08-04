@@ -34,8 +34,10 @@ lands, and every false claim ever found in the sibling ports' docs got there tha
 
 - **`docs/` plus `README.md` and `CONTRIBUTING.md` SHIP.** They describe the codebase for a
   contributor reading it cold.
-- **`__DEV/` is INTERNAL and gitignored.** It holds the engineering contract, the operator
-  prompt, the port map and user-requested analyses.
+- **The second surface is INTERNAL and gitignored**, so a clone does not carry it. It holds
+  the engineering contract, the operator prompt, the port map and user-requested analyses.
 
 Do not converge them. A shipped doc must not carry campaign history, and an internal note
-must not be the only place a shipped fact lives.
+must not be the only place a shipped fact lives. No shipped file may name the internal
+surface's location either: `cargo xtask docs-lint` sweeps the index for that, since the
+dangling reference it leaves is invisible to everyone except the author who wrote it.

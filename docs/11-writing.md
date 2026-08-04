@@ -4,9 +4,13 @@ These govern the shipped set — `docs/`, `README.md`, `CONTRIBUTING.md`, `AGENT
 the comments in the source. They live here, in the set that ships, because a rule nobody can
 read is a rule nobody can follow.
 
-`__DEV/` is internal and gitignored: the engineering contract, the operator prompt, the port
-map, user-requested analyses. **Do not converge the two surfaces.** A shipped page must not
-carry campaign history; an internal note must not be the only place a shipped fact lives.
+There is a second, **internal** surface this repository does not carry: the engineering
+contract, the operator prompt, the port map, user-requested analyses. **Do not converge the
+two.** A shipped page must not carry campaign history; an internal note must not be the only
+place a shipped fact lives. And a shipped file must not name that surface's LOCATION —
+`.gitignore` excludes it, so the reference dangles for every reader but its author.
+`cargo xtask docs-lint` sweeps the whole index for it, because the path check next to it
+cannot: an ignored path is exempt there by design.
 
 ## The rules
 

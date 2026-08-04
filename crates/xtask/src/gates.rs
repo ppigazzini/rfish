@@ -813,6 +813,15 @@ pub(crate) fn docs_lint() -> Result<Outcome, String> {
     checked += quoted_signature(&root, &files, &mut problems)?;
     checked += undocumented_steps(&root, &files, &mut problems)?;
 
+    // And the class the path check above cannot reach: a reference into the internal area,
+    // which is gitignored and therefore lands in that check's deliberately-untracked
+    // exemption. The subject is the whole INDEX, not the markdown set — a source comment
+    // dangles for a reader exactly as a doc line does, and both sibling ports had this rule
+    // broken by a file class their checker never read.
+    let leaks = crate::devsweep::sweep(&root, &tracked)?;
+    checked += tracked.len();
+    problems.extend(leaks);
+
     for p in &problems {
         eprintln!("  {p}");
     }
@@ -937,8 +946,17 @@ fn collect_markdown(
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        // `__DEV/` is internal and gitignored; `target/` and `.git/` are not documentation.
-        if name.starts_with('.') || name == "target" || name == "__DEV" || name == "resources" {
+        // The shipped set is what a fresh clone carries, so skip anything the repository has
+        // decided not to carry — the build tree, the runtime inputs, the internal working
+        // area. Ask `.gitignore` rather than naming those directories here: a list of names
+        // rots, and one of the names is the very location no shipped file may spell.
+        // `target/` stays named as well as ignored: outside a checkout `check-ignore` cannot
+        // answer, and walking a build tree full of vendored markdown is the one skip that
+        // must hold even then.
+        if name.starts_with('.')
+            || name == "target"
+            || (path.is_dir() && deliberately_untracked(dir, &name))
+        {
             continue;
         }
         if path.is_dir() {

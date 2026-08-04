@@ -10,7 +10,7 @@
 //! terms. Anything more would be effort spent on code with a scheduled deletion date, and
 //! worse, would make the engine's strength look like a property of this file.
 //!
-//! See `__DEV/PORTING.md` milestone M3.
+//! Its deletion is tracked with the port's other known limitations in AGENTS.md.
 
 use crate::board::attacks::piece_attacks;
 use crate::board::bitboard::{Bitboard, file_bb, pawn_attacks_from};
