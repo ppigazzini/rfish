@@ -388,14 +388,23 @@ and `CI` says only that a repository has some. Job names carry the platform for 
 reason — a red `test` says nothing a reader can act on, where `macOS aarch64 test` names the
 one architecture no other lane covers.
 
+Job **ids** follow the same rule one level down, and where all three ports run the same lane
+they now spell it the same way: `parity`, `tsan-race` and `valgrind` are identical in
+`rfish_parity.yml`, `zfish_parity.yml` and `mcfish_parity.yml`. That is worth the churn only
+because these three files get read side by side — a session that fixes a lane in one port
+almost always has to check the other two, and `gates` against `parity` is a rename to hold in
+your head for nothing. Where the lanes genuinely DIFFER the names still do: `lint` runs four
+gates rather than the siblings' single formatter, and mcfish annotates the compiler
+(`parity (clang)`, `parity (gcc)`) because it gates two.
+
 Every lane, which is what the file has rather than the ones worth mentioning:
 
 | Lane (job id) | Displayed as | Runs |
 |---|---|---|
 | `lint` | Format, clippy and the unsafe gate | `fmt`, `clippy`, `unsafe-lint`, `docs-lint` |
 | `test` | Linux x86-64 / macOS aarch64 / Windows x86-64 test | `cargo xtask test` on three platforms |
-| `gates` | Linux x86-64 parity | `net`, `tb-fetch`, `perft`, `golden`, `signature` on Linux |
-| `tsan` | Linux TSan race gate | `net`, then a four-thread search under ThreadSanitizer |
+| `parity` | Linux x86-64 parity | `net`, `tb-fetch`, `perft`, `golden`, `signature` on Linux |
+| `tsan-race` | Linux TSan race gate | `net`, then a four-thread search under ThreadSanitizer |
 | `valgrind` | Linux valgrind memcheck | `net`, `build`, then the binary under memcheck |
 | `cross-build` | Cross-build (`<target>`) | `cargo check` for `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-gnu` |
 
@@ -417,7 +426,7 @@ Without it the tablebase-dependent golden case skips in CI, and a case that can 
 there is a case nobody notices breaking. `tb` itself stays out of CI, because it needs a
 pristine upstream BUILD as well as the data — that half has not changed.
 
-The push lanes also carry `tsan` and `valgrind`, which both sibling ports gate on and this
+The push lanes also carry `tsan-race` and `valgrind`, which both sibling ports gate on and this
 one did not. **`forbid(unsafe_code)` is not an answer to either.** It rules out the pointer
 mistakes a C++ port has to fear and rules out nothing about ATOMICS: the shared table, the
 stop flag and the node counters are `Relaxed` by design, and an ordering that is too weak is

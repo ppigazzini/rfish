@@ -110,7 +110,7 @@ jobs:
       # plausible wrong number instead of a failure.
       - run: cargo xtask test
 
-  gates:
+  parity:
     name: Linux x86-64 parity
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -169,7 +169,7 @@ jobs:
   # port fears and rules out nothing about ATOMICS -- the shared table, the stop flag and the
   # node counters are `Relaxed` by design, and an ordering that is too weak is a logic bug the
   # type system is happy with.
-  tsan:
+  tsan-race:
     name: Linux TSan race gate
     runs-on: ubuntu-latest
     timeout-minutes: 40
