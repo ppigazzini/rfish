@@ -329,6 +329,44 @@ pub(crate) fn perft() -> Result<Outcome, String> {
     Ok(Outcome::check(failures.is_empty(), format!("{} perft mismatches", failures.len())))
 }
 
+/// Refuse to re-derive a golden from the engine the golden is supposed to be checking.
+///
+/// **A golden regenerated from rfish is a photograph of rfish.** Whatever the binary does
+/// today becomes the reference, including a bug, and the gate is green from then on. That is
+/// not a hypothetical: `search.golden` once recorded a `bestmove` with no ponder move and
+/// passed every run for as long as it existed, while upstream printed one.
+/// `extract_ponder_from_tt` had never been ported, and no gate in this tree could have said
+/// so — it surfaced only because someone drove the oracle by hand.
+///
+/// So the regenerator is `golden-audit --write`, which drives the ORACLE. This step stays
+/// only for the case that genuinely cannot be driven through upstream, and that case has to
+/// be claimed on purpose. Both sibling ports converged on the same refusal.
+///
+/// **The override is not a way past a red gate.** A `golden` failure is rfish disagreeing
+/// with upstream; writing the disagreement into the reference deletes the finding.
+pub(crate) fn golden_update() -> Result<Outcome, String> {
+    const OVERRIDE: &str = "RFISH_GOLDEN_UPDATE_FROM_RFISH";
+    if std::env::var(OVERRIDE).as_deref() != Ok("1") {
+        eprintln!(
+            "golden-update drives RFISH, so it writes a photograph of rfish, not a reference."
+        );
+        eprintln!();
+        eprintln!("  Use the oracle-driven regenerator instead:");
+        eprintln!("      cargo xtask golden-audit --write            # every case");
+        eprintln!("      cargo xtask golden-audit --write <case>     # just one");
+        eprintln!();
+        eprintln!("  If a case genuinely cannot be driven through upstream, say so on purpose:");
+        eprintln!("      {OVERRIDE}=1 cargo xtask golden-update");
+        eprintln!("  and record WHY in the commit body.");
+        return Ok(Outcome::Skipped(
+            "refusing to write a golden from the engine under test".to_string(),
+        ));
+    }
+    eprintln!("golden-update: writing goldens FROM RFISH by explicit override.");
+    eprintln!("  Every golden written here is a photograph of this binary, not upstream's bytes.");
+    golden(true)
+}
+
 /// The UCI case outputs must match `tools/*.golden`.
 pub(crate) fn golden(update: bool) -> Result<Outcome, String> {
     let engine = build_engine(GATE_PROFILE)?;
@@ -492,7 +530,13 @@ fn missing_case_resource(script: &str) -> Option<String> {
 /// The identity lines are excluded by design and by name: the two engines report different
 /// `id name` and a different banner, which is intended and is the only difference a byte
 /// comparison must forgive.
-pub(crate) fn golden_audit() -> Result<Outcome, String> {
+///
+/// `--write` makes this gate the REGENERATOR too, which is the half `golden-update` cannot
+/// be: it writes upstream's bytes, so a re-derived golden is still a reference rather than a
+/// photograph of whatever rfish does today. `--write <case>…` writes only the named cases.
+pub(crate) fn golden_audit(args: &[&str]) -> Result<Outcome, String> {
+    let write = args.contains(&"--write");
+    let only: Vec<&str> = args.iter().copied().filter(|a| !a.starts_with("--")).collect();
     let Some(oracle) = find_oracle() else {
         return Ok(Outcome::Skipped("no upstream build to adjudicate against".to_string()));
     };
@@ -514,13 +558,32 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
         .collect();
     cases.sort();
 
+    // Only `--write` needs rfish itself, and it needs it for ONE thing: the identity lines.
+    // A golden holds this engine's banner and `id name`, the audit strips both before
+    // comparing, and a golden written straight from upstream's stdout would swap them for
+    // upstream's — leaving `golden` red against a file the audit calls correct.
+    let engine = if write { Some(build_engine(GATE_PROFILE)?) } else { None };
+
     let (mut agree, mut differ) = (0usize, Vec::new());
+    let (mut wrote, mut missing) = (Vec::new(), Vec::new());
     let mut skipped: Vec<String> = Vec::new();
     for case in &cases {
         let stem = case.file_stem().and_then(|s| s.to_str()).ok_or("a case has no name")?;
-        let golden_path = workspace_root().join(format!("tools/{stem}.golden"));
-        let Ok(want) = std::fs::read_to_string(&golden_path) else {
+        if !only.is_empty() && !only.contains(&stem) {
             continue;
+        }
+        let golden_path = workspace_root().join(format!("tools/{stem}.golden"));
+        // A case with no golden is MISSING when auditing and a NEW GOLDEN when writing.
+        // Silently continuing was the hole: adding a case left the audit with nothing to
+        // adjudicate and said so nowhere, so the only way to seed the golden was the step
+        // that drives rfish — exactly the self-photograph this gate exists to prevent.
+        let want = match std::fs::read_to_string(&golden_path) {
+            Ok(text) => text,
+            Err(_) if write => String::new(),
+            Err(_) => {
+                missing.push(stem.to_string());
+                continue;
+            }
         };
         let script =
             std::fs::read_to_string(case).map_err(|e| format!("{}: {e}", case.display()))?;
@@ -530,8 +593,25 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
         }
         let lines: Vec<&str> = script.lines().filter(|l| !l.trim().is_empty()).collect();
 
-        let theirs = drive_oracle(&oracle, &oracle_dir, &lines)?;
-        let theirs = strip_identity(&filter_volatile(&theirs));
+        let upstream_raw = filter_volatile(&drive_oracle(&oracle, &oracle_dir, &lines)?);
+        if let Some(engine) = &engine {
+            let ours_raw = filter_volatile(&drive(engine, &lines)?);
+            let (spliced, diverged) = splice_identity(&upstream_raw, &ours_raw)
+                .map_err(|e| format!("{stem}: refusing to write — {e}"))?;
+            std::fs::write(&golden_path, &spliced)
+                .map_err(|e| format!("{}: {e}", golden_path.display()))?;
+            if diverged {
+                println!(
+                    "  {stem}.golden written from upstream — CONTENT DIVERGED, so `golden` \
+                     will be red until rfish reproduces it"
+                );
+            } else {
+                println!("  {stem}.golden written from upstream");
+            }
+            wrote.push(stem.to_string());
+            continue;
+        }
+        let theirs = strip_identity(&upstream_raw);
         let ours = strip_identity(&want.replace('\r', ""));
         // **TWO BLANK SIDES COMPARE EQUAL**, and every way a side can fail blanks it: an
         // oracle that dies before its banner, a driver whose filter eats the output, a
@@ -568,9 +648,26 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
         }
     }
 
+    if write {
+        // Writing NOTHING is the same refusal as comparing nothing: a `--write case-typo`
+        // that matched no case would otherwise report success having touched no file.
+        if wrote.is_empty() {
+            return Ok(Outcome::Fail(format!(
+                "wrote no golden at all: {} matched no case in tools/cases/*.uci, so this \
+                 re-derived nothing. Name a case that exists rather than reading the pass",
+                if only.is_empty() { "the corpus".to_string() } else { only.join(", ") }
+            )));
+        }
+        println!("golden-audit --write: {} golden(s) re-derived FROM UPSTREAM", wrote.len());
+        println!("  Run `cargo xtask golden` next: it is what asserts rfish reproduces them.");
+        return Ok(Outcome::Pass);
+    }
     if let Some(refusal) = compared_something(agree + differ.len(), "goldens", "tools/cases/*.uci")
     {
         return Ok(refusal);
+    }
+    for stem in &missing {
+        eprintln!("  {stem}: no tools/{stem}.golden — seed it with `golden-audit --write {stem}`");
     }
     println!(
         "golden-audit: {agree} agree, {} differ, {} not answerable ({})",
@@ -579,9 +676,72 @@ pub(crate) fn golden_audit() -> Result<Outcome, String> {
         skipped.join(", ")
     );
     Ok(Outcome::check(
-        differ.is_empty(),
-        format!("goldens upstream does not agree with: {}", differ.join(", ")),
+        differ.is_empty() && missing.is_empty(),
+        format!(
+            "goldens upstream does not agree with: {}; cases with no golden: {}",
+            differ.join(", "),
+            missing.join(", ")
+        ),
     ))
+}
+
+/// Upstream's content, carrying rfish's own identity lines in rfish's own places.
+///
+/// The two engines are required to agree on everything a golden holds EXCEPT which engine
+/// answered — the banner, `id name`, `id author`, and the network-replica line rfish cannot
+/// have. `strip_identity` drops exactly those before the audit compares, so a golden written
+/// from upstream's stdout verbatim would be adjudicated correct and would still fail
+/// `golden`, which drives rfish and compares bytes.
+///
+/// **The identity lines are not one-for-one, and measuring that was the surprise.** Upstream
+/// prints `info string Network replica 1: Shared memory.` where rfish prints nothing at all
+/// for `eval`, and in `benchmodes` it prints its replica line AFTER the position header where
+/// rfish prints it before. `strip_identity` drops both, so neither the count nor the position
+/// is compared by anything — which is what makes substituting them positionally wrong.
+///
+/// So take the NON-IDENTITY lines from upstream, in order, and let rfish decide where its own
+/// identity lines sit among them. Every line the audit compares is then upstream's by
+/// construction, and every line it ignores is rfish's. When the two engines agree the result
+/// is byte-identical to rfish's own output, which is the round trip this is verified by.
+///
+/// When they DISAGREE the content counts differ and the identity placement becomes
+/// approximate — say so, and expect `golden` to be red afterwards. That is the tool working:
+/// the reference now holds upstream's behaviour and rfish does not reproduce it.
+fn splice_identity(theirs: &str, ours: &str) -> Result<(String, bool), String> {
+    // Nothing to splice is a rig fault, not a divergence: a relative oracle path, a missing
+    // net or a worktree mid-checkout all surface as an empty or truncated capture, and
+    // writing THAT would replace a reference with noise while reporting success. Both sides
+    // are checked — a dead rfish would place every identity line wrongly just as silently.
+    if theirs.trim().is_empty() {
+        return Err("the oracle produced no output at all".to_string());
+    }
+    if ours.trim().is_empty() {
+        return Err("rfish produced no output at all".to_string());
+    }
+
+    let mut content = theirs.lines().filter(|l| !is_identity(l));
+    let mut out = String::with_capacity(theirs.len());
+    for line in ours.lines() {
+        if is_identity(line) {
+            out.push_str(line);
+            out.push('\n');
+        } else if let Some(upstream) = content.next() {
+            out.push_str(upstream);
+            out.push('\n');
+        }
+    }
+    // Upstream said more than rfish did. Those lines are content the reference must carry, so
+    // they go at the end rather than being dropped -- a truncated reference would make the
+    // audit green over a divergence it had just written away.
+    let mut trailing = false;
+    for upstream in content {
+        trailing = true;
+        out.push_str(upstream);
+        out.push('\n');
+    }
+    let ours_content = ours.lines().filter(|l| !is_identity(l)).count();
+    let theirs_content = theirs.lines().filter(|l| !is_identity(l)).count();
+    Ok((out, trailing || ours_content != theirs_content))
 }
 
 /// True when a comparison had nothing on EITHER side, which equality reports as agreement.
@@ -727,23 +887,32 @@ fn strip_clock(line: &str) -> String {
 fn strip_identity(out: &str) -> String {
     let mut kept = String::with_capacity(out.len());
     for line in out.lines() {
-        if line.starts_with("id name ")
-            || line.starts_with("id author ")
-            || line.starts_with("Stockfish ")
-            || line.starts_with("rfish ")
-            // rfish cannot replicate the network: replication follows thread PINNING, which
-            // has no filesystem equivalent, so there is one shared copy. AGENTS.md records
-            // that as deliberate, and upstream's line now names the shared-memory
-            // implementation rfish equally cannot have. Filtered BY NAME, so the exemption
-            // stays visible instead of being absorbed into a wildcard.
-            || line.starts_with("info string Network replica")
-        {
+        if is_identity(line) {
             continue;
         }
         kept.push_str(line);
         kept.push('\n');
     }
     kept
+}
+
+/// True for a line that names WHICH engine answered.
+///
+/// One predicate, two readers: the audit strips these before comparing, and `--write`
+/// substitutes rfish's for upstream's. Two lists would drift, and the drift would be silent
+/// in the direction that matters — a line stripped by one and spliced by the other produces a
+/// golden the audit accepts and `golden` rejects.
+fn is_identity(line: &str) -> bool {
+    line.starts_with("id name ")
+        || line.starts_with("id author ")
+        || line.starts_with("Stockfish ")
+        || line.starts_with("rfish ")
+        // rfish cannot replicate the network: replication follows thread PINNING, which has
+        // no filesystem equivalent, so there is one shared copy. AGENTS.md records that as
+        // deliberate, and upstream's line now names the shared-memory implementation rfish
+        // equally cannot have. Filtered BY NAME, so the exemption stays visible instead of
+        // being absorbed into a wildcard.
+        || line.starts_with("info string Network replica")
 }
 
 /// Documentation rot: every link resolves, and every named repository path exists.
@@ -1316,7 +1485,7 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         ("test", test),
         ("perft", perft),
         ("golden", || golden(false)),
-        ("golden-audit", golden_audit),
+        ("golden-audit", || golden_audit(&[])),
         ("nnue-check", nnue_check),
         ("tb", tb),
         ("signature", || signature(false)),
