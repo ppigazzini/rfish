@@ -88,6 +88,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "fingerprint" => perf::fingerprint(args),
         "fuzz" => fuzz::fuzz(args),
         "lane-coverage" => meta::lane_coverage(),
+        "fixture-coverage" => meta::fixture_coverage(),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
     }
@@ -123,6 +124,8 @@ cargo xtask <step> — the rfish build driver
                           shipped file naming the internal working area
     lane-coverage         every step runs in a workflow, runs in parity, or is excused
                           with a reason -- a lane that is in no gate is not a lane
+    fixture-coverage      tools/fixture_properties.tsv still holds: every property has a
+                          fixture that presents it, and every fixture is classified
     unsafe-lint           no `unsafe` and no allow(unsafe_code) anywhere
     tsan                  a 4-thread search under ThreadSanitizer, Linux only
     arch-determinism      every enumerated tier benches the anchor -- the gate that makes a

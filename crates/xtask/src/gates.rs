@@ -1485,6 +1485,7 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         // The gate on the gates. Structural, needs no engine and no oracle, so it sits with
         // the other cheap checks at the front where a mistake is reported in seconds.
         ("lane-coverage", crate::meta::lane_coverage),
+        ("fixture-coverage", crate::meta::fixture_coverage),
         ("test", test),
         ("perft", perft),
         ("golden", || golden(false)),

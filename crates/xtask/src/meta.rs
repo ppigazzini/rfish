@@ -51,7 +51,7 @@ const STEP_FLOOR: usize = 25;
 pub(crate) fn lane_coverage() -> Result<Outcome, String> {
     let root = workspace_root();
     let steps = dispatch_steps(&root)?;
-    // The same floor `docs-lint`'s path check and the __DEV sweep carry, for the same reason:
+    // The same floor `docs-lint`'s path check and its index sweep carry, for the same reason:
     // this reads a source file as TEXT, and an extraction that silently shrinks reports OK
     // over nothing.
     if steps.len() < STEP_FLOOR {
@@ -94,6 +94,121 @@ pub(crate) fn lane_coverage() -> Result<Outcome, String> {
             stale.join(", ")
         ),
     ))
+}
+
+/// The smallest number of property rows this gate will report a verdict over.
+const ROW_FLOOR: usize = 40;
+
+/// Hold `tools/fixture_properties.tsv` to the tree, in BOTH directions.
+///
+/// Direction 1 — every ROW is still true: its owner exists, its fixture exists, and its
+/// witness still appears inside that fixture. A fixture that stops presenting its property is
+/// what this catches: the option line deleted, the position rewritten, the case renamed.
+///
+/// Direction 2 — every FIXTURE is classified. A case arriving with nobody having answered "a
+/// representative of WHAT?" is how a partition ends up exhaustive in one dimension and empty
+/// in another, and the fixture universe is globbed from the tree rather than listed in the
+/// table, because a second list would rot exactly like the first.
+///
+/// **What it cannot do:** prove that presenting a property exercises the owner's branch. That
+/// needs coverage data this tree does not collect. A green run says the fixtures still
+/// present what the table claims, not that the branches are tested.
+pub(crate) fn fixture_coverage() -> Result<Outcome, String> {
+    let root = workspace_root();
+    let table = root.join("tools/fixture_properties.tsv");
+    let text = std::fs::read_to_string(&table).map_err(|e| format!("{}: {e}", table.display()))?;
+
+    let rows: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .collect();
+    // A table read as empty passes every per-row check below and reports OK over nothing —
+    // the shape the step floor and the index sweep's file floor already refuse.
+    if rows.len() < ROW_FLOOR {
+        return Ok(Outcome::Fail(format!(
+            "parsed only {} property rows (floor {ROW_FLOOR}) — the table or this extraction \
+             changed shape, and a coverage verdict over nothing is worthless",
+            rows.len()
+        )));
+    }
+
+    let mut problems = Vec::new();
+    let mut classified = std::collections::BTreeSet::new();
+    for row in &rows {
+        let fields: Vec<&str> = row.split('\t').collect();
+        let [property, owner, fixture, witness] = fields.as_slice() else {
+            problems.push(format!("malformed row (needs 4 tab-separated fields): {row}"));
+            continue;
+        };
+        if !root.join(owner).exists() {
+            problems.push(format!("{property}: owner does not exist -> {owner}"));
+        }
+        let fixture_path = root.join(fixture);
+        let Ok(body) = std::fs::read_to_string(&fixture_path) else {
+            problems.push(format!("{property}: fixture does not exist -> {fixture}"));
+            continue;
+        };
+        classified.insert((*fixture).to_string());
+        // `\n` is the only escape, so a row can name a whole line instead of a fragment.
+        if !body.replace("\r\n", "\n").contains(&witness.replace("\\n", "\n")) {
+            problems.push(format!(
+                "{property}: {fixture} no longer presents it — the witness {witness:?} \
+                 appears nowhere in it"
+            ));
+        }
+    }
+
+    // A .uci fixture IS engine input: every driver here pipes the file at the engine raw, so
+    // a `#` line is a COMMAND, the engine answers "Unknown command", and the case diverges
+    // for a reason that has nothing to do with what it tests. ../mcfish lost a milestone to
+    // exactly that. The `.fens` corpora are read by a gate rather than piped, and they do
+    // carry `#` headers — which is why this asks only about `.uci`.
+    let cases = root.join("tools/cases");
+    let mut fixtures = Vec::new();
+    for entry in
+        std::fs::read_dir(&cases).map_err(|e| format!("{}: {e}", cases.display()))?.flatten()
+    {
+        let path = entry.path();
+        let Some(rel) = path.strip_prefix(&root).ok().and_then(|p| p.to_str()) else {
+            continue;
+        };
+        fixtures.push(rel.replace('\\', "/"));
+        if path.extension().is_some_and(|e| e == "uci") {
+            let body =
+                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            if body.lines().any(|l| l.trim_start().starts_with('#')) {
+                problems.push(format!(
+                    "{rel} has a '#' line — a .uci fixture is piped RAW, so that is engine \
+                     input, not a comment"
+                ));
+            }
+        }
+    }
+    fixtures.sort();
+    if fixtures.is_empty() {
+        return Ok(Outcome::Fail(
+            "tools/cases holds no fixtures, so every row above classified nothing".to_string(),
+        ));
+    }
+    for fixture in &fixtures {
+        if !classified.contains(fixture) {
+            problems.push(format!(
+                "{fixture} is a fixture no property row claims — a representative of WHAT?"
+            ));
+        }
+    }
+
+    for p in &problems {
+        eprintln!("  {p}");
+    }
+    println!(
+        "fixture-coverage: {} properties, {} of {} fixtures classified",
+        rows.len(),
+        classified.len(),
+        fixtures.len()
+    );
+    Ok(Outcome::check(problems.is_empty(), format!("{} problem(s)", problems.len())))
 }
 
 /// Every step name the dispatch table answers to.
