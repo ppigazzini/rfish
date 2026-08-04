@@ -1482,6 +1482,9 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         ("clippy", clippy),
         ("unsafe-lint", unsafe_lint),
         ("docs-lint", docs_lint),
+        // The gate on the gates. Structural, needs no engine and no oracle, so it sits with
+        // the other cheap checks at the front where a mistake is reported in seconds.
+        ("lane-coverage", crate::meta::lane_coverage),
         ("test", test),
         ("perft", perft),
         ("golden", || golden(false)),

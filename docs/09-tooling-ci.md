@@ -34,8 +34,8 @@ from the passes, and never counts one as green.
 Listed in the order `parity` runs them. See [CONTRIBUTING.md](../CONTRIBUTING.md) for what
 each asserts.
 
-`fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `test` → `perft` → `golden` →
-`golden-audit` → `nnue-check` → `tb` → `signature`
+`fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `lane-coverage` → `test` → `perft` →
+`golden` → `golden-audit` → `nnue-check` → `tb` → `signature`
 
 Cheap and structural first, so a formatting mistake is reported in seconds rather than
 after a two-minute bench. `fmt-fix` is the same gate with the fix applied, and is not one
@@ -116,12 +116,28 @@ as a broken engine rather than as a position to skip.
 
 ### `docs-lint`
 
-Four checks: every markdown link resolves, every `crates/…` or `tools/…` path named in prose
-exists, no page quotes the current bench anchor, and no `xtask` step goes unnamed by every
-shipped page. The last two hold the rules
-[11-writing.md](11-writing.md) records as the most-broken — a pinned number and an
+Five checks: every markdown link resolves, every `crates/…` or `tools/…` path named in prose
+exists, no page quotes the current bench anchor, no `xtask` step goes unnamed by every
+shipped page, and no tracked file names the internal working area. The middle two hold the
+rules [11-writing.md](11-writing.md) records as the most-broken — a pinned number and an
 undiscoverable step — and both read their subject from its owner (`tools/signature.golden`,
 the dispatch table in `crates/xtask/src/main.rs`) rather than from a second list here.
+
+**The last check sweeps the whole INDEX, not the markdown set**, and it exists because the
+path check above cannot see its class. That check exempts a path `.gitignore` names, on the
+grounds that an ignored path is one the repository decided not to carry and a doc naming it
+is usually documenting the tool that writes it. The internal area is ignored, so every
+reference into it landed in that exemption and reported clean — six tracked files were doing
+exactly that, two of them engine sources. A source comment dangles for a reader precisely as
+a doc line does, which is why the subject is every tracked file rather than every page.
+
+Both sibling ports wrote this rule against a hand-written list of directories and both were
+bitten by the same shape it guards: ../zfish's read eight paths, so its whole build package
+and all of `.github/` were blind, and a file landed there four commits later; ../mcfish
+established the rule, verified it by hand, and had it broken twice within days by commits
+that had no way to know. `crates/xtask/src/devsweep.rs` carries the needles and `.gitignore`
+declares the directory — those two files are the only ones allowed to name it, and the
+exemption is asserted rather than assumed.
 
 It settles the **mechanical** half of documentation rot, and [11-writing.md](11-writing.md)
 names the three classes it cannot: a real symbol attributed to the wrong file, a list with
@@ -141,6 +157,27 @@ the mechanism that enforces it.
 It scans the shipped crates only. `xtask` is a build tool that never enters the binary and
 necessarily names the patterns it looks for; scanning it would make the gate report itself.
 It is still covered by the workspace forbid, which the manifest check asserts.
+
+### `lane-coverage`
+
+**A lane that is in no gate is not a lane.** Every step the dispatch table answers to must
+run in a workflow, run inside `parity`, or appear in `meta::EXCUSED` with a reason. A new
+step joins one of the three or this goes red.
+
+The rule was held by somebody remembering it, and ../mcfish's first run of the mechanical
+version found four differentials that had quietly stopped being lanes — `upstream-parity`,
+the finish line of that whole port, among them. rfish's first run found one:
+**`arch-determinism` ran nowhere**, which is the gate AGENTS.md tells you to run after
+touching an NNUE kernel and the only one that can see an ISA-gated divergence, since
+`signature` builds the portable arm alone. It is now a blocking job in
+`rfish_parity.yml`, where both siblings run their equivalent — 90s locally over all five
+tiers is what makes that affordable.
+
+The excused list is the hole, so it expires in its own direction: a step excused that DOES
+run somewhere is reported as a stale excuse, and a unit test refuses an excuse naming a step
+the dispatch table no longer has. Two extraction bugs the sibling ports paid for are held
+here too — a step named in a workflow **comment** is not a step the workflow runs, and a
+word boundary that accepts a hyphen lets `xtask net-fetch` satisfy `xtask net`.
 
 ### A gate that compared nothing must not pass
 
