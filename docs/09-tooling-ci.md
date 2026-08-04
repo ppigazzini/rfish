@@ -237,6 +237,44 @@ behaviour. ../zfish a4f0b6e9 is the same equality one gate over.
 
 ## The local gates, which `parity` does not run
 
+### `negative-control`
+
+**A gate is done when it has been SEEN TO FAIL, not when it passes.** Every gate's power to
+detect a defect is an assumption until something breaks the engine on purpose and watches the
+gate go red, and a gate that has quietly stopped being able to fail is invisible — it reports
+success, which is what everyone was hoping for. ../mcfish found two in one month: an empty
+transcript corpus scored as agreement, and a docs check that read no subject.
+
+Four rows, one representative mutant per gate. Each applies one behavioural mutation,
+requires the named gate to exit non-zero, restores the file, and the run ends by rebuilding
+and running `signature` green — the tree is proven clean by running a gate, not by asserting
+it. Measured here:
+
+```
+negative-control: signature   -- futility margin base 45 -> 46        ok, red (1)
+negative-control: golden      -- the board display omits `Checkers:`  ok, red (1)
+negative-control: perft       -- no knight under-promotion            ok, red (1)
+negative-control: nnue-check  -- network output scale 16 -> 17        ok, red (1)
+4 of 4 gate(s) detected their mutation, tree restored     EXIT=0, 96s
+```
+
+**Perturb the value, do not remove the bound.** A mutant aimed at an evaluation must leave
+the search a ceiling, or the experiment cannot end — ../mcfish's first NNUE mutant inverted an
+activation clamp, which handed the search an evaluation with no ceiling, and the gate ran past
+900s twice without returning a verdict. The row here scales the output instead: the engine
+stays a sane engine searching a different tree, and the gate answers in seconds. A timeout is
+therefore a **rig fault**, never a detection — crediting a gate for an experiment that never
+finished is worse than not running it.
+
+Three ways the rig can be wrong, and all three refuse rather than return a verdict: a `find`
+string that has rotted (the tree is never mutated, the gate greens, and that reads as "the
+gate failed to detect it"), a mutation the compiler rejects (not behavioural), and a selector
+naming no row (mutated nothing, proved nothing). The restore runs from a `Drop` guard, so an
+error or a panic anywhere in the run still puts the sources back.
+
+It is **local and in no lane**: it edits tracked sources and rebuilds per row, so it cannot
+share a checkout with anything. Run it when a gate is edited.
+
 ### `arch-determinism`
 
 Every enumerated tier must bench the anchor. It builds the engine once per tier into

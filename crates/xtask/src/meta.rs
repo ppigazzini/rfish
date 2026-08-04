@@ -34,6 +34,11 @@ const EXCUSED: &[(&str, &str)] = &[
     ),
     ("perf-budget-update", "writes that per-machine golden"),
     (
+        "negative-control",
+        "LOCAL -- it MUTATES tracked sources and rebuilds per row, so it cannot share a \
+         checkout with anything; run it when a gate is edited",
+    ),
+    (
         "parity",
         "the aggregate. CI runs its members as separate jobs on purpose, so a red lane \
          names the gate that failed rather than the batch",
@@ -94,6 +99,225 @@ pub(crate) fn lane_coverage() -> Result<Outcome, String> {
             stale.join(", ")
         ),
     ))
+}
+
+/// One mutation, and the gate that must go red for it.
+struct Mutant {
+    /// What the mutation does, in the report.
+    label: &'static str,
+    /// The file it edits, relative to the workspace root.
+    file: &'static str,
+    /// Text that must appear exactly once' worth of meaning in that file.
+    find: &'static str,
+    /// What it becomes.
+    replace: &'static str,
+    /// The step that must exit non-zero while the mutation is in place.
+    gate: &'static str,
+}
+
+/// One representative mutant per gate.
+///
+/// **Perturb the VALUE, do not remove the BOUND.** Every mutation here leaves a sane engine
+/// searching a different tree. ../mcfish learnt this the expensive way: inverting an
+/// activation clamp handed the search an evaluation with no ceiling, and the gate ran past
+/// 900s twice — once for over 25 minutes — without returning a verdict. A gate that never
+/// answers is not a gate that failed, so a timeout here is a RIG FAULT and never a detection.
+///
+/// One gate per row. The mutations are deliberately narrow, so a row proves one gate's teeth
+/// and nothing else — the `perft` mutant moves `signature` and `golden` too, and that is not
+/// what the row claims.
+const MUTANTS: &[Mutant] = &[
+    Mutant {
+        label: "futility margin base 45 -> 46",
+        file: "crates/rfish-engine/src/search/worker.rs",
+        find: "(45 + depth * 4).min(85)",
+        replace: "(46 + depth * 4).min(85)",
+        gate: "signature",
+    },
+    Mutant {
+        label: "the board display omits `Checkers:`",
+        file: "crates/rfish-engine/src/board/position.rs",
+        find: "write!(f, \"Checkers: \")?",
+        replace: "write!(f, \"CheckersZ: \")?",
+        gate: "golden",
+    },
+    Mutant {
+        label: "no knight under-promotion",
+        file: "crates/rfish-engine/src/board/movegen.rs",
+        find: "[PieceType::Rook, PieceType::Bishop, PieceType::Knight]",
+        replace: "[PieceType::Rook, PieceType::Bishop]",
+        gate: "perft",
+    },
+    Mutant {
+        // SCALES the network's output rather than unbounding it: the activations are still
+        // clamped, so the engine stays a sane chess engine and the gate answers in seconds.
+        label: "network output scale 16 -> 17",
+        file: "crates/rfish-engine/src/eval/nnue/common.rs",
+        find: "pub const OUTPUT_SCALE: i64 = 16;",
+        replace: "pub const OUTPUT_SCALE: i64 = 17;",
+        gate: "nnue-check",
+    },
+];
+
+/// Seconds a mutated gate gets before the run is called a rig fault.
+const MUTANT_TIMEOUT_SECS: u64 = 900;
+
+/// Restore every file this run edited, whatever happens to the run.
+///
+/// The mutations are real edits to tracked sources, so the restore cannot be a step at the
+/// end of a happy path: an error return, a panic or a `?` anywhere between would leave the
+/// tree mutated and the next command would measure a deliberately broken engine.
+struct Restore(Vec<(std::path::PathBuf, String)>);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        for (path, body) in &self.0 {
+            if let Err(e) = std::fs::write(path, body) {
+                eprintln!("negative-control: COULD NOT RESTORE {}: {e}", path.display());
+                eprintln!("  The tree is still mutated. `git checkout -- {}`", path.display());
+            }
+        }
+    }
+}
+
+/// Every named gate must be SEEN TO FAIL, by mutation rather than by argument.
+///
+/// A gate's power to detect a defect is an assumption until something breaks the engine on
+/// purpose and watches the gate go red. This tree ran that experiment by hand, at the moment
+/// each gate was written, and never again — and a gate that has quietly stopped being able to
+/// fail is invisible: it reports success, which is what everyone was hoping for.
+///
+/// One representative mutant per gate is enough under the competent-programmer hypothesis,
+/// which is what makes mutation testing cheap enough to be a step at all.
+///
+/// **A mutation that does not APPLY is a rig fault, not a verdict.** A `find` string that has
+/// rotted matches nothing, the tree stays clean, the gate greens — and that reads as "the gate
+/// failed to detect it", which is the worst possible way to be wrong here. Every row asserts
+/// the file actually changed, and so does the compile: a mutation the compiler rejects is not
+/// a behavioural one.
+pub(crate) fn negative_control(args: &[&str]) -> Result<Outcome, String> {
+    let root = workspace_root();
+    let want: Vec<&str> = args.iter().copied().filter(|a| !a.starts_with("--")).collect();
+    let selected: Vec<&Mutant> =
+        MUTANTS.iter().filter(|m| want.is_empty() || want.contains(&m.gate)).collect();
+    if selected.is_empty() {
+        return Ok(Outcome::Fail(format!(
+            "no row selected by {:?}, so this mutated nothing and proved nothing. \
+             Known gates: {}",
+            want,
+            MUTANTS.iter().map(|m| m.gate).collect::<Vec<_>>().join(", ")
+        )));
+    }
+
+    let mut blind = Vec::new();
+    for mutant in &selected {
+        println!("\n\x1b[1m== negative-control: {} — {} ==\x1b[0m", mutant.gate, mutant.label);
+        let path = root.join(mutant.file);
+        let original =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        // The guard is armed BEFORE the first write and dropped at the end of this iteration,
+        // so every early return below restores.
+        let _restore = Restore(vec![(path.clone(), original.clone())]);
+
+        let mutated = original.replace(mutant.find, mutant.replace);
+        if mutated == original {
+            return Ok(Outcome::Skipped(format!(
+                "RIG FAULT: {:?} matches nothing in {}. The pattern has rotted, so the tree \
+                 was never mutated — a green gate here would have read as a gate that failed \
+                 to detect it",
+                mutant.find, mutant.file
+            )));
+        }
+        std::fs::write(&path, &mutated).map_err(|e| format!("{}: {e}", path.display()))?;
+
+        if !xtask_step(&root, &["build"], MUTANT_TIMEOUT_SECS)?.succeeded() {
+            return Ok(Outcome::Skipped(format!(
+                "RIG FAULT: the mutated tree does not COMPILE, so {} is not a behavioural \
+                 mutation",
+                mutant.label
+            )));
+        }
+        match xtask_step(&root, &[mutant.gate], MUTANT_TIMEOUT_SECS)? {
+            Run::TimedOut => {
+                return Ok(Outcome::Skipped(format!(
+                    "RIG FAULT: the mutated `{}` did not finish within {MUTANT_TIMEOUT_SECS}s. \
+                     A mutant that hangs proves nothing — choose one whose cost is bounded. \
+                     Perturb the value, do not remove the bound",
+                    mutant.gate
+                )));
+            }
+            Run::Exited(0) => {
+                eprintln!("  \x1b[31mFAIL\x1b[0m {} PASSED a mutated engine", mutant.gate);
+                blind.push(mutant.gate);
+            }
+            Run::Exited(code) => {
+                println!("  \x1b[32mok\x1b[0m {} went red (exit {code})", mutant.gate);
+            }
+        }
+    }
+
+    // Prove the tree came back clean by RUNNING a gate green, rather than by asserting it.
+    // The restores above put the sources back; the binary is still the last mutant's.
+    println!("\n\x1b[1m== negative-control: the restored tree ==\x1b[0m");
+    if !xtask_step(&root, &["build"], MUTANT_TIMEOUT_SECS)?.succeeded() {
+        return Ok(Outcome::Fail("the restored tree does not build".to_string()));
+    }
+    if !xtask_step(&root, &["signature"], MUTANT_TIMEOUT_SECS)?.succeeded() {
+        return Ok(Outcome::Fail(
+            "the tree did NOT come back clean — `signature` is red after the restore".to_string(),
+        ));
+    }
+
+    println!(
+        "negative-control: {} of {} gate(s) detected their mutation, tree restored",
+        selected.len() - blind.len(),
+        selected.len()
+    );
+    Ok(Outcome::check(
+        blind.is_empty(),
+        format!("gate(s) that passed a mutated engine: {}", blind.join(", ")),
+    ))
+}
+
+/// What a bounded run of `cargo xtask <step>` did.
+enum Run {
+    Exited(i32),
+    TimedOut,
+}
+
+impl Run {
+    fn succeeded(&self) -> bool {
+        matches!(self, Run::Exited(0))
+    }
+}
+
+/// Run `cargo xtask <args>` with a wall-clock bound, quietly.
+///
+/// The bound is the whole point: a deliberately broken engine does not always fail fast, and
+/// an unbounded wait turns "the gate failed" into "the harness never came back".
+fn xtask_step(root: &Path, args: &[&str], secs: u64) -> Result<Run, String> {
+    let mut child = std::process::Command::new(std::env::var("CARGO").unwrap_or("cargo".into()))
+        .arg("xtask")
+        .args(args)
+        .current_dir(root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("cargo xtask {}: {e}", args.join(" ")))?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        match child.try_wait().map_err(|e| format!("waiting on cargo xtask: {e}"))? {
+            // A signal leaves no code; treat it as a non-zero exit, which is what it is.
+            Some(status) => return Ok(Run::Exited(status.code().unwrap_or(-1))),
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(Run::TimedOut);
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(200)),
+        }
+    }
 }
 
 /// The smallest number of property rows this gate will report a verdict over.
