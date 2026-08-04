@@ -101,6 +101,208 @@ pub(crate) fn lane_coverage() -> Result<Outcome, String> {
     ))
 }
 
+/// The invariants that hold on an interrupted search, whatever the clock did.
+///
+/// **No byte-golden can reach this path.** `tools/cases/` is driven by writing every line and
+/// closing the pipe, so a `stop` there is read after the search already ended. A stop that
+/// lands inside a RUNNING search ends it wherever the clock got to, and the final `info`
+/// line's node count moves run to run — there is nothing to pin.
+///
+/// So this asserts INVARIANTS instead of values, which needs no reference at all: a search
+/// that is stopped still answers with exactly one legal `bestmove` and leaves an engine that
+/// is still alive. Those hold whatever the clock did. They are not rfish-authored expectations
+/// of upstream's OUTPUT — they are properties of the UCI contract, and this is the only
+/// instrument in the tree that reaches the interrupted-search path at all.
+pub(crate) fn async_check() -> Result<Outcome, String> {
+    let engine = crate::runner::build_engine(crate::runner::GATE_PROFILE)?;
+    let cwd = crate::resources_dir();
+
+    // The legal move list, from the engine itself: `go perft 1` enumerates the root. Read it
+    // rather than hard-coding a list, or this gate carries an expectation of its own.
+    let perft = crate::runner::drive(&engine, &["position startpos", "go perft 1"])?;
+    let legal: Vec<String> = perft
+        .lines()
+        .filter_map(|l| l.split_once(':'))
+        .map(|(m, _)| m.trim().to_string())
+        .filter(|m| m.len() == 4 || m.len() == 5)
+        .collect();
+    if legal.len() != 20 {
+        return Ok(Outcome::Skipped(format!(
+            "RIG FAULT: read {} root moves from `go perft 1`, not the 20 the start position \
+             has — the legality check below would compare against nothing",
+            legal.len()
+        )));
+    }
+
+    let mut problems = Vec::new();
+
+    // 1. A stop INSIDE a running search: exactly one bestmove, and it is legal.
+    let out = drive_async(
+        &engine,
+        &cwd,
+        &["position startpos", "go infinite"],
+        2,
+        &["stop", "isready"],
+        30,
+    )?;
+    let moves: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("bestmove ")).collect();
+    match moves.as_slice() {
+        [one] => {
+            let played = one.split_whitespace().next().unwrap_or_default();
+            if !legal.iter().any(|m| m == played) {
+                problems.push(format!("stop: bestmove {played:?} is not legal in the position"));
+            } else if !out.lines().any(|l| l == "readyok") {
+                problems.push("stop: the engine did not answer isready afterwards".to_string());
+            } else {
+                println!(
+                    "  \x1b[32mok\x1b[0m a stop ended a running search with one legal bestmove ({played})"
+                );
+            }
+        }
+        other => problems.push(format!("stop: expected exactly one bestmove, got {}", other.len())),
+    }
+
+    // 2. A bare stop with NO search running answers nothing and stays up. Upstream ignores it;
+    //    an engine that answered here would be inventing a move.
+    let out = crate::runner::drive(&engine, &["position startpos", "stop", "isready"])?;
+    if out.lines().any(|l| l.starts_with("bestmove ")) {
+        problems.push("idle stop: emitted a bestmove with no search running".to_string());
+    } else if !out.lines().any(|l| l == "readyok") {
+        problems.push("idle stop: the engine did not answer isready afterwards".to_string());
+    } else {
+        println!("  \x1b[32mok\x1b[0m a stop with no search running answers nothing and stays up");
+    }
+
+    // 3. `ponderhit` converts a pondering search into a real one and it still ends with one
+    //    bestmove. `go ponder` searches without a clock until told the move was played.
+    let out = drive_async(
+        &engine,
+        &cwd,
+        &["position startpos", "go ponder wtime 1000 btime 1000"],
+        2,
+        &["ponderhit"],
+        30,
+    )?;
+    let hits = out.lines().filter(|l| l.starts_with("bestmove ")).count();
+    if hits == 1 {
+        println!("  \x1b[32mok\x1b[0m ponderhit ended the pondering search with one bestmove");
+    } else {
+        problems.push(format!("ponderhit: expected exactly one bestmove, got {hits}"));
+    }
+
+    // 4. `quit` during a running search terminates. THE TIMEOUT IS THE ASSERTION: before `go`
+    //    ran off the UCI thread this would have hung, and a hang in CI reads as an
+    //    infrastructure flake rather than as the engine ignoring quit.
+    match drive_async_status(&engine, &cwd, &["position startpos", "go infinite"], 2, &[], 30)? {
+        Run::TimedOut => {
+            problems.push(
+                "quit: the engine did not exit within 30s of quit during a search".to_string(),
+            );
+        }
+        Run::Exited(_) => {
+            println!("  \x1b[32mok\x1b[0m quit during a running search exits");
+        }
+    }
+
+    for p in &problems {
+        eprintln!("  \x1b[31m{p}\x1b[0m");
+    }
+    println!(
+        "async-check: {} of 4 invariants hold on the interrupted-search path",
+        4 - problems.len()
+    );
+    Ok(Outcome::check(problems.is_empty(), format!("{} invariant(s) broken", problems.len())))
+}
+
+/// Drive the engine, WAITING between the opening script and the interrupting one.
+///
+/// The wait is the whole point: writing both halves at once and closing the pipe lets the
+/// engine read `stop` before the search has started, which is the case `tools/cases/` already
+/// covers and not the one this gate is for.
+fn drive_async(
+    engine: &Path,
+    cwd: &Path,
+    open: &[&str],
+    wait_secs: u64,
+    then: &[&str],
+    bound_secs: u64,
+) -> Result<String, String> {
+    let (out, _) = drive_async_inner(engine, cwd, open, wait_secs, then, bound_secs)?;
+    Ok(out)
+}
+
+/// The same, for the case where the STATUS is the assertion rather than the output.
+fn drive_async_status(
+    engine: &Path,
+    cwd: &Path,
+    open: &[&str],
+    wait_secs: u64,
+    then: &[&str],
+    bound_secs: u64,
+) -> Result<Run, String> {
+    let (_, run) = drive_async_inner(engine, cwd, open, wait_secs, then, bound_secs)?;
+    Ok(run)
+}
+
+fn drive_async_inner(
+    engine: &Path,
+    cwd: &Path,
+    open: &[&str],
+    wait_secs: u64,
+    then: &[&str],
+    bound_secs: u64,
+) -> Result<(String, Run), String> {
+    use std::io::Write;
+
+    let mut child = std::process::Command::new(engine)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{}: {e}", engine.display()))?;
+
+    {
+        let stdin = child.stdin.as_mut().ok_or("the engine has no standard input")?;
+        for line in open {
+            writeln!(stdin, "{line}").map_err(|e| format!("writing to the engine: {e}"))?;
+        }
+        stdin.flush().map_err(|e| format!("flushing to the engine: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_secs(wait_secs));
+        for line in then {
+            writeln!(stdin, "{line}").map_err(|e| format!("writing to the engine: {e}"))?;
+        }
+        writeln!(stdin, "quit").map_err(|e| format!("writing to the engine: {e}"))?;
+    }
+    // Drop stdin so the engine sees end of input even if it is waiting on more.
+    drop(child.stdin.take());
+
+    // Read stdout on this thread while bounding the wait: `wait_with_output` cannot be
+    // interrupted, so a hung engine would hang the gate — and a gate that never answers is
+    // exactly what this invariant is testing for.
+    let mut stdout = child.stdout.take().ok_or("the engine has no standard output")?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut buf);
+        buf
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(bound_secs);
+    let run = loop {
+        match child.try_wait().map_err(|e| format!("waiting on the engine: {e}"))? {
+            Some(status) => break Run::Exited(status.code().unwrap_or(-1)),
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Run::TimedOut;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    };
+    let out = reader.join().map_err(|_| "the engine's output reader panicked")?;
+    Ok((out.replace('\r', ""), run))
+}
+
 /// The pinned upstream commit and the golden checkout must agree, in BOTH directions.
 ///
 /// `tools/upstream/UPSTREAM_BASE` names the commit rfish claims to match. Everything
@@ -251,6 +453,17 @@ const MUTANTS: &[Mutant] = &[
         find: "pub const OUTPUT_SCALE: i64 = 16;",
         replace: "pub const OUTPUT_SCALE: i64 = 17;",
         gate: "nnue-check",
+    },
+    Mutant {
+        // Aimed at the ONE invariant no golden can reach. The mutant is still bounded, but
+        // by the gate rather than by the engine: `async-check` bounds its own wait at 30s
+        // and reports a broken invariant, so a search that ignores `quit` reddens in seconds
+        // instead of hanging the run.
+        label: "quit no longer stops an unbounded search",
+        file: "crates/rfish/src/uci.rs",
+        find: "\"quit\" if shared.searching_unbounded() => shared.request_stop(),",
+        replace: "\"quit\" if false => shared.request_stop(),",
+        gate: "async-check",
     },
 ];
 

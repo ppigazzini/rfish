@@ -1486,6 +1486,9 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         // the other cheap checks at the front where a mistake is reported in seconds.
         ("lane-coverage", crate::meta::lane_coverage),
         ("fixture-coverage", crate::meta::fixture_coverage),
+        // The only instrument that reaches the interrupted-search path; cheap, so it runs
+        // with the rest rather than waiting for someone to remember it.
+        ("async-check", crate::meta::async_check),
         ("test", test),
         ("perft", perft),
         ("golden", || golden(false)),
