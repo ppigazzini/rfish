@@ -386,7 +386,11 @@ The four workflow files are named for the port and then for what they gate, as `
 are: **the file name and the displayed name are read in a list of four repositories' runs**,
 and `CI` says only that a repository has some. Job names carry the platform for the same
 reason — a red `test` says nothing a reader can act on, where `macOS aarch64 test` names the
-one architecture no other lane covers.
+one architecture no other lane covers. A workflow with ONE lane names it for what the lane
+proves instead, because there is no sibling lane to tell it apart from: `Deep perft against
+the reference counts`, `Detect upstream drift`, `Fidelity against the pinned oracle`. The
+fuzz matrix names the HARNESS for the reason the `test` matrix names the platform, which is
+the one the fuzz section below turns on.
 
 Job **ids** follow the same rule one level down, and where all three ports run the same lane
 they now spell it the same way: `parity`, `tsan-race` and `valgrind` are identical in
@@ -395,7 +399,16 @@ because these three files get read side by side — a session that fixes a lane 
 almost always has to check the other two, and `gates` against `parity` is a rename to hold in
 your head for nothing. Where the lanes genuinely DIFFER the names still do: `lint` runs four
 gates rather than the siblings' single formatter, and mcfish annotates the compiler
-(`parity (clang)`, `parity (gcc)`) because it gates two.
+(`parity (clang)`, `parity (gcc)`) because it gates two. `fidelity` keeps its own name for
+the opposite reason — mcfish's `upstream-nodes` is the nearest thing either sibling runs and
+zfish has no equivalent, so there is no two-of-three spelling to converge on.
+
+**Renaming a lane is cheap HERE, and check both halves before assuming it is cheap again.**
+A job id is named by a `needs:` edge, from inside the same file; a displayed name is named by
+a REQUIRED STATUS CHECK, from the branch protection rules, and orphaning one leaves the
+branch waiting forever on a check that will never report. No workflow here has a `needs:` edge
+and `main` is unprotected — `gh api repos/:owner/:repo/branches/main/protection` answers
+`404 Branch not protected` — so both renames touched nothing but the rows of this page.
 
 Every lane, which is what the file has rather than the ones worth mentioning:
 
@@ -426,12 +439,12 @@ Without it the tablebase-dependent golden case skips in CI, and a case that can 
 there is a case nobody notices breaking. `tb` itself stays out of CI, because it needs a
 pristine upstream BUILD as well as the data — that half has not changed.
 
-The push lanes also carry `tsan-race` and `valgrind`, which both sibling ports gate on and this
-one did not. **`forbid(unsafe_code)` is not an answer to either.** It rules out the pointer
-mistakes a C++ port has to fear and rules out nothing about ATOMICS: the shared table, the
-stop flag and the node counters are `Relaxed` by design, and an ordering that is too weak is
-a logic bug the type system is happy with. `cargo xtask tsan` runs a four-thread search under
-ThreadSanitizer — one thread would instrument the same code and observe nothing.
+The push lanes also carry `tsan-race` and `valgrind`, which both sibling ports gate on and
+this one did not. **`forbid(unsafe_code)` is not an answer to either.** It rules out the
+pointer mistakes a C++ port has to fear and rules out nothing about ATOMICS: the shared
+table, the stop flag and the node counters are `Relaxed` by design, and an ordering that is
+too weak is a logic bug the type system is happy with. `cargo xtask tsan` runs a four-thread
+search under ThreadSanitizer — one thread would instrument the same code and observe nothing.
 
 `-Zbuild-std=std,panic_abort` is not optional there. This toolchain refuses to link an
 instrumented crate against an uninstrumented `std`, and `panic_abort` has to be named because
