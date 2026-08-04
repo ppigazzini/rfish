@@ -90,6 +90,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "lane-coverage" => meta::lane_coverage(),
         "fixture-coverage" => meta::fixture_coverage(),
         "negative-control" => meta::negative_control(args),
+        "sync-status" => meta::sync_status(),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
     }
@@ -134,6 +135,9 @@ cargo xtask <step> — the rfish build driver
                           arm and cannot see an ISA-gated divergence
     nnue-check            the network's output equals upstream's, position by position
     tb                    Syzygy discovery, and that an empty path changes nothing
+    sync-status           the golden checkout at ../Stockfish is AT tools/upstream/
+                          UPSTREAM_BASE -- BEHIND the pin is red, because every oracle
+                          built from it would then answer from source already ported past
 
   Measurement — a ratio is about the engines only when everything else is held equal
     pgo [--tier T] [--spine]           PGO build: instrument, train on bench, rebuild

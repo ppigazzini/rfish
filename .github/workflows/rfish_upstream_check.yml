@@ -138,6 +138,12 @@ jobs:
           make -C ../Stockfish/src -j"$(nproc)" build ARCH=x86-64-avx2
           ../Stockfish/src/stockfish uci < /dev/null | head -n 1
 
+      # Assert the checkout the step above just made is the one every gate below will compare
+      # against. `--detach <pin>` can only be wrong quietly -- a fetch that did not carry the
+      # commit, a pin edited without its partner -- and then each differential compares rfish
+      # against source it has already ported past while reporting agreement.
+      - run: cargo xtask sync-status
+
       # The evaluation, the tablebase probes, the UCI surface and the search, in that order:
       # each answers a question the others cannot.
       - run: cargo xtask nnue-check

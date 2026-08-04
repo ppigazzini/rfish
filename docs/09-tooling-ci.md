@@ -381,8 +381,35 @@ change rather than a hopeful one. All five reproduce the anchor today.
 
 ## Resyncing to a newer upstream
 
-Four things this repository had to get right the last time the pin moved, each of which
-would have produced a green gate over a wrong engine:
+### `sync-status` — the pin, read in both directions
+
+`tools/upstream/UPSTREAM_BASE` names the commit rfish claims to match, and everything
+differential here is built from `../Stockfish`. The pin is therefore only meaningful while
+that checkout is actually **at** it, and nothing local asserted that: CI checked how far
+upstream's *master* had moved, which is a different question.
+
+**The two directions are not the same finding.** A checkout **ahead** of the pin is normal —
+upstream moved, the port has not followed — and prints the commit list, which is the re-port
+worklist. A checkout **behind** the pin is a defect in the workspace and goes RED: it is the
+golden, so every oracle built from it, and every grep of it, answers from source this tree has
+already ported past. Counting only the first direction reports that state as "in sync", which
+is worse than silence — it asserts the thing a reader would otherwise go and verify. A pin the
+golden does not contain is red for the same reason: "0 commits behind" for a SHA nobody can
+resolve is a drift report over nothing.
+
+It runs in the weekly `rfish_upstream_check.yml`, immediately after that lane checks the
+golden out at the pin — `--detach <pin>` can only be wrong quietly.
+
+**rfish has no `UPSTREAM_TARGET`, deliberately.** ../mcfish carries a second pin because it is
+mid-catch-up and needs to name the commit it is aiming at while the base says what it matches
+today. A sync here is atomic: the base and `tools/signature.golden` advance in the same
+commit, and a sync that cannot land bit-exact is a bug report rather than a sync. There is no
+catch-up state for a second pin to describe, and a file with no role is scaffolding this tree
+deletes rather than adds.
+
+### Four things to get right when the pin moves
+
+Each of these would otherwise produce a green gate over a wrong engine:
 
 - **Land one upstream commit per commit, and check each against upstream built at THAT
   commit.** Not against the old pin, and not only at the end. Two search changes landed
