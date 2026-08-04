@@ -175,7 +175,21 @@ pub(crate) fn signature(update: bool) -> Result<Outcome, String> {
 /// the same check as `arch-determinism` and ran it to land its own tier expansion; this is
 /// rfish's, and `docs/08-idiomatic-rust.md` §16.4 records what it replaces — a by-hand check
 /// at two tiers.
-pub(crate) fn arch_determinism() -> Result<Outcome, String> {
+///
+/// **A tier is BUILT on any host and BENCHED only on a host that can execute it.** Building
+/// at `-C target-cpu=skylake-avx512` emits AVX-512 wherever the build runs, so benching that
+/// binary on a box without AVX-512 raises SIGILL before the first node — which is a fact
+/// about the runner, not about the anchor. This gate's first CI run drew an AMD runner from
+/// a fleet that also holds Intel ones and died there, having been green on every AVX-512 box
+/// it had ever run on. So the executable set is DERIVED from the host, and the tiers left
+/// unbenched are named rather than counted as checked.
+///
+/// `--host-tiers` accepts that reduced coverage and still passes; without it a host that
+/// cannot reach every tier reports [`Outcome::Skipped`], because the property the gate
+/// exists to assert is unasserted for the tiers it could not drive. The flag is the OWNER of
+/// the allowance, it sits in the workflow where a reader meets it, and it expires by itself:
+/// a runner that gains AVX-512 benches all five and the flag stops excusing anything.
+pub(crate) fn arch_determinism(args: &[&str]) -> Result<Outcome, String> {
     let path = workspace_root().join("tools/signature.golden");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(Outcome::Skipped(format!("{} does not exist", path.display())));
@@ -188,22 +202,37 @@ pub(crate) fn arch_determinism() -> Result<Outcome, String> {
         .parse()
         .map_err(|e| format!("signature.golden does not parse: {e}"))?;
 
-    let tiers = crate::perf::enumerated_tiers();
+    let accept_hole = args.contains(&"--host-tiers");
+    let tiers = crate::perf::enumerated_tiers()?;
     println!("arch-determinism: {} tiers must all bench {expected}", tiers.len());
     let cmd = format!("bench {SIGNATURE_HASH} {SIGNATURE_THREADS} {SIGNATURE_DEPTH}");
     let mut checked = 0usize;
     let mut failures = Vec::new();
-    for (name, cpu) in tiers {
+    let mut unexecuted = Vec::new();
+    for tier in &tiers {
+        let (name, cpu) = (tier.name, tier.rustc);
         // One target directory per tier, so a tier's binary cannot be measured as another's
         // and `target/release` is left alone for the gates that own it.
         let dir = workspace_root().join("target/arch").join(name);
+        // Build EVERY tier, including one this host cannot run: a tier that stops compiling
+        // is a break to catch here, and the compiler needs no ISA the host has.
         run(Command::new(cargo())
             .current_dir(workspace_root())
             .env("RUSTFLAGS", format!("-C target-cpu={cpu}"))
             .env("CARGO_TARGET_DIR", &dir)
             .args(["build", "--release", "--package", "rfish", "--bin", "stockfish"]))?;
+        if !tier.missing.is_empty() {
+            let lacks = tier.missing.join(", ");
+            println!("  {name} ({cpu}): BUILT, NOT benched — this host lacks {lacks}");
+            unexecuted.push(format!("{name} (lacks {lacks})"));
+            continue;
+        }
         let engine = dir.join("release").join(crate::runner::engine_file_name());
-        let nodes = node_total(&drive_at(&engine, &resources_dir(), &[&cmd])?)?;
+        // Name the tier on the way out: an engine that dies here dies as a signal, and the
+        // raw error says which signal without saying which of five binaries raised it.
+        let out = drive_at(&engine, &resources_dir(), &[&cmd])
+            .map_err(|e| format!("tier {name} ({cpu}): {e}"))?;
+        let nodes = node_total(&out)?;
         checked += 1;
         if nodes == expected {
             println!("  {name} ({cpu}): {nodes}");
@@ -216,10 +245,30 @@ pub(crate) fn arch_determinism() -> Result<Outcome, String> {
     if let Some(refusal) = compared_something(checked, "tiers", "the tier table") {
         return Ok(refusal);
     }
-    Ok(Outcome::check(
-        failures.is_empty(),
-        format!("tiers that do not reproduce the anchor: {}", failures.join(", ")),
-    ))
+    if !failures.is_empty() {
+        return Ok(Outcome::Fail(format!(
+            "tiers that do not reproduce the anchor: {}",
+            failures.join(", ")
+        )));
+    }
+    println!("arch-determinism: {checked} of {} tiers benched the anchor", tiers.len());
+    if unexecuted.is_empty() {
+        return Ok(Outcome::Pass);
+    }
+    // State the hole either way. A bounded run that reports only its passes reads as full
+    // coverage to the next person, which is the whole failure mode this gate is built around.
+    let hole = unexecuted.join("; ");
+    if accept_hole {
+        println!("  --host-tiers: {} tier(s) BUILT but not benched: {hole}", unexecuted.len());
+        return Ok(Outcome::Pass);
+    }
+    Ok(Outcome::Skipped(format!(
+        "this host cannot execute {} of {} tiers ({hole}), so the anchor is unasserted for \
+         them. Re-run on a host of the top tier, or pass --host-tiers to accept a run that \
+         BUILDS those tiers and benches the rest",
+        unexecuted.len(),
+        tiers.len()
+    )))
 }
 
 /// A multi-threaded search under `ThreadSanitizer`.
