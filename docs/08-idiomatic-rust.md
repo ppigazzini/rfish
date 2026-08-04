@@ -1322,3 +1322,33 @@ Two things to carry forward rather than re-derive:
   a tenth of the spread after — with the absolute times drifting 2868 ms to 2356 ms ACROSS the
   warm run as the machine settled. A three-per-cent "win" is what a warming box looks like.
   Discard until the absolutes stop falling, then alternate.
+
+### 18.14 Upstream's structure is a strong prior, not a proof
+
+`generate_into` takes the generation kind at RUNTIME. Upstream instantiates
+`generate<Type>` and `generate_all<Us, Type>`, so each of its call sites compiles only the
+masks and pawn blocks that kind needs, and every `match gt` here is a branch upstream does not
+execute. That reads like a defect with upstream's own fix attached.
+
+`#[inline]` on `generate_into` and `generate_pawn_moves` is the whole change — the picker's
+three callers pass a literal and are themselves `#[inline(never)]`
+([§18.12](#1812-outline-what-runs-once-per-stage-out-of-what-runs-once-per-move)), so each gets
+a folded copy without growing the once-per-move path. Bit-exact.
+
+| | before | after | delta |
+|---|---:|---:|---:|
+| avx2 | 1,511,299,226 | 1,511,413,430 | +0.11M |
+| sse41 | 2,423,676,659 | 2,423,951,951 | +0.28M |
+
+**Flat to slightly negative on both tiers**: the duplicated bodies cost what the folded matches
+save. Reverted. `../mcfish` reached the same verdict porting upstream's dense `Move*` generator
+interface — bit-exact, fully gated, and slower on every reading — and wrote the rule this
+repeats: **port upstream's structural divergences ONE AT A TIME and let the clock rule on each.**
+
+The branch-prediction half of the claim is a separate question and is **not settled**. One body
+serving four generation kinds makes a single branch site carry four interleaved histories, which
+is the defect class `../mcfish` measured at 1.382 of upstream's branch misses; rfish's own is
+1.301. Nothing here can resolve it — the instruction effect is 0.007% and this box's paired
+clock has a noise floor near ±4% ([§18.13](#1813-software-prefetch-is-out-of-reach-and-a-discarded-load-is-not-a-substitute)).
+It needs hardware counters on a quiet machine, and until someone has them the honest statement
+is that the cost is unknown rather than zero.
