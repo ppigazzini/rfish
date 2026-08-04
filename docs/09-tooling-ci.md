@@ -34,8 +34,8 @@ from the passes, and never counts one as green.
 Listed in the order `parity` runs them. See [CONTRIBUTING.md](../CONTRIBUTING.md) for what
 each asserts.
 
-`fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `lane-coverage` → `test` → `perft` →
-`golden` → `golden-audit` → `nnue-check` → `tb` → `signature`
+`fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `lane-coverage` → `fixture-coverage` →
+`test` → `perft` → `golden` → `golden-audit` → `nnue-check` → `tb` → `signature`
 
 Cheap and structural first, so a formatting mistake is reported in seconds rather than
 after a two-minute bench. `fmt-fix` is the same gate with the fix applied, and is not one
@@ -178,6 +178,35 @@ run somewhere is reported as a stale excuse, and a unit test refuses an excuse n
 the dispatch table no longer has. Two extraction bugs the sibling ports paid for are held
 here too — a step named in a workflow **comment** is not a step the workflow runs, and a
 word boundary that accepts a hyphen lets `xtask net-fetch` satisfy `xtask net`.
+
+### `fixture-coverage`
+
+**A test's input domain is not the arguments it passes — it is every property the code
+branches on**, and a fixture set is only as good as the list of properties it was partitioned
+over. That list was in nobody's head twice over: "does the golden corpus cover Shredder
+castling notation, or an en-passant capture that exposes the king along the rank?" could only
+be answered by reading three directories. `tools/fixture_properties.tsv` writes it down — 60
+rows of `<property> <owner> <fixture> <witness>` — and this gate holds it to the tree in both
+directions.
+
+Direction 1: every row is still true. The owner exists, the fixture exists, and the witness
+still appears in it, so a case that stops presenting its property reddens — the option line
+deleted, the position rewritten, the file renamed. The witness is a literal **substring**,
+not a pattern, with `\n` as the one escape, so it cannot silently match more than it says.
+
+Direction 2: every file in `tools/cases/` appears in some row. The fixture universe is
+globbed from the tree rather than listed in the table, because a second list rots exactly
+like the first, and this is the direction that catches a case arriving with nobody having
+answered "a representative of *what*?".
+
+It also refuses a `#` line in a `.uci` fixture. **A `.uci` file is engine input**, piped raw,
+so a line that looks like a comment is a command the engine answers `Unknown command` to and
+the case diverges for a reason unrelated to what it tests. ../mcfish lost a milestone to
+exactly that.
+
+**What it cannot do** is prove that presenting a property exercises the owner's branch. That
+needs coverage data this tree does not collect, and a green run says only that the fixtures
+still present what the table claims.
 
 ### A gate that compared nothing must not pass
 

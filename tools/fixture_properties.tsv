@@ -1,0 +1,111 @@
+# The input domain, written down: every behaviour the engine BRANCHES on, and the
+# fixture that presents it. Checked by `cargo xtask fixture-coverage`.
+#
+# WHY THIS FILE EXISTS. A test's input domain is not the arguments it passes -- it is every
+# property the code discriminates on, and a fixture set is only as good as the list of
+# properties it was partitioned over. Nothing in this tree wrote that list down, so "does the
+# golden corpus cover Chess960 castling rights?" was a question nobody could answer without
+# reading three directories. Now it is a row, and a row that stops being true is a red gate.
+#
+# WHAT THE GATE CAN AND CANNOT CHECK. It checks that the OWNER exists, that the FIXTURE
+# exists, and that the WITNESS still appears inside the fixture -- so a fixture that stops
+# presenting its property (the option line deleted, the position rewritten, the case renamed)
+# reddens. It CANNOT check that presenting the property exercises the owner's branch: that
+# needs coverage data this tree does not collect. Read a row as "this fixture is where that
+# property is presented", never as "that branch is tested".
+#
+# Format: <property>\t<owner>\t<fixture>\t<witness>
+#   property  the thing the engine branches on, in kebab-case
+#   owner     the file that branches on it
+#   fixture   the case file that presents it
+#   witness   literal text that must still appear in the fixture. NOT a pattern -- a
+#             substring, so it cannot silently match more than it says. `\n` is the one
+#             escape, which is what lets a row name a whole line rather than a fragment of
+#             one. Every witness is matched against the file's full text.
+#
+# Direction 2 of the gate is the one that catches a fixture arriving with nobody having
+# answered "a representative of WHAT?": every tools/cases/* file must appear in some row.
+
+# --- the UCI command surface ------------------------------------------------------------
+uci-handshake	crates/rfish/src/uci.rs	tools/cases/handshake.uci	uci\nisready
+isready-with-no-search-running	crates/rfish/src/uci.rs	tools/cases/handshake.uci	\nisready\n
+unknown-command	crates/rfish/src/uci.rs	tools/cases/errors.uci	notacommand
+unknown-option-name	crates/rfish/src/options.rs	tools/cases/errors.uci	setoption name NoSuchOption
+illegal-move-in-a-position-line	crates/rfish/src/uci.rs	tools/cases/errors.uci	moves e2e5
+malformed-fen	crates/rfish-engine/src/board/position.rs	tools/cases/errors.uci	position fen this is not a fen at all
+board-display	crates/rfish/src/uci.rs	tools/cases/board.uci	\nd\n
+eval-command	crates/rfish-engine/src/eval/mod.rs	tools/cases/eval.uci	\neval\n
+
+# --- `position` parsing, including the shapes that are not well formed --------------------
+position-startpos-with-moves	crates/rfish/src/uci.rs	tools/cases/parsing.uci	position startpos moves e2e4 e7e5
+position-moves-with-no-startpos	crates/rfish/src/uci.rs	tools/cases/parsing.uci	position moves e2e4
+position-with-no-argument	crates/rfish/src/uci.rs	tools/cases/parsing.uci	\nposition\n
+position-startpos-then-fen	crates/rfish/src/uci.rs	tools/cases/parsing.uci	position startpos fen
+
+# --- `bench`, whose three modes take different paths through the driver -------------------
+bench-perft-mode	crates/rfish/src/bench.rs	tools/cases/benchmodes.uci	current perft
+bench-depth-mode	crates/rfish/src/bench.rs	tools/cases/benchmodes.uci	current depth
+bench-eval-mode	crates/rfish/src/bench.rs	tools/cases/benchmodes.uci	current eval
+
+# --- `go` limits, including the ones that must not overflow or run away --------------------
+go-perft	crates/rfish-engine/src/board/movegen.rs	tools/cases/perft.uci	go perft 3
+go-depth	crates/rfish-engine/src/search/mod.rs	tools/cases/golimits.uci	go depth 1
+go-nodes	crates/rfish-engine/src/search/mod.rs	tools/cases/search.uci	go nodes 20000
+go-nodes-at-u64-max	crates/rfish/src/uci.rs	tools/cases/golimits.uci	go nodes 18446744073709551615
+go-movestogo-negative	crates/rfish-engine/src/search/timeman.rs	tools/cases/golimits.uci	go movestogo -5
+go-depth-beyond-the-search-ceiling	crates/rfish-engine/src/search/mod.rs	tools/cases/golimits.uci	go depth 3000000000
+searchmoves-restricts-the-root	crates/rfish-engine/src/search/mod.rs	tools/cases/searchmoves.uci	searchmoves e2e4 d2d4
+searchmoves-order-does-not-change-the-result	crates/rfish-engine/src/search/movepick.rs	tools/cases/searchmoves.uci	searchmoves d2d4 e2e4
+searchmoves-with-an-unparsable-token	crates/rfish/src/uci.rs	tools/cases/searchmoves.uci	searchmoves e2e4 zzzz d2d4
+
+# --- options that change what the search or the shell does ---------------------------------
+option-hash	crates/rfish-engine/src/search/tt.rs	tools/cases/search.uci	setoption name Hash value 8
+option-multipv	crates/rfish-engine/src/search/mod.rs	tools/cases/multipv.uci	setoption name MultiPV value 3
+option-uci-showwdl	crates/rfish-engine/src/search/score.rs	tools/cases/multipv.uci	setoption name UCI_ShowWDL value true
+option-uci-chess960	crates/rfish-engine/src/board/position.rs	tools/cases/chess960.uci	setoption name UCI_Chess960 value true
+option-uci-chess960-turned-back-off	crates/rfish-engine/src/board/position.rs	tools/cases/chess960.uci	setoption name UCI_Chess960 value false
+option-syzygypath	crates/rfish-engine/src/platform/syzygy/mod.rs	tools/cases/tbpv.uci	setoption name SyzygyPath value syzygy
+ucinewgame-clears-state	crates/rfish-engine/src/search/tt.rs	tools/cases/search.uci	\nucinewgame\n
+
+# --- castling: the rights notation, and the four ways a castle is refused -------------------
+castling-rights-kqkq	crates/rfish-engine/src/board/position.rs	tools/cases/castling.uci	w KQkq
+castling-rights-shredder-notation	crates/rfish-engine/src/board/position.rs	tools/cases/castling.uci	w HAha
+castling-rights-claimed-with-no-rook	crates/rfish-engine/src/board/position.rs	tools/cases/castling.uci	4k3/8/8/8/8/8/8/4K3 w KQkq
+castling-rights-with-an-unparsable-letter	crates/rfish-engine/src/board/position.rs	tools/cases/castling.uci	w KQZq
+castling-one-side-only	crates/rfish-engine/src/board/movegen.rs	tools/cases/castling.uci	r3k2r/8/8/8/8/8/8/4K2R
+castling-path-attacked	crates/rfish-engine/src/board/movegen.rs	tools/cases/castling.uci	r3k2r/8/8/8/4K3/8/8/R6R
+castling-chess960-two-rooks-a-side	crates/rfish-engine/src/board/position.rs	tools/cases/castling.uci	krr5/8/8/8/8/8/8/KRR5 w CBcb
+castling-chess960-perft	crates/rfish-engine/src/board/movegen.rs	tools/cases/castling.uci	go perft 3
+castling-move-applied-to-the-board	crates/rfish-engine/src/board/position.rs	tools/cases/board.uci	moves e1g1
+
+# --- Chess960: a start position and a castling-free one ------------------------------------
+chess960-shuffled-start	crates/rfish-engine/src/board/position.rs	tools/cases/chess960.uci	bqnb1rkr/pp3ppp
+chess960-standard-rights-in-960-mode	crates/rfish-engine/src/board/position.rs	tools/cases/chess960.uci	nqbnrkrb/pppppppp
+chess960-movegen	crates/rfish-engine/src/board/movegen.rs	tools/cases/chess960.uci	go perft 2
+
+# --- en passant: the square is only set when the capture is actually LEGAL -------------------
+ep-capture-is-legal	crates/rfish-engine/src/board/movegen.rs	tools/cases/enpassant.uci	8/8/8/2pP4/8/8/8/K6k w - c6
+ep-capture-exposes-the-king-on-the-rank	crates/rfish-engine/src/board/movegen.rs	tools/cases/enpassant.uci	8/8/8/K1pP3q/8/8/8/7k w - c6
+ep-capturer-is-pinned-diagonally	crates/rfish-engine/src/board/movegen.rs	tools/cases/enpassant.uci	7b/8/8/2pP4/1K6/8/8/7k w - c6
+ep-square-set-with-no-capturer	crates/rfish-engine/src/board/position.rs	tools/cases/enpassant.uci	8/8/8/2p5/8/8/8/K6k w - c6
+ep-two-pawns-can-capture	crates/rfish-engine/src/board/movegen.rs	tools/cases/enpassant.uci	8/8/8/K1pP1P1q/8/8/8/7k w - c6
+ep-black-to-move	crates/rfish-engine/src/board/movegen.rs	tools/cases/enpassant.uci	7K/8/8/8/k1Pp3R/8/8/8 b - c3
+ep-blocked-by-an-occupied-target	crates/rfish-engine/src/board/movegen.rs	tools/cases/enpassant.uci	2b5/2p5/8/2pP4/8/8/8/K6k w - c6
+
+# --- terminal and near-terminal nodes, where a score is not a search result ------------------
+stalemate-at-the-root	crates/rfish-engine/src/search/mod.rs	tools/cases/terminal.uci	8/8/8/8/8/6k1/6p1/6K1 w
+checkmate-at-the-root	crates/rfish-engine/src/search/mod.rs	tools/cases/terminal.uci	7k/6Q1/6K1/8/8/8/8/8 b
+mated-position-evaluated	crates/rfish-engine/src/eval/mod.rs	tools/cases/golimits.uci	moves d8h4
+
+# --- the evaluation, on the three position classes the net is shaped around ------------------
+eval-opening	crates/rfish-engine/src/eval/nnue/mod.rs	tools/cases/eval.uci	position startpos
+eval-pawn-endgame	crates/rfish-engine/src/eval/nnue/mod.rs	tools/cases/eval.uci	8/8/8/8/8/6k1/6p1/6K1 w
+eval-middlegame-with-a-hanging-piece	crates/rfish-engine/src/eval/nnue/mod.rs	tools/cases/eval.uci	r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2
+
+# --- the tablebase probe, and the PV walked out of a won position ----------------------------
+tb-root-probe-wins	crates/rfish-engine/src/platform/syzygy/mod.rs	tools/cases/tbpv.uci	8/8/8/8/8/4k3/8/4K2R w
+tb-pv-extended-to-mate	crates/rfish-engine/src/platform/syzygy/mod.rs	tools/cases/tbpv.uci	8/8/8/8/8/4k3/4p3/4K3 w
+
+# --- the two reference corpora, which are read by a gate rather than piped at the engine ------
+nnue-differential-positions	crates/rfish-engine/src/eval/nnue/mod.rs	tools/cases/eval.fens	rnbqkbnr/pppppppp
+syzygy-differential-positions	crates/rfish-engine/src/platform/syzygy/mod.rs	tools/cases/tb.fens	4k3/8/8/8/8/8/8/Q3K3 w
