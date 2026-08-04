@@ -36,7 +36,9 @@ fn main() -> ExitCode {
             // Both sibling ports learned this the hard way: a missing tool exited 0 and a
             // whole campaign reported green.
             eprintln!("\x1b[33mSKIPPED\x1b[0m {step}: {why}");
-            eprintln!("A skipped gate proves nothing. Install the tool before relying on it.");
+            // Not always a missing tool: a step that REFUSES to run reports the same way,
+            // because the property it would have asserted is equally unasserted either way.
+            eprintln!("A skipped gate proves nothing — it did not run.");
             ExitCode::from(2)
         }
         Ok(Outcome::Fail(why)) => {
@@ -68,8 +70,8 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "tsan" => gates::tsan(),
         "arch-determinism" => gates::arch_determinism(),
         "golden" => gates::golden(false),
-        "golden-audit" => gates::golden_audit(),
-        "golden-update" => gates::golden(true),
+        "golden-audit" => gates::golden_audit(args),
+        "golden-update" => gates::golden_update(),
         "docs-lint" => gates::docs_lint(),
         "unsafe-lint" => gates::unsafe_lint(),
         "nnue-check" => gates::nnue_check(),
@@ -105,7 +107,10 @@ cargo xtask <step> — the rfish build driver
     signature             bench reproduces tools/signature.golden
     perft                 the reference counts in tools/perft.table match
     golden                the UCI case outputs match tools/*.golden
-    golden-audit          every golden is what UPSTREAM produces, not just what we do
+    golden-audit [--write [CASE...]]
+                          every golden is what UPSTREAM produces, not just what we do.
+                          --write RE-DERIVES from the oracle: this is the regenerator,
+                          because a golden written from rfish is a photograph of rfish
     upstream-nodes        node-for-node vs the oracle on RANDOM positions
     fingerprint [--tier T]  assert rfish CALLS what upstream calls, as often, under
                           callgrind; catches a state divergence no value gate can see
@@ -145,7 +150,8 @@ cargo xtask <step> — the rfish build driver
 
   Regenerate a golden — DANGEROUS, read CONTRIBUTING.md first
     signature-update      re-derive tools/signature.golden
-    golden-update         re-derive tools/*.golden
+    golden-update         REFUSES: it drives rfish, so it writes a photograph of rfish.
+                          `golden-audit --write` is the regenerator
 
 Exit codes: 0 pass, 1 fail, 2 SKIPPED (tool missing — proves nothing).
 "
