@@ -197,6 +197,40 @@ jobs:
       - run: cargo xtask net
       - run: cargo xtask tsan
 
+  # `signature` builds at the DEFAULT arch, so it only ever tests the portable arm -- and the
+  # NNUE kernels are `std::simd`, whose lowering the target-cpu tier decides. An ISA-gated
+  # divergence is therefore invisible to the anchor and to every other gate here. This is the
+  # only lane that can see one, and both sibling ports run their equivalent in the blocking
+  # lane for exactly that reason. Measured at 90s locally over all five tiers, which is what
+  # makes it affordable to block on.
+  arch-determinism:
+    name: Every enumerated tier benches the anchor
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the pinned toolchain
+        id: rt
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
+          test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ steps.rt.outputs.channel }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: resources/*.nnue
+          key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
+      - run: cargo xtask net
+      # The tiers are ENUMERATED and each is built here; the binaries only have to BENCH on
+      # this runner, not run natively, so no host feature is assumed.
+      - run: cargo xtask arch-determinism
+
   valgrind:
     name: Linux valgrind memcheck
     runs-on: ubuntu-latest
