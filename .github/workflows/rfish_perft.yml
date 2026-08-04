@@ -1,4 +1,4 @@
-name: perft (nightly)
+name: rfish perft (nightly)
 
 # Deep perft on a schedule, which ../mcfish carries and this port did not.
 #

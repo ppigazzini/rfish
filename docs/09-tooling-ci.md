@@ -377,21 +377,27 @@ the engine, not a property of the profile.
 
 ## CI
 
-`.github/workflows/rfish_ci.yml` runs the same gates this page describes, on Linux, macOS
+`.github/workflows/rfish_parity.yml` runs the same gates this page describes, on Linux, macOS
 and Windows. Nothing in CI is a gate that does not exist locally, and nothing local is
 weaker than CI — a contributor who runs `cargo xtask parity` and sees green should not be
 surprised by the merge gate.
 
+The four workflow files are named for the port and then for what they gate, as `../zfish`'s
+are: **the file name and the displayed name are read in a list of four repositories' runs**,
+and `CI` says only that a repository has some. Job names carry the platform for the same
+reason — a red `test` says nothing a reader can act on, where `macOS aarch64 test` names the
+one architecture no other lane covers.
+
 Every lane, which is what the file has rather than the ones worth mentioning:
 
-| Lane | Runs |
-|---|---|
-| `lint` | `fmt`, `clippy`, `unsafe-lint`, `docs-lint` |
-| `test` | `cargo xtask test` on three platforms |
-| `gates` | `net`, `tb-fetch`, `perft`, `golden`, `signature` on Linux |
-| `tsan` | `net`, then a four-thread search under ThreadSanitizer |
-| `valgrind` | `net`, `build`, then the binary under memcheck |
-| `cross-build` | `cargo check` for `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-gnu` |
+| Lane (job id) | Displayed as | Runs |
+|---|---|---|
+| `lint` | Format, clippy and the unsafe gate | `fmt`, `clippy`, `unsafe-lint`, `docs-lint` |
+| `test` | Linux x86-64 / macOS aarch64 / Windows x86-64 test | `cargo xtask test` on three platforms |
+| `gates` | Linux x86-64 parity | `net`, `tb-fetch`, `perft`, `golden`, `signature` on Linux |
+| `tsan` | Linux TSan race gate | `net`, then a four-thread search under ThreadSanitizer |
+| `valgrind` | Linux valgrind memcheck | `net`, `build`, then the binary under memcheck |
+| `cross-build` | Cross-build (`<target>`) | `cargo check` for `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-gnu` |
 
 `cross-build` **checks rather than builds**, and the reason is worth keeping: the runner has
 no cross LINKER for either target, so a build fails at the link step having already proven
@@ -529,9 +535,12 @@ a mutation's budget on the PARSER and never reaches the search behind it, which 
 and neither of those two ever reaches a **file**, which is the only input here that no part of
 the process vouches for. Both sibling ports fuzz the table parse — ../mcfish with a dedicated
 lane, ../zfish with its own targets — and rfish lacked it until the decoder had already
-shipped as verified. It found six panics on its first afternoon; the list, and the rule that
-decided between refusing and clamping each one, are in
-[docs/05-tablebases.md](05-tablebases.md).
+shipped as verified. It found six panics on its first afternoon, and a seventh on the nightly
+lane three days later — the residue of one of the six, which had been bounded against the
+wrong half of the field it validated. The list, and the rule that decided between refusing
+and clamping each one, are in [docs/05-tablebases.md](05-tablebases.md). **That seventh is
+the argument for the schedule**: it was reachable from a corrupt file on the day the lane went
+green, and no gate in `parity` looks at a file nobody wrote a case for.
 
 The workflow runs them as **three jobs from a matrix, each with the whole budget**, which is
 the shape ../mcfish's fuzz workflow uses and for its reason: the three run at throughputs
