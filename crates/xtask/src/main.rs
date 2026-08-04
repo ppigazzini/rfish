@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+mod devsweep;
 mod fuzz;
 mod gates;
 mod net;
