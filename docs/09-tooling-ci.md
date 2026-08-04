@@ -47,10 +47,11 @@ and a list that drifts by one entry reads exactly like one that has not.
 
 The anchor. `bench` must reproduce `tools/signature.golden`.
 
-**The depth is upstream's 13**, which became affordable when the NNUE forward pass landed
-and the tree stopped being enormous. Read it from `crates/xtask/src/gates.rs`, never from
-prose. The COUNT is still rfish's own, because the search's pruning constants are not
-upstream's yet — see CONTRIBUTING.md, "Two different numbers".
+**The depth is upstream's**, which became affordable when the NNUE forward pass landed and
+the tree stopped being enormous. Read it from `crates/xtask/src/gates.rs`, never from prose.
+The COUNT is upstream's too: the golden equals a pristine upstream build's `Bench:` at the
+pin, so a diff is a porting REGRESSION rather than a tuning difference — see
+[CONTRIBUTING.md](../CONTRIBUTING.md), "One number, and what a diff against it means".
 
 The gate has to run in well under a minute, because that is the property that decides
 whether anyone runs it before pushing. If a change makes it slower, fix the change.

@@ -207,12 +207,11 @@ anything except running the thing:
 
 ## What is not faithful yet
 
-The pruning *set* is upstream's; the pruning *constants* are not. Several are tuned against
-the NNUE evaluation, which now exists, so fitting them is finally a measurable exercise
-rather than a guess. Until then the bench signature is rfish's own number — see
-[CONTRIBUTING.md](../CONTRIBUTING.md), "Two different numbers". At upstream's own depth 13
-rfish searches about 3.45 million nodes against upstream's 3.18 million, which is how close
-the trees are.
+The pruning set, the constants and the reduction model are all upstream's now, and the bench
+signature is upstream's own number rather than rfish's — see [CONTRIBUTING.md](../CONTRIBUTING.md),
+"One number, and what a diff against it means". Every entry matches node for node, and so does
+every `bestmove` and `ponder` move, which is what makes a diff a porting regression rather
+than a tuning difference.
 
 The time manager, the strength limiter and pondering are no longer on that list: the clock
 model is `timeman.cpp` line for line, `Skill` is upstream's, and `ponderhit` converts a

@@ -89,16 +89,20 @@ had not: `arch-determinism` was in no lane at all, six tracked files named the g
 working area, and in two cases the defect was in the gate **being written** rather than in the
 code it was aimed at.
 
-## Two different numbers
+## One number, and what a diff against it means
 
-Do not confuse them:
+`tools/signature.golden` **equals** a pristine upstream build's `Bench:` at
+`tools/upstream/UPSTREAM_BASE`, at upstream's own depth. It was rfish's own number for most
+of the port and it is not any more, and that changes what the gate says: a diff against it is
+a **porting regression**, not a tuning difference. That is what makes the anchor worth having
+rather than merely worth keeping green.
 
-- **`tools/signature.golden`** — rfish's node count *today*, at the depth
-  `cargo xtask signature` uses. It exists so a refactor cannot silently change behaviour
-  mid-port. It is not the target.
-- **Upstream's `Bench:` at `tools/upstream/UPSTREAM_BASE`** — the finish line.
+The two are still derived differently, which is the distinction to keep: the golden is
+committed here, and upstream's is computed by building the golden at the pin. When they
+disagree, upstream is right.
 
-Neither number is written into prose anywhere. Quote the gate.
+The number is not written into prose anywhere — `docs-lint` refuses a page that quotes it.
+Quote the gate.
 
 ## Regenerating a golden
 

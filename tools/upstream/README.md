@@ -4,16 +4,18 @@
 non-ancestral to upstream's, so `git merge-base` does not define "where we are" — this file
 does.
 
-Upstream's own `Bench:` for that commit is the **finish line**: the node count rfish must
-eventually reproduce. It is not written here, because it is a number a gate should compute:
+Upstream's own `Bench:` for that commit is what `tools/signature.golden` holds — the two are
+**equal**, so a diff against the golden is a porting regression rather than a tuning
+difference. Neither number is written here, because it is a number a gate should compute:
 
 ```sh
 cd ../Stockfish && git checkout "$(cat ../rfish/tools/upstream/UPSTREAM_BASE)"
 make -j build ARCH=x86-64-avx2 && ./stockfish bench
 ```
 
-Do not confuse it with `tools/signature.golden`, which is rfish's number *today*. See
-[CONTRIBUTING.md](../../CONTRIBUTING.md), "Two different numbers".
+`cargo xtask sync-status` asserts that this checkout is actually AT the pin before anything
+is compared against it. See [CONTRIBUTING.md](../../CONTRIBUTING.md), "One number, and what a
+diff against it means".
 
 ## Syncing
 
