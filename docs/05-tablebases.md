@@ -208,3 +208,22 @@ The order matters: a wrong verdict is worse than a refusal, so anything that *ca
 at parse time is refused there, and clamping is only what remains. **None of it changes a
 valid table**: every bound is slack for a file upstream's own writer produced, `cargo xtask
 tb` still matches the oracle on all 264 probes, and the bench signature is untouched.
+
+The last row of that table was refused only **half** way, and the nightly lane found the other
+half three days later. A pawnful file's `pieces[0]` was held to being a PAWN, which still
+accepts the pawn of the colour that has **none** — and `do_probe_table` picks the leading
+pawns' *colour* off that same nibble (`tbprobe.cpp:1174`, where upstream asserts the type and
+trusts the colour). Name the wrong colour and the collection is empty: the probe sorts
+`squares[1..0]` and indexes `lead_pawn_idx[0]` with a square the loop never wrote. One flipped
+nibble in a downloaded `KPvK.rtbw` reaches it — byte 6 is `0x11`, and `0x99` is the same pawn
+the other way round. The check now names the exact piece code, and the colour it expects comes
+from the **material** — the enumeration the filename implies, which is where `pawn_count` has
+always taken its ordering from — rather than from another byte of the same file. A file that
+disagrees is refused at load, where the answer can still be "no table".
+
+**A bound stated against the wrong quantity is not a weaker bound, it is an absent one.** The
+type check read as if it covered `pieces[0]`, and covered one bit of it; the fuzz lane had been
+green over the remaining hole for three nights. `../zfish` fixed the same half-hole two days
+earlier (`3883af90`), from this port's own harness finding — the two ports keep re-finding each
+other's residue, and the shape to look for is a validated field whose *consumers* read more out
+of it than the validation checked.
