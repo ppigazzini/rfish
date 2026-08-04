@@ -101,6 +101,101 @@ pub(crate) fn lane_coverage() -> Result<Outcome, String> {
     ))
 }
 
+/// The pinned upstream commit and the golden checkout must agree, in BOTH directions.
+///
+/// `tools/upstream/UPSTREAM_BASE` names the commit rfish claims to match. Everything
+/// differential in this tree — `golden-audit`, `upstream-nodes`, `nnue-check`, `tb`, `perf`'s
+/// oracle — is built from `../Stockfish`, so the pin is only meaningful while that checkout
+/// is actually AT it.
+///
+/// **The two directions are not the same finding.**
+///
+/// - The checkout **ahead** of the pin is normal: upstream moved and this port has not
+///   followed yet. Informational, with the commit list, because that list is the re-port
+///   worklist.
+/// - The checkout **behind** the pin is a defect in the workspace, and RED. `../Stockfish` is
+///   the golden; a checkout behind the pin means every grep of it, and every oracle built from
+///   it, answers from source this tree has already ported past. Counting only the first
+///   direction prints that state as "in sync", which is worse than silence — it asserts the
+///   thing a reader would otherwise go and verify.
+///
+/// **rfish has no `UPSTREAM_TARGET`, and that is deliberate.** ../mcfish carries one because
+/// it is mid-catch-up and needs to name the commit it is aiming AT while the base says what it
+/// matches today. A sync here is atomic — `tools/upstream/README.md` requires the base and
+/// `tools/signature.golden` to advance in the same commit, and a sync that cannot land
+/// bit-exact is a bug report rather than a sync — so there is no catch-up state for a second
+/// pin to describe. A file with no role is the scaffolding this tree deletes, not adds.
+pub(crate) fn sync_status() -> Result<Outcome, String> {
+    let root = workspace_root();
+    let pin_file = root.join("tools/upstream/UPSTREAM_BASE");
+    let pin = std::fs::read_to_string(&pin_file)
+        .map_err(|e| format!("{}: {e}", pin_file.display()))?
+        .trim()
+        .to_string();
+    if pin.is_empty() {
+        return Ok(Outcome::Fail(format!(
+            "{} is empty — the pin every differential gate resolves against names nothing",
+            pin_file.display()
+        )));
+    }
+
+    let golden = root.parent().map(|p| p.join("Stockfish")).unwrap_or_default();
+    if !golden.join(".git").exists() {
+        return Ok(Outcome::Skipped(format!(
+            "no golden checkout at {} — the pin cannot be verified against anything",
+            golden.display()
+        )));
+    }
+    let git = |args: &[&str]| -> Result<String, String> {
+        crate::capture(std::process::Command::new("git").current_dir(&golden).args(args))
+            .map(|s| s.trim().to_string())
+    };
+
+    // A pin the golden does not contain is a broken pin, not a drift of zero. Reporting "up
+    // to date" for a SHA nobody can resolve is the same class as comparing nothing.
+    if git(&["cat-file", "-e", &format!("{pin}^{{commit}}")]).is_err() {
+        return Ok(Outcome::Fail(format!(
+            "UPSTREAM_BASE {pin} is not a commit in {} — fetch the golden, or the pin names \
+             a commit that was rewritten away",
+            golden.display()
+        )));
+    }
+    let head = git(&["rev-parse", "HEAD"])?;
+    let ahead: usize = git(&["rev-list", "--count", &format!("{pin}..HEAD")])?
+        .parse()
+        .map_err(|e| format!("counting commits ahead of the pin: {e}"))?;
+    let behind: usize = git(&["rev-list", "--count", &format!("HEAD..{pin}")])?
+        .parse()
+        .map_err(|e| format!("counting commits behind the pin: {e}"))?;
+
+    if behind > 0 {
+        eprintln!("  the golden checkout is BEHIND the pin by {behind} commit(s)");
+        eprintln!("      pinned {}, {} HEAD {}", &pin[..9], golden.display(), &head[..9]);
+        if ahead > 0 {
+            eprintln!("      and {ahead} ahead as well — the two have diverged");
+        }
+        eprintln!("      {} is the golden. Check it out AT the pin before", golden.display());
+        eprintln!("      building an oracle or comparing anything against it.");
+        return Ok(Outcome::Fail(format!(
+            "the golden checkout is {behind} commit(s) behind UPSTREAM_BASE"
+        )));
+    }
+    if ahead == 0 {
+        println!("sync-status: the golden is checked out AT the pin, {}", &pin[..9]);
+    } else {
+        println!(
+            "sync-status: upstream has moved {ahead} commit(s) past the pin ({} -> {})",
+            &pin[..9],
+            &head[..9]
+        );
+        println!("  Porting is human-gated: land ONE upstream commit per commit here.");
+        for line in git(&["log", "--oneline", "--reverse", &format!("{pin}..HEAD")])?.lines() {
+            println!("      {line}");
+        }
+    }
+    Ok(Outcome::Pass)
+}
+
 /// One mutation, and the gate that must go red for it.
 struct Mutant {
     /// What the mutation does, in the report.
