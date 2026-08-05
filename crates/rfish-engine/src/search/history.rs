@@ -115,14 +115,21 @@ pub const TT_MOVE_HISTORY_LIMIT: i32 = 8192;
 
 /// Move a stored value toward `bonus`, by upstream's gravity rule.
 ///
-/// The value approaches `limit` asymptotically: the closer it already is, the less an
-/// update moves it. A table that simply added and clamped would lose the ordering
-/// information between two moves that had both saturated.
+/// The value approaches `LIMIT` asymptotically: the closer it already is, the less an update
+/// moves it. A table that simply added and clamped would lose the ordering information
+/// between two moves that had both saturated.
+///
+/// **The clamp is a const parameter, not an argument, because it belongs to the TABLE.**
+/// Every caller passed its own table's constant, so the two `i32`s travelled adjacent and
+/// were silently interchangeable — and a swap does not fail here, it produces a differently
+/// shaped gravity curve and a different move ordering. `ContinuationHistory` is the one type
+/// that updates at two different clamps, and that difference is now in two method names
+/// rather than in what a caller remembered to pass.
 #[inline(always)]
-fn apply_gravity(entry: &mut i16, bonus: i32, limit: i32) {
-    let bonus = bonus.clamp(-limit, limit);
+fn apply_gravity<const LIMIT: i32>(entry: &mut i16, bonus: i32) {
+    let bonus = bonus.clamp(-LIMIT, LIMIT);
     let v = i32::from(*entry);
-    *entry = (v + bonus - v * bonus.abs() / limit) as i16;
+    *entry = (v + bonus - v * bonus.abs() / LIMIT) as i16;
 }
 
 /// Quiet-move history, indexed by side to move and the raw move.
@@ -162,7 +169,7 @@ impl ButterflyHistory {
     /// Move the stored score toward `bonus`.
     #[inline(always)]
     pub fn update(&mut self, c: Color, mv: u16, bonus: i32) {
-        apply_gravity(&mut self.table[c.index()][mv as usize], bonus, MAIN_HISTORY_LIMIT);
+        apply_gravity::<MAIN_HISTORY_LIMIT>(&mut self.table[c.index()][mv as usize], bonus);
     }
 
     /// Reset every entry to `v`.
@@ -209,7 +216,7 @@ impl LowPlyHistory {
 
     #[inline(always)]
     pub fn update(&mut self, ply: Ply, mv: u16, bonus: i32) {
-        apply_gravity(&mut self.table[ply.index()][mv as usize], bonus, MAIN_HISTORY_LIMIT);
+        apply_gravity::<MAIN_HISTORY_LIMIT>(&mut self.table[ply.index()][mv as usize], bonus);
     }
 
     /// Reset every entry to `v`. Upstream refills this at the start of every iteration,
@@ -244,10 +251,9 @@ impl CaptureHistory {
 
     #[inline(always)]
     pub fn update(&mut self, pc: Piece, to: Square, captured: PieceType, bonus: i32) {
-        apply_gravity(
+        apply_gravity::<CAPTURE_HISTORY_LIMIT>(
             &mut self.table[pc.index()][to.index()][captured.index()],
             bonus,
-            CAPTURE_HISTORY_LIMIT,
         );
     }
 
@@ -284,7 +290,7 @@ impl PieceToHistory {
 
     #[inline(always)]
     pub fn update(&mut self, pc: Piece, to: Square, bonus: i32) {
-        apply_gravity(&mut self.table[pc.index()][to.index()], bonus, CONTINUATION_LIMIT);
+        apply_gravity::<CONTINUATION_LIMIT>(&mut self.table[pc.index()][to.index()], bonus);
     }
 
     /// Update at the correction clamp rather than the continuation one.
@@ -293,7 +299,7 @@ impl PieceToHistory {
     /// of the gravity arithmetic — using the wrong one changes every stored value.
     #[inline(always)]
     pub fn update_correction(&mut self, pc: Piece, to: Square, bonus: i32) {
-        apply_gravity(&mut self.table[pc.index()][to.index()], bonus, CORRECTION_LIMIT);
+        apply_gravity::<CORRECTION_LIMIT>(&mut self.table[pc.index()][to.index()], bonus);
     }
 
     /// Reset every entry to `v`.
@@ -382,10 +388,9 @@ impl ContinuationHistory {
 
     #[inline(always)]
     pub fn update(&mut self, idx: ContKey, pc: Piece, to: Square, bonus: i32) {
-        apply_gravity(
+        apply_gravity::<CONTINUATION_LIMIT>(
             &mut self.table[idx.index()][pc.index()][to.index()],
             bonus,
-            CONTINUATION_LIMIT,
         );
     }
 
@@ -453,10 +458,9 @@ impl ContinuationCorrectionHistory {
 
     #[inline(always)]
     pub fn update(&mut self, idx: CorrKey, pc: Piece, to: Square, bonus: i32) {
-        apply_gravity(
+        apply_gravity::<CORRECTION_LIMIT>(
             &mut self.table[idx.index()][pc.index()][to.index()],
             bonus,
-            CORRECTION_LIMIT,
         );
     }
 
@@ -525,10 +529,9 @@ impl PawnHistory {
 
     #[inline(always)]
     pub fn update(&mut self, row: PawnRow, pc: Piece, to: Square, bonus: i32) {
-        apply_gravity(
+        apply_gravity::<PAWN_HISTORY_LIMIT>(
             &mut self.table[row.index()][pc.index()][to.index()],
             bonus,
-            PAWN_HISTORY_LIMIT,
         );
     }
 
@@ -602,7 +605,7 @@ impl CorrectionHistory {
 /// Move one field of a correction bundle toward `bonus`.
 #[inline(always)]
 pub fn update_correction_entry(entry: &mut i16, bonus: i32) {
-    apply_gravity(entry, bonus, CORRECTION_LIMIT);
+    apply_gravity::<CORRECTION_LIMIT>(entry, bonus);
 }
 
 /// Every history table one worker owns.
@@ -642,7 +645,7 @@ impl Histories {
     /// Move the transposition-move-quality counter toward `bonus`.
     #[inline]
     pub fn update_tt_move(&mut self, bonus: i32) {
-        apply_gravity(&mut self.tt_move, bonus, TT_MOVE_HISTORY_LIMIT);
+        apply_gravity::<TT_MOVE_HISTORY_LIMIT>(&mut self.tt_move, bonus);
     }
 }
 
@@ -656,14 +659,14 @@ mod tests {
         let mut v: i16 = 0;
         // Repeated maximum bonuses approach the limit but never exceed it.
         for _ in 0..1000 {
-            apply_gravity(&mut v, MAIN_HISTORY_LIMIT, MAIN_HISTORY_LIMIT);
+            apply_gravity::<MAIN_HISTORY_LIMIT>(&mut v, MAIN_HISTORY_LIMIT);
         }
         assert!(i32::from(v) <= MAIN_HISTORY_LIMIT);
         assert!(i32::from(v) > MAIN_HISTORY_LIMIT - 2);
 
         // And symmetric on the way down.
         for _ in 0..1000 {
-            apply_gravity(&mut v, -MAIN_HISTORY_LIMIT, MAIN_HISTORY_LIMIT);
+            apply_gravity::<MAIN_HISTORY_LIMIT>(&mut v, -MAIN_HISTORY_LIMIT);
         }
         assert!(i32::from(v) >= -MAIN_HISTORY_LIMIT);
         assert!(i32::from(v) < -MAIN_HISTORY_LIMIT + 2);
@@ -674,9 +677,9 @@ mod tests {
         // The property gravity exists for: ordering information survives saturation.
         let mut fresh: i16 = 0;
         let mut saturated: i16 = (MAIN_HISTORY_LIMIT - 10) as i16;
-        apply_gravity(&mut fresh, 500, MAIN_HISTORY_LIMIT);
+        apply_gravity::<MAIN_HISTORY_LIMIT>(&mut fresh, 500);
         let before = i32::from(saturated);
-        apply_gravity(&mut saturated, 500, MAIN_HISTORY_LIMIT);
+        apply_gravity::<MAIN_HISTORY_LIMIT>(&mut saturated, 500);
         assert!(i32::from(fresh) > i32::from(saturated) - before);
     }
 
