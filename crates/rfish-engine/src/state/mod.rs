@@ -427,51 +427,162 @@ impl SharedState {
     }
 }
 
-/// The time budget for one move, in the unit the clock is being measured in.
+/// A quantity in whatever unit the clock model is running in: milliseconds, or nodes.
 ///
-/// Upstream's `TimeManagement` is two numbers plus the flag that says what the numbers
-/// count. Under `nodestime` the whole time model switches to nodes — the clock, the
-/// increment and the move overhead are all multiplied into node counts, and `elapsed`
-/// returns nodes searched rather than milliseconds. Keeping the flag next to the two
-/// bounds is what stops a caller comparing a node count against a millisecond.
+/// **Which one it is, is not a property of this type and does not need to be.** The invariant
+/// that matters is that a bound and the measure it is compared against are drawn from the
+/// same clock model, and that is what makes them comparable here and a wall-clock reading
+/// not.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub struct Elapsed(i64);
+
+impl Elapsed {
+    /// Build from a count in the budget's own unit.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(v: i64) -> Elapsed {
+        Elapsed(v)
+    }
+
+    /// The number, for the scaled comparison the time manager's stability term needs.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+/// Wall-clock milliseconds since the search started. **Reporting only.**
+///
+/// A distinct type from [`Elapsed`] because that is the whole point: a GUI told a search took
+/// 40 000 "milliseconds" because the engine was counting nodes will draw the wrong
+/// conclusion, and comparing one of these against a budget bound is now a compile error
+/// rather than a sentence in a doc-comment.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub struct WallMillis(i64);
+
+impl WallMillis {
+    /// The number, for the `info time` field and the nps division.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+/// The two stopping points, carrying the unit they are in.
+///
+/// Under `nodestime` the whole time model switches to nodes — the clock, the increment and
+/// the move overhead are all multiplied into node counts. The unit was a `bool` stored beside
+/// two `pub i64`s, and the doc claimed that keeping it there "stops a caller comparing a node
+/// count against a millisecond". It stopped nothing: the flag and the bounds were three
+/// independent public fields, and nothing obliged a reader of one to consult the other.
+#[derive(Clone, Copy, Debug)]
+pub enum Budget {
+    /// Bounds in milliseconds of wall clock.
+    Wall {
+        /// The point past which a new iteration should not be started.
+        optimum: Elapsed,
+        /// The point past which the search stops even mid-iteration.
+        maximum: Elapsed,
+    },
+    /// Bounds in nodes searched, as `nodestime` converts them.
+    Nodes {
+        /// The point past which a new iteration should not be started.
+        optimum: Elapsed,
+        /// The point past which the search stops even mid-iteration.
+        maximum: Elapsed,
+    },
+}
+
+impl Budget {
+    /// The two bounds, whichever unit they are in.
+    #[inline(always)]
+    #[must_use]
+    const fn bounds(self) -> (Elapsed, Elapsed) {
+        match self {
+            Budget::Wall { optimum, maximum } | Budget::Nodes { optimum, maximum } => {
+                (optimum, maximum)
+            }
+        }
+    }
+}
+
+/// The time budget for one move.
+///
+/// Upstream's `TimeManagement` is two numbers plus a flag saying what the numbers count. Here
+/// the flag IS the numbers' container, so the bounds cannot be read without it.
 #[derive(Clone, Copy, Debug)]
 pub struct TimeBudget {
     /// When the search started.
     pub start: Instant,
-    /// The point past which a new iteration should not be started.
-    pub optimum: i64,
-    /// The point past which the search stops even mid-iteration.
-    pub maximum: i64,
-    /// True when the two bounds count nodes rather than milliseconds.
-    pub use_nodes_time: bool,
+    /// The bounds and their unit, inseparable.
+    budget: Budget,
 }
 
 impl Default for TimeBudget {
     fn default() -> TimeBudget {
-        TimeBudget { start: Instant::now(), optimum: 0, maximum: 0, use_nodes_time: false }
+        TimeBudget {
+            start: Instant::now(),
+            budget: Budget::Wall { optimum: Elapsed::new(0), maximum: Elapsed::new(0) },
+        }
     }
 }
 
 impl TimeBudget {
-    /// How far the search has got, in whichever unit the budget counts.
+    /// A budget starting at `start`, with the bounds and unit `budget` names.
+    #[must_use]
+    pub const fn new(start: Instant, budget: Budget) -> TimeBudget {
+        TimeBudget { start, budget }
+    }
+
+    /// The point past which a new iteration should not be started.
+    #[inline]
+    #[must_use]
+    pub const fn optimum(&self) -> Elapsed {
+        self.budget.bounds().0
+    }
+
+    /// The point past which the search stops even mid-iteration.
+    #[inline]
+    #[must_use]
+    pub const fn maximum(&self) -> Elapsed {
+        self.budget.bounds().1
+    }
+
+    /// True when the bounds count nodes rather than milliseconds.
+    #[inline]
+    #[must_use]
+    pub const fn counts_nodes(&self) -> bool {
+        matches!(self.budget, Budget::Nodes { .. })
+    }
+
+    /// How far the search has got, in the unit this budget's bounds are in.
+    ///
+    /// The only measure comparable with [`TimeBudget::optimum`] and
+    /// [`TimeBudget::maximum`], because it is the only one drawn from the same arm.
     ///
     /// `nodes` is the pool-wide count, needed only in nodes-as-time mode; the caller passes
     /// it unconditionally because reading a relaxed atomic is cheaper than branching around
     /// it.
     #[inline]
     #[must_use]
-    pub fn elapsed(&self, nodes: u64) -> i64 {
-        if self.use_nodes_time { nodes as i64 } else { self.elapsed_time() }
+    pub fn elapsed(&self, nodes: u64) -> Elapsed {
+        match self.budget {
+            Budget::Nodes { .. } => Elapsed::new(nodes as i64),
+            Budget::Wall { .. } => Elapsed::new(self.wall_elapsed().get()),
+        }
     }
 
     /// Wall-clock milliseconds since the search started, whatever the mode.
     ///
-    /// Reporting stays in real time: a GUI that is told a search took 40 000 "milliseconds"
-    /// because the engine was counting nodes will draw the wrong conclusion.
+    /// Reporting stays in real time. Its type says so, so it cannot reach a bound.
     #[inline]
     #[must_use]
-    pub fn elapsed_time(&self) -> i64 {
-        self.start.elapsed().as_millis() as i64
+    pub fn wall_elapsed(&self) -> WallMillis {
+        WallMillis(self.start.elapsed().as_millis() as i64)
     }
 }
 

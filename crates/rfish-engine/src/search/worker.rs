@@ -40,8 +40,8 @@ use crate::board::types::{
 use crate::eval;
 use crate::eval::nnue::{Network, Scratch};
 use crate::state::{
-    Limits, MEAN_SQUARED_SENTINEL, RootMove, STACK_BASE, STACK_SIZE, SearchOptions, SharedState,
-    StackEntry, StackIx, TimeBudget,
+    Elapsed, Limits, MEAN_SQUARED_SENTINEL, RootMove, STACK_BASE, STACK_SIZE, SearchOptions,
+    SharedState, StackEntry, StackIx, TimeBudget,
 };
 
 use super::history::{
@@ -1199,7 +1199,7 @@ impl SearchWorker {
                     interpolate(nodes_effort as f64, 75_800.0, 104_510.0, 0.969, 0.714)
                         .clamp(0.693, 0.838);
 
-                let mut total_time = self.budget.optimum as f64
+                let mut total_time = self.budget.optimum().get() as f64
                     * falling_eval
                     * reduction
                     * best_move_instability
@@ -1211,10 +1211,10 @@ impl SearchWorker {
                     total_time = total_time.min(500.0);
                 }
 
-                let elapsed = self.budget.elapsed(nodes) as f64;
+                let elapsed = self.budget.elapsed(nodes).get() as f64;
 
                 // Stop when the budget is spent, or when the line is already decided.
-                if elapsed > total_time.min(self.budget.maximum as f64)
+                if elapsed > total_time.min(self.budget.maximum().get() as f64)
                     || self.root_moves[self.multi_pv - 1].score >= mate_in(Ply::new(3))
                     || self.root_moves[0].score == mated_in(Ply::new(2))
                 {
@@ -2910,8 +2910,19 @@ impl SearchWorker {
         let elapsed = self.budget.elapsed(nodes);
 
         let out_of_time = self.limits.uses_time_management()
-            && (elapsed > self.budget.maximum || self.shared.stop_on_ponderhit());
-        let past_move_time = self.limits.move_time.is_some_and(|mt| elapsed >= mt as i64);
+            && (elapsed > self.budget.maximum() || self.shared.stop_on_ponderhit());
+        // UPSTREAM'S UNIT CROSSING, reproduced rather than corrected. `move_time` is
+        // milliseconds and `elapsed` is nodes under `nodestime`, and `search.cpp`'s
+        // `check_time` compares them anyway:
+        //
+        //     || (worker.limits.movetime && elapsed >= worker.limits.movetime)
+        //
+        // So a `go movetime` under `nodestime` stops on a node count compared against a
+        // millisecond figure, in both engines. The conversion is spelled out here because the
+        // types would otherwise refuse it, which is the type doing its job: this is a quirk
+        // inherited on purpose, not one nobody noticed.
+        let past_move_time =
+            self.limits.move_time.is_some_and(|mt| elapsed >= Elapsed::new(mt as i64));
         let past_nodes = self.limits.nodes.is_some_and(|n| nodes >= n);
 
         if out_of_time || past_move_time || past_nodes {
@@ -3071,7 +3082,7 @@ impl SearchWorker {
         // one line the GUI asked for -- reporting the inflated number publishes three lines
         // nobody requested, at a strength the engine is not playing at.
         let lines = self.opts.multi_pv.min(self.root_moves.len());
-        let elapsed = self.budget.elapsed_time().max(1) as u64;
+        let elapsed = self.budget.wall_elapsed().get().max(1) as u64;
         let nodes = self.pool_nodes();
         let tb_hits = self.shared.tb_hit_count().max(self.tb_hits)
             + if self.root_in_tb { self.root_moves.len() as u64 } else { 0 };
