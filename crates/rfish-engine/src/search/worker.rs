@@ -45,8 +45,8 @@ use crate::state::{
 };
 
 use super::history::{
-    Bonus, CORRECTION_LIMIT, ContKey, Histories, LOW_PLY_HISTORY_SIZE, cont_plane_index,
-    corr_plane_index,
+    Bonus, CORRECTION_LIMIT, ContKey, CorrKey, Histories, InCheck, LOW_PLY_HISTORY_SIZE,
+    WasCapture, cont_plane_index, corr_plane_index,
 };
 use super::movepick::{ContKeys, MoveBuf, MovePicker};
 use super::score::Score;
@@ -458,7 +458,8 @@ impl SearchWorker {
             self.scratch.record(ply, &self.pos, self.pos.raw_key(), dpp);
         }
         self.stack[si.index()].current_move = mv;
-        self.stack[si.index()].continuation = cont_plane_index(in_check, capture, moved, mv.to());
+        self.stack[si.index()].continuation =
+            cont_plane_index(InCheck::of(in_check), WasCapture::of(capture), moved, mv.to());
         self.stack[si.index()].continuation_correction = corr_plane_index(moved, mv.to());
     }
 
@@ -474,9 +475,11 @@ impl SearchWorker {
         // rolls forward from the parent with an EMPTY delta rather than refreshing.
         self.scratch.record_null(si.ply().next(), &self.pos, self.pos.raw_key());
         self.stack[si.index()].current_move = Move::NULL;
-        self.stack[si.index()].continuation =
-            cont_plane_index(false, false, Piece::NONE, Square::A1);
-        self.stack[si.index()].continuation_correction = corr_plane_index(Piece::NONE, Square::A1);
+        // The sentinel plane, by its name rather than by recomputing it. A move by
+        // `Piece::NONE` to a1 that is neither in check nor a capture indexes plane zero,
+        // which is what `UNREAD` already is.
+        self.stack[si.index()].continuation = ContKey::UNREAD;
+        self.stack[si.index()].continuation_correction = CorrKey::UNREAD;
     }
 
     fn undo_null_move(&mut self) {
@@ -911,10 +914,8 @@ impl SearchWorker {
         // against a value that was never computed.
         for i in 1..=7 {
             self.stack[StackIx::pre_root(i).index()].static_eval = VALUE_NONE;
-            self.stack[StackIx::pre_root(i).index()].continuation =
-                cont_plane_index(false, false, Piece::NONE, Square::A1);
-            self.stack[StackIx::pre_root(i).index()].continuation_correction =
-                corr_plane_index(Piece::NONE, Square::A1);
+            self.stack[StackIx::pre_root(i).index()].continuation = ContKey::UNREAD;
+            self.stack[StackIx::pre_root(i).index()].continuation_correction = CorrKey::UNREAD;
         }
 
         if main_thread {
