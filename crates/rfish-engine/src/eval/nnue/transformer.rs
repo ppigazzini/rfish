@@ -50,7 +50,20 @@ pub struct FeatureTransformer {
     /// One bias per output, shared by both perspectives.
     biases: Aligned<i16>,
     /// `weights[index * L1 + j]` for the king-piece features.
-    weights: Aligned<i16>,
+    /// Stored as VECTOR LANES rather than as `i16`, so that a weight row's ALIGNMENT is
+    /// carried by its type.
+    ///
+    /// A legacy-SSE instruction folds a memory operand only where the compiler can prove it is
+    /// 16-byte aligned. Through `[i16; TILE]` -- which an `as_chunks` view produces, and whose
+    /// alignment is the ELEMENT's two bytes -- it cannot, so the fold's row loop at sse41
+    /// emitted `movdqu` then `psubw` where one `psubw` with a memory operand would do: sixteen
+    /// instructions per (row, tile) instead of eight. `Simd<i16, LANE>` has the alignment of
+    /// its own width, so the load folds. ../mcfish carries the same note on its `_load_a`
+    /// forms and calls the alignment load-bearing.
+    ///
+    /// avx2 is unaffected: a VEX-encoded `vpsubw` takes an unaligned memory operand, and the
+    /// disassembly there showed the row already folded before this change.
+    weights: Aligned<Simd<i16, LANE>>,
     /// `threat_and_pp_weights[index * L1 + j]`, `i8` because these features are many and
     /// their individual contributions small.
     threat_and_pp_weights: Aligned<i8>,
@@ -481,6 +494,28 @@ const TILE: usize = 128;
 #[cfg(not(target_feature = "avx2"))]
 const TILE: usize = 64;
 
+/// `i16`s per stored weight vector.
+///
+/// **This is the REGISTER WIDTH, not a tuning knob**, and getting that wrong is expensive in
+/// one direction only. The point of the type is its alignment ([`FeatureTransformer::weights`]),
+/// but the width it names is also the width the fold's row loop is emitted at: pinned at eight
+/// `i16` -- 128 bits -- the avx2 fold ran on `xmm` where it had been running on `ymm`, and
+/// `bench 16 1 8` went 1,505,457,814 to 1,834,100,765. **+328.6M, +21.8%.** LLVM does not widen
+/// adjacent explicit vectors back up.
+///
+/// So each tier names its own register width. Unlike [`TILE`], no rung of this is a measured
+/// optimum to be swept — it follows from the ISA, which is why the avx512 rung is taken here
+/// and not there.
+#[cfg(target_feature = "avx512f")]
+const LANE: usize = 32;
+#[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
+const LANE: usize = 16;
+#[cfg(all(not(target_feature = "avx512f"), not(target_feature = "avx2")))]
+const LANE: usize = 8;
+
+/// Vectors per [`TILE`]-wide weight row.
+const KA_LANES: usize = TILE / LANE;
+
 /// [`FT_MAX_VAL`] at the accumulator's own width.
 const FT_MAX: i16 = FT_MAX_VAL as i16;
 
@@ -496,7 +531,7 @@ impl FeatureTransformer {
     pub fn new() -> FeatureTransformer {
         FeatureTransformer {
             biases: Aligned::new(L1),
-            weights: Aligned::new(L1 * HALFKA_DIMENSIONS),
+            weights: Aligned::new(L1 * HALFKA_DIMENSIONS / LANE),
             threat_and_pp_weights: Aligned::new(L1 * THREAT_AND_PP_DIMENSIONS),
             psqt_weights: Aligned::new(PSQT_BUCKETS * HALFKA_DIMENSIONS),
             threat_and_pp_psqt_weights: Aligned::new(PSQT_BUCKETS * THREAT_AND_PP_DIMENSIONS),
@@ -507,7 +542,7 @@ impl FeatureTransformer {
     #[must_use]
     pub fn weight_bytes(&self) -> usize {
         self.biases.len() * 2
-            + self.weights.len() * 2
+            + self.weights.len() * LANE * 2
             + self.threat_and_pp_weights.len()
             + self.psqt_weights.len() * 4
             + self.threat_and_pp_psqt_weights.len() * 4
@@ -535,7 +570,7 @@ impl FeatureTransformer {
         r.i8s(&mut pp_w[..pp_dims * L1])?;
         r.leb128(&mut pp_psqt[..pp_dims * PSQT_BUCKETS])?;
 
-        r.leb128_i16(&mut self.weights)?;
+        r.leb128_i16_groups(self.weights.iter_mut().map(Simd::as_mut_array))?;
         r.leb128(&mut self.psqt_weights)?;
 
         // `permute_weights` is skipped on purpose: it exists only so a vector `packus` can
@@ -564,7 +599,7 @@ impl FeatureTransformer {
         w.i8s(&pp_w[..pp_dims * L1])?;
         w.leb128(&pp_psqt[..pp_dims * PSQT_BUCKETS])?;
 
-        w.leb128_i16(&self.weights)?;
+        w.leb128_i16_from(self.weights.iter().flat_map(|v| v.as_array().iter().copied()))?;
         w.leb128(&self.psqt_weights)?;
         Ok(())
     }
@@ -650,24 +685,25 @@ impl FeatureTransformer {
         // `index * ROWS_PER_FEATURE + t`, and indexing two `[i16; TILE]` arrays by
         // `0..TILE` needs no check at either end.
         const ROWS_PER_FEATURE: usize = L1 / TILE;
-        let ka_rows = <[i16]>::as_chunks::<TILE>(&self.weights).0;
+        let ka_rows = <[Simd<i16, LANE>]>::as_chunks::<KA_LANES>(&self.weights).0;
         let tp_rows = <[i8]>::as_chunks::<TILE>(&self.threat_and_pp_weights).0;
         let src_rows = src.as_chunks::<TILE>().0;
         for (t, chunk) in dst.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
             let mut tile = src_rows[t];
+            let lanes = tile.as_chunks_mut::<LANE>().0;
             for &index in ka.1 {
                 let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
-                for j in 0..TILE {
+                for j in 0..KA_LANES {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
-                    // rather than a value to saturate.
-                    tile[j] = tile[j].wrapping_sub(w[j]);
+                    // rather than a value to saturate. `Simd` arithmetic wraps.
+                    lanes[j] = (Simd::from_array(lanes[j]) - w[j]).to_array();
                 }
             }
             for &index in ka.0 {
                 let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
-                for j in 0..TILE {
-                    tile[j] = tile[j].wrapping_add(w[j]);
+                for j in 0..KA_LANES {
+                    lanes[j] = (Simd::from_array(lanes[j]) + w[j]).to_array();
                 }
             }
             for &index in tp.1 {
@@ -710,24 +746,25 @@ impl FeatureTransformer {
         // the other half of the same fold and had been left behind, and it is worth 28.9M
         // here because a refresh applies MORE rows than a one-hop delta does.
         const ROWS_PER_FEATURE: usize = L1 / TILE;
-        let ka_rows = <[i16]>::as_chunks::<TILE>(&self.weights).0;
+        let ka_rows = <[Simd<i16, LANE>]>::as_chunks::<KA_LANES>(&self.weights).0;
         let tp_rows = <[i8]>::as_chunks::<TILE>(&self.threat_and_pp_weights).0;
         let mirror_tiles = mirror.as_chunks_mut::<TILE>().0;
         for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
             let mut tile = *chunk;
+            let lanes = tile.as_chunks_mut::<LANE>().0;
             for &index in ka.1 {
                 let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
-                for j in 0..TILE {
+                for j in 0..KA_LANES {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
-                    // rather than a value to saturate.
-                    tile[j] = tile[j].wrapping_sub(w[j]);
+                    // rather than a value to saturate. `Simd` arithmetic wraps.
+                    lanes[j] = (Simd::from_array(lanes[j]) - w[j]).to_array();
                 }
             }
             for &index in ka.0 {
                 let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
-                for j in 0..TILE {
-                    tile[j] = tile[j].wrapping_add(w[j]);
+                for j in 0..KA_LANES {
+                    lanes[j] = (Simd::from_array(lanes[j]) + w[j]).to_array();
                 }
             }
             for &index in tp.1 {
@@ -757,22 +794,23 @@ impl FeatureTransformer {
     /// source to read and no threat table to touch.
     fn fold_ka_inplace(&self, acc: &mut [i16], ka: (&[u32], &[u32])) {
         const ROWS_PER_FEATURE: usize = L1 / TILE;
-        let ka_rows = <[i16]>::as_chunks::<TILE>(&self.weights).0;
+        let ka_rows = <[Simd<i16, LANE>]>::as_chunks::<KA_LANES>(&self.weights).0;
         for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
             let mut tile = *chunk;
+            let lanes = tile.as_chunks_mut::<LANE>().0;
             for &index in ka.1 {
                 let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
-                for j in 0..TILE {
+                for j in 0..KA_LANES {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
-                    // rather than a value to saturate.
-                    tile[j] = tile[j].wrapping_sub(w[j]);
+                    // rather than a value to saturate. `Simd` arithmetic wraps.
+                    lanes[j] = (Simd::from_array(lanes[j]) - w[j]).to_array();
                 }
             }
             for &index in ka.0 {
                 let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
-                for j in 0..TILE {
-                    tile[j] = tile[j].wrapping_add(w[j]);
+                for j in 0..KA_LANES {
+                    lanes[j] = (Simd::from_array(lanes[j]) + w[j]).to_array();
                 }
             }
             *chunk = tile;
@@ -1403,7 +1441,7 @@ mod tests {
     fn an_unloaded_transformer_has_the_right_shape() {
         let ft = FeatureTransformer::new();
         assert_eq!(ft.biases.len(), L1);
-        assert_eq!(ft.weights.len(), L1 * HALFKA_DIMENSIONS);
+        assert_eq!(ft.weights.len() * LANE, L1 * HALFKA_DIMENSIONS);
         assert_eq!(ft.psqt_weights.len(), PSQT_BUCKETS * HALFKA_DIMENSIONS);
         assert_eq!(ft.threat_and_pp_weights.len(), L1 * THREAT_AND_PP_DIMENSIONS);
         // Around 112 MiB: worth knowing, and worth failing on if a dimension moves.
@@ -1427,7 +1465,7 @@ mod tests {
         use crate::board::movegen::generate_legal;
 
         let mut ft = FeatureTransformer::new();
-        for (i, w) in ft.weights.iter_mut().enumerate() {
+        for (i, w) in ft.weights.iter_mut().flat_map(|v| v.as_mut_array().iter_mut()).enumerate() {
             *w = ((i * 7919) % 61) as i16 - 30;
         }
         for (i, w) in ft.threat_and_pp_weights.iter_mut().enumerate() {
@@ -1481,7 +1519,7 @@ mod tests {
     fn diffing_reaches_the_same_state_as_starting_over() {
         let mut ft = FeatureTransformer::new();
         // Give the weights some structure, or every difference is zero and proves nothing.
-        for (i, w) in ft.weights.iter_mut().enumerate() {
+        for (i, w) in ft.weights.iter_mut().flat_map(|v| v.as_mut_array().iter_mut()).enumerate() {
             *w = ((i * 7919) % 61) as i16 - 30;
         }
         for (i, w) in ft.threat_and_pp_weights.iter_mut().enumerate() {

@@ -290,6 +290,31 @@ impl<R: Read> NetReader<R> {
         self.leb128_block(out)
     }
 
+    /// One LEB128 block decoded into a sequence of fixed-size `i16` GROUPS.
+    ///
+    /// The feature transformer stores its king-piece weights as vector lanes, so that a row's
+    /// alignment is carried by its type. That storage has no `&mut [i16]` view a caller can
+    /// hand over without reinterpreting bytes, and `Simd::as_mut_array` gives one group at a
+    /// time instead.
+    ///
+    /// Each group is a slice walk of a length the type states, which is the shape the block
+    /// already decoded into -- so the 23,068,672-entry weight block costs what it did before:
+    /// measured against the same tree, a `quit`-only profile reads 1,281,493,841 instructions
+    /// either way, and peak RSS 216,448 KB against 216,580 KB.
+    pub fn leb128_i16_groups<'a, const N: usize>(
+        &mut self,
+        out: impl Iterator<Item = &'a mut [i16; N]>,
+    ) -> Result<(), NetError> {
+        let bytes = self.leb128_bytes()?;
+        let mut src = bytes.iter();
+        for group in out {
+            // Threaded BY VALUE so the byte walk stays in registers across groups, which is
+            // the residency the walk-the-output rewrite bought for the flat block.
+            src = Self::leb128_values(src, group)?;
+        }
+        Ok(())
+    }
+
     /// The decode both widths share, walking the OUTPUT and consuming bytes as it needs them.
     ///
     /// The loop used to walk the BYTES and index the output, which put two tests on the
@@ -304,6 +329,12 @@ impl<R: Read> NetReader<R> {
     /// full-range `i32` weight round-trip, and `leb128_survives_a_round_trip_over_the_whole_signed_range`
     /// pins it.
     fn leb128_block<T: FromI32Truncating>(&mut self, out: &mut [T]) -> Result<(), NetError> {
+        let bytes = self.leb128_bytes()?;
+        Self::leb128_values(bytes.iter(), out).map(|_| ())
+    }
+
+    /// A LEB128 block's header, checked, and its payload.
+    fn leb128_bytes(&mut self) -> Result<Vec<u8>, NetError> {
         let mut magic = [0u8; 17];
         self.read_exact(&mut magic)?;
         if magic != LEB128_MAGIC {
@@ -312,8 +343,14 @@ impl<R: Read> NetReader<R> {
         let byte_count = self.u32()? as usize;
         let mut bytes = vec![0u8; byte_count];
         self.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
 
-        let mut src = bytes.iter();
+    /// As many values as `out` holds, pulled from `src`.
+    fn leb128_values<'b, T: FromI32Truncating>(
+        mut src: std::slice::Iter<'b, u8>,
+        out: &mut [T],
+    ) -> Result<std::slice::Iter<'b, u8>, NetError> {
         for o in out.iter_mut() {
             let mut result: i32 = 0;
             let mut shift: u32 = 0;
@@ -333,7 +370,7 @@ impl<R: Read> NetReader<R> {
             }
             *o = T::from_i32_truncating(result);
         }
-        Ok(())
+        Ok(src)
     }
 
     /// True when the stream holds nothing more.
@@ -452,7 +489,13 @@ impl<W: Write> NetWriter<W> {
 
     /// One LEB128 block from `i16`s.
     pub fn leb128_i16(&mut self, v: &[i16]) -> Result<(), NetError> {
-        let wide: Vec<i32> = v.iter().map(|x| i32::from(*x)).collect();
+        self.leb128_i16_from(v.iter().copied())
+    }
+
+    /// The same block, from any walk of `i16`s -- the mirror of
+    /// [`NetReader::leb128_i16_into`], and there for the same storage.
+    pub fn leb128_i16_from(&mut self, v: impl Iterator<Item = i16>) -> Result<(), NetError> {
+        let wide: Vec<i32> = v.map(i32::from).collect();
         self.leb128(&wide)
     }
 
