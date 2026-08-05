@@ -360,6 +360,12 @@ fail on purpose.
   invalidates — the "key identity" bug class, which no perft can see.
 - A position key where a move key belongs, or a material key where either belongs.
 - A correction row selected by one key and read through another key's counter.
+- A node kind the search has no meaning for. `node` took two independent booleans and
+  admitted `PV = false, ROOT = true` — a non-PV root, which no call site produced. `NodeKind`
+  is sealed, so the fourth combination cannot be named and a fifth kind cannot be added from
+  outside; `qsearch::<Root>` does not compile, because quiescence is never entered at the root.
+- A boolean passed positionally where the name was the content: `cut_node`, and the two halves
+  of a continuation plane's quadrant.
 - A widened domain type. `board/types.rs` closes with a `const` block asserting each width
   against the *relationship* that implies it, so the assertion cannot go stale:
   `PIECE_NB == COLOR_NB * 8` because a piece is `colour << 3 | type`, and
