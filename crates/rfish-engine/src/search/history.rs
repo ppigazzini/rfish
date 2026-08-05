@@ -113,6 +113,82 @@ pub const CORRECTION_LIMIT: i32 = 1024;
 /// Clamp of the single transposition-move-quality counter.
 pub const TT_MOVE_HISTORY_LIMIT: i32 = 8192;
 
+/// A history-table update, in the tables' own units.
+///
+/// Not a [`Value`](crate::board::types::Value) and not a plain number: a bonus is clamped to
+/// a table's `LIMIT`, is produced by depth-scaled formulas, and means nothing outside the
+/// gravity rule. It shared `i32` with the score domain, the reduction, the move-picker
+/// ordering number and the stat score.
+///
+/// The operators are the ones the formulas use — scale, divide, negate, clamp, compare — and
+/// there is no `Add<Bonus>`: two bonuses are never summed, they are applied one after the
+/// other by [`apply_gravity`].
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+#[repr(transparent)]
+pub struct Bonus(i32);
+
+impl Bonus {
+    /// Build a bonus from the number a depth-scaled formula produced.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(v: i32) -> Bonus {
+        Bonus(v)
+    }
+
+    /// The number, for the one formula that mixes a bonus with a stat score.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+}
+
+impl core::ops::Neg for Bonus {
+    type Output = Bonus;
+    #[inline(always)]
+    fn neg(self) -> Bonus {
+        Bonus(-self.0)
+    }
+}
+
+impl core::ops::Mul<i32> for Bonus {
+    type Output = Bonus;
+    #[inline(always)]
+    fn mul(self, k: i32) -> Bonus {
+        Bonus(self.0 * k)
+    }
+}
+
+impl core::ops::Div<i32> for Bonus {
+    type Output = Bonus;
+    #[inline(always)]
+    fn div(self, k: i32) -> Bonus {
+        Bonus(self.0 / k)
+    }
+}
+
+impl core::ops::Add<i32> for Bonus {
+    type Output = Bonus;
+    #[inline(always)]
+    fn add(self, m: i32) -> Bonus {
+        Bonus(self.0 + m)
+    }
+}
+
+impl PartialOrd<i32> for Bonus {
+    #[inline(always)]
+    fn partial_cmp(&self, m: &i32) -> Option<core::cmp::Ordering> {
+        self.0.partial_cmp(m)
+    }
+}
+
+impl PartialEq<i32> for Bonus {
+    #[inline(always)]
+    fn eq(&self, m: &i32) -> bool {
+        self.0 == *m
+    }
+}
+
 /// Move a stored value toward `bonus`, by upstream's gravity rule.
 ///
 /// The value approaches `LIMIT` asymptotically: the closer it already is, the less an update
@@ -126,8 +202,8 @@ pub const TT_MOVE_HISTORY_LIMIT: i32 = 8192;
 /// that updates at two different clamps, and that difference is now in two method names
 /// rather than in what a caller remembered to pass.
 #[inline(always)]
-fn apply_gravity<const LIMIT: i32>(entry: &mut i16, bonus: i32) {
-    let bonus = bonus.clamp(-LIMIT, LIMIT);
+fn apply_gravity<const LIMIT: i32>(entry: &mut i16, bonus: Bonus) {
+    let bonus = bonus.get().clamp(-LIMIT, LIMIT);
     let v = i32::from(*entry);
     *entry = (v + bonus - v * bonus.abs() / LIMIT) as i16;
 }
@@ -168,7 +244,7 @@ impl ButterflyHistory {
 
     /// Move the stored score toward `bonus`.
     #[inline(always)]
-    pub fn update(&mut self, c: Color, mv: u16, bonus: i32) {
+    pub fn update(&mut self, c: Color, mv: u16, bonus: Bonus) {
         apply_gravity::<MAIN_HISTORY_LIMIT>(&mut self.table[c.index()][mv as usize], bonus);
     }
 
@@ -215,7 +291,7 @@ impl LowPlyHistory {
     }
 
     #[inline(always)]
-    pub fn update(&mut self, ply: Ply, mv: u16, bonus: i32) {
+    pub fn update(&mut self, ply: Ply, mv: u16, bonus: Bonus) {
         apply_gravity::<MAIN_HISTORY_LIMIT>(&mut self.table[ply.index()][mv as usize], bonus);
     }
 
@@ -250,7 +326,7 @@ impl CaptureHistory {
     }
 
     #[inline(always)]
-    pub fn update(&mut self, pc: Piece, to: Square, captured: PieceType, bonus: i32) {
+    pub fn update(&mut self, pc: Piece, to: Square, captured: PieceType, bonus: Bonus) {
         apply_gravity::<CAPTURE_HISTORY_LIMIT>(
             &mut self.table[pc.index()][to.index()][captured.index()],
             bonus,
@@ -289,7 +365,7 @@ impl PieceToHistory {
     }
 
     #[inline(always)]
-    pub fn update(&mut self, pc: Piece, to: Square, bonus: i32) {
+    pub fn update(&mut self, pc: Piece, to: Square, bonus: Bonus) {
         apply_gravity::<CONTINUATION_LIMIT>(&mut self.table[pc.index()][to.index()], bonus);
     }
 
@@ -298,7 +374,7 @@ impl PieceToHistory {
     /// The same plane shape serves two tables with different limits, and the limit is part
     /// of the gravity arithmetic — using the wrong one changes every stored value.
     #[inline(always)]
-    pub fn update_correction(&mut self, pc: Piece, to: Square, bonus: i32) {
+    pub fn update_correction(&mut self, pc: Piece, to: Square, bonus: Bonus) {
         apply_gravity::<CORRECTION_LIMIT>(&mut self.table[pc.index()][to.index()], bonus);
     }
 
@@ -387,7 +463,7 @@ impl ContinuationHistory {
     }
 
     #[inline(always)]
-    pub fn update(&mut self, idx: ContKey, pc: Piece, to: Square, bonus: i32) {
+    pub fn update(&mut self, idx: ContKey, pc: Piece, to: Square, bonus: Bonus) {
         apply_gravity::<CONTINUATION_LIMIT>(
             &mut self.table[idx.index()][pc.index()][to.index()],
             bonus,
@@ -457,7 +533,7 @@ impl ContinuationCorrectionHistory {
     }
 
     #[inline(always)]
-    pub fn update(&mut self, idx: CorrKey, pc: Piece, to: Square, bonus: i32) {
+    pub fn update(&mut self, idx: CorrKey, pc: Piece, to: Square, bonus: Bonus) {
         apply_gravity::<CORRECTION_LIMIT>(
             &mut self.table[idx.index()][pc.index()][to.index()],
             bonus,
@@ -528,7 +604,7 @@ impl PawnHistory {
     }
 
     #[inline(always)]
-    pub fn update(&mut self, row: PawnRow, pc: Piece, to: Square, bonus: i32) {
+    pub fn update(&mut self, row: PawnRow, pc: Piece, to: Square, bonus: Bonus) {
         apply_gravity::<PAWN_HISTORY_LIMIT>(
             &mut self.table[row.index()][pc.index()][to.index()],
             bonus,
@@ -604,7 +680,7 @@ impl CorrectionHistory {
 
 /// Move one field of a correction bundle toward `bonus`.
 #[inline(always)]
-pub fn update_correction_entry(entry: &mut i16, bonus: i32) {
+pub fn update_correction_entry(entry: &mut i16, bonus: Bonus) {
     apply_gravity::<CORRECTION_LIMIT>(entry, bonus);
 }
 
@@ -644,7 +720,7 @@ impl Histories {
 
     /// Move the transposition-move-quality counter toward `bonus`.
     #[inline]
-    pub fn update_tt_move(&mut self, bonus: i32) {
+    pub fn update_tt_move(&mut self, bonus: Bonus) {
         apply_gravity::<TT_MOVE_HISTORY_LIMIT>(&mut self.tt_move, bonus);
     }
 }
@@ -659,14 +735,14 @@ mod tests {
         let mut v: i16 = 0;
         // Repeated maximum bonuses approach the limit but never exceed it.
         for _ in 0..1000 {
-            apply_gravity::<MAIN_HISTORY_LIMIT>(&mut v, MAIN_HISTORY_LIMIT);
+            apply_gravity::<MAIN_HISTORY_LIMIT>(&mut v, Bonus::new(MAIN_HISTORY_LIMIT));
         }
         assert!(i32::from(v) <= MAIN_HISTORY_LIMIT);
         assert!(i32::from(v) > MAIN_HISTORY_LIMIT - 2);
 
         // And symmetric on the way down.
         for _ in 0..1000 {
-            apply_gravity::<MAIN_HISTORY_LIMIT>(&mut v, -MAIN_HISTORY_LIMIT);
+            apply_gravity::<MAIN_HISTORY_LIMIT>(&mut v, Bonus::new(-MAIN_HISTORY_LIMIT));
         }
         assert!(i32::from(v) >= -MAIN_HISTORY_LIMIT);
         assert!(i32::from(v) < -MAIN_HISTORY_LIMIT + 2);
@@ -677,9 +753,9 @@ mod tests {
         // The property gravity exists for: ordering information survives saturation.
         let mut fresh: i16 = 0;
         let mut saturated: i16 = (MAIN_HISTORY_LIMIT - 10) as i16;
-        apply_gravity::<MAIN_HISTORY_LIMIT>(&mut fresh, 500);
+        apply_gravity::<MAIN_HISTORY_LIMIT>(&mut fresh, Bonus::new(500));
         let before = i32::from(saturated);
-        apply_gravity::<MAIN_HISTORY_LIMIT>(&mut saturated, 500);
+        apply_gravity::<MAIN_HISTORY_LIMIT>(&mut saturated, Bonus::new(500));
         assert!(i32::from(fresh) > i32::from(saturated) - before);
     }
 
@@ -696,7 +772,7 @@ mod tests {
         assert_ne!(q.raw(), n.raw());
 
         let mut h = ButterflyHistory::default();
-        h.update(Color::White, q.raw(), 1000);
+        h.update(Color::White, q.raw(), Bonus::new(1000));
         assert!(h.get(Color::White, q.raw()) > 0);
         assert_eq!(h.get(Color::White, n.raw()), 0);
     }
@@ -705,7 +781,7 @@ mod tests {
     #[test]
     fn clear_restores_upstreams_starting_values() {
         let mut h = Histories::default();
-        h.main.update(Color::White, 100, 1000);
+        h.main.update(Color::White, 100, Bonus::new(1000));
         h.clear();
         assert_eq!(h.main.get(Color::White, 100), -5);
         assert_eq!(
@@ -749,7 +825,7 @@ mod tests {
     fn the_correction_bundle_keeps_four_independent_counters() {
         let mut h = CorrectionHistory::default();
         let e = h.entry_mut(7, Color::White);
-        update_correction_entry(&mut e.pawn, 500);
+        update_correction_entry(&mut e.pawn, Bonus::new(500));
         assert!(h.entry(7, Color::White).pawn > -5);
         assert_eq!(h.entry(7, Color::White).minor, -5);
         assert_eq!(h.entry(7, Color::Black).pawn, -5);
