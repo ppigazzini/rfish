@@ -893,6 +893,74 @@ impl Bound {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Representation, asserted
+// ---------------------------------------------------------------------------
+
+/// Assert every representation the module doc calls load-bearing.
+///
+/// The doc at the top of this file says widening a type without widening its `*_NB` bound
+/// turns a bounds check into a silently wider table. Nothing enforced that. These are `const`
+/// blocks rather than `#[test]`s because a test can be skipped and a gate can be excused,
+/// while a `const` assertion is a build failure on every profile and every target.
+///
+/// Each one states the RELATIONSHIP, not the number: `size_of::<Piece>() == 1` alone goes
+/// stale the day `PIECE_NB` changes, so the bound that implies the width is asserted beside
+/// it.
+const _: () = {
+    // Every domain type is exactly its declared width, with natural alignment. A wider one
+    // silently widens `Position::board`, the attack tables and the packed NNUE records.
+    assert!(size_of::<Color>() == 1 && align_of::<Color>() == 1);
+    assert!(size_of::<PieceType>() == 1 && align_of::<PieceType>() == 1);
+    assert!(size_of::<Piece>() == 1 && align_of::<Piece>() == 1);
+    assert!(size_of::<Square>() == 1 && align_of::<Square>() == 1);
+    assert!(size_of::<Direction>() == 1 && align_of::<Direction>() == 1);
+    assert!(size_of::<CastlingRights>() == 1 && align_of::<CastlingRights>() == 1);
+    assert!(size_of::<MoveType>() == 1 && align_of::<MoveType>() == 1);
+    assert!(size_of::<Move>() == 2 && align_of::<Move>() == 2);
+    assert!(size_of::<Bound>() == 1 && align_of::<Bound>() == 1);
+
+    // The width can hold the bound. Each `*_NB` is a count, so the largest index is one less.
+    assert!(COLOR_NB - 1 <= u8::MAX as usize);
+    assert!(PIECE_TYPE_NB - 1 <= u8::MAX as usize);
+    assert!(PIECE_NB - 1 <= u8::MAX as usize);
+    // `Square` must hold the sentinel too, which sits one past the last real square.
+    assert!(SQUARE_NB <= u8::MAX as usize);
+
+    // `Piece` is `colour << 3 | type`, so the piece space is eight slots per colour and the
+    // low three bits must hold every piece type. `from_low3` masks with 7 on that basis.
+    assert!(PIECE_NB == COLOR_NB * 8);
+    assert!(PIECE_TYPE_NB <= 8);
+
+    // A bitboard is one bit per square. Widening `SQUARE_NB` without widening the word would
+    // drop squares off the top of every set with no diagnostic.
+    assert!(SQUARE_NB == u64::BITS as usize);
+
+    // The square numbering is rank-major over an 8x8 board: `sq >> 3` is the rank and `sq & 7`
+    // the file, which `Square::file`, `rank` and `make` all depend on.
+    assert!(FILE_NB * RANK_NB == SQUARE_NB);
+    assert!(FILE_NB == 8 && RANK_NB == 8);
+
+    // `Square::NONE` must stay one past the last square: `DirtyPiece` stores raw square bytes
+    // and the accumulator tests them against that value. The unit test below says the same
+    // thing about the literal 64; this says it about the bound.
+    assert!(Square::NONE.raw() as usize == SQUARE_NB);
+
+    // The 16 bits of a `Move` are `type << 14 | (promo - Knight) << 12 | from << 6 | to`.
+    // Six bits per square, two for the promotion piece, two for the type.
+    assert!(SQUARE_NB <= 1 << 6);
+    assert!((PieceType::Queen as usize) - (PieceType::Knight as usize) < (1 << 2));
+
+    // The castling nibble is one Zobrist index, so the rights set must fit in four bits.
+    assert!(CastlingRights::ANY.index() < 16);
+
+    // `MAX_PLY` is compared against a ply held as `i32` throughout the search, and mate scores
+    // are `VALUE_MATE - ply`. Both break silently if the bound outgrows the score domain.
+    assert!(MAX_PLY < i32::MAX as usize);
+    assert!(VALUE_MATE_IN_MAX_PLY > VALUE_TB);
+    assert!(VALUE_TB_WIN_IN_MAX_PLY > 0);
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
