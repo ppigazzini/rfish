@@ -330,7 +330,7 @@ profile:
 | avx2, non-PGO, one tree | search instructions | vs rfish |
 |---|---|---|
 | ../mcfish, `MCFISH_SIMD_VECTOR` (its shipped path) | 1,186,194,103 | 0.79 |
-| **rfish, at HEAD** | **1,505,454,296** | **1.00** |
+| **rfish, at HEAD** | **1,505,452,714** | **1.00** |
 | ../mcfish, its NNUE dot forced to the portable body | 4,755,614,984 | 3.16 |
 | ../mcfish, `-DMCFISH_SIMD_SCALAR` | 4,906,184,642 | 3.26 |
 
@@ -784,7 +784,63 @@ separates removed work from moved code layout.
 as having zero hits in this tree** — its grep looked for a `base..base + N` range slice and
 could not see `.iter().zip()` over `split_at` halves. A sweep is only as wide as its grep.
 
+### The alignment was in the allocator and not in the type
+
+`Aligned<T>` starts every weight table on a cache line, and upstream's own
+`alignas(CacheLineSize)` is what it exists to reproduce. It was not enough, and the reason is
+that the guarantee lives in the ALLOCATOR where the instruction needs it in the TYPE.
+
+The fold reaches a row through an `as_chunks` view, so the row is `[i16; TILE]` and its
+alignment is the element's two bytes. A legacy-SSE instruction folds a memory operand only
+where the compiler can prove sixteen-byte alignment, so at sse41 the row loop emitted
+
+```text
+  movdqu (%r14,%rax,1),%xmm0
+  psubw  %xmm0,%xmm15
+```
+
+where one `psubw` with a memory operand does the same work — **sixteen instructions per
+(row, tile) instead of eight**. Storing the table as `Simd<i16, LANE>` puts the alignment in
+the type and the load folds. ../mcfish carries the same note on its `_load_a` forms and calls
+the alignment load-bearing; this is the same defect, found by reading that comment.
+
+**−57.8M at sse41, −2.56%. avx2 is flat**, and that is not an accident: a VEX-encoded `vpsubw`
+takes an unaligned memory operand, and the disassembly there showed the row already folded.
+The i8 threat rows were already folded at BOTH tiers — `pmovsxbw` takes a 64-bit operand, and
+operands under sixteen bytes are not alignment-checked. Only the i16 half was paying.
+
+**The width is a separate variable from the alignment, and it is where this goes wrong.**
+`LANE` is the REGISTER width, not a tuning knob: pinned at eight `i16` — enough for the
+alignment, since sixteen bytes is all the fold needs — the avx2 fold ran on `xmm` where it had
+run on `ymm`, and `bench 16 1 8` went 1,505,457,814 to **1,834,100,765, +328.6M, +21.8%**. LLVM
+does not widen adjacent explicit vectors back up. Explicit vectors buy the alignment and cost
+the autovectoriser's freedom to pick the width, so the width has to be named per tier.
+
 ### Falsified this round, with numbers
+
+**Making the fold's bound an immediate is a wash.** The weight views are runtime-length slices,
+so the bounds test under `index * ROWS_PER_FEATURE + t` reads its length off the stack —
+`cmp 0x48(%rsp),%rax`, once per (row, tile). Fixed-size array references make it
+`cmp $0x2bfff,%rax`, and the disassembly confirms the load is gone. It is worth **+1.93M at
+avx2 and −0.88M at sse41**: the length load was already served from L1 and the per-call
+`try_into` costs about what it saves. Section 14.2's win was a length load out of a SCALAR
+walk; this one sits beside eight vector ops and disappears into them.
+
+**Pre-scaling the fold's row indices is refuted at avx2 by the disassembly alone.** Section
+11.4 sized it at ~6M on the grounds that `index * ROWS_PER_FEATURE` is recomputed per tile. At
+avx2 that multiply is `lea (%r14,%rax,8),%rax` — the scale is an addressing mode and the
+multiply is FREE. At sse41 `ROWS_PER_FEATURE` is 16, which no `lea` scale reaches, so it is one
+`shl` per (row, tile), ~23M gross before the cost of scaling and of four more scratch buffers.
+Re-derive it there before spending a session; do not quote the ~6M figure at either tier.
+
+**There is no structural gap left in the accumulator's route mix.** ../mcfish's own counters,
+built with `MCFISH_ACC_STATS=1` and run on the IDENTICAL `bench 16 1 8`, report 62,975
+evaluations — the same count rfish makes — split as 49,784 shared walks, 13,191 split walks,
+2,099 hybrids and **12,044 refreshes**, against rfish's 13,799. The refresh rate, which is the
+expensive route, is within 15%. What ../mcfish has that rfish does not is the SHARED walk: one
+pass advancing both perspectives, 79% of its evaluations. The feature indices are keyed on each
+perspective's own king square and cannot be shared, so what it saves is the duplicated board
+diff — worth single-digit millions here, not the hundreds the gap would need.
 
 **Stating the affine layers' widths in their types costs 76.1M at sse41 and saves 6.4M at
 avx2.** [`AffineLayer::propagate`], [`AffineLayer::propagate_sparse`] and
