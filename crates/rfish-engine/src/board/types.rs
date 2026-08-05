@@ -1677,13 +1677,80 @@ impl core::ops::BitXorAssign<Key> for MoveKey {
     }
 }
 
-/// Node kinds, as the search's generic parameter.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum NodeType {
-    PV,
-    NonPV,
-    Root,
+/// What kind of node the search is at, as its generic parameter.
+///
+/// **Three kinds, not two independent booleans.** The search took
+/// `node<const PV: bool, const ROOT: bool>`, which admits four combinations and has a meaning
+/// for three: a root is always a PV node, so `PV = false, ROOT = true` names nothing and no
+/// call site ever produced it. A sealed trait with one marker per real kind makes the fourth
+/// unwriteable.
+///
+/// A trait rather than `const N: NodeType` because that needs `min_adt_const_params`, and this
+/// crate takes exactly one nightly feature — `portable_simd`, bought deliberately for the NNUE
+/// kernels. The markers are zero-sized, monomorphise to the same three instantiations, and
+/// need no feature at all.
+pub trait NodeKind: sealed::Sealed {
+    /// True at a node whose exact score the search must know, rather than a bound.
+    const PV: bool;
+    /// True only at the node the search was entered from.
+    const ROOT: bool;
+
+    /// The kind a quiescence search entered from this node has.
+    ///
+    /// Dropping into quiescence loses ROOTNESS and keeps PV-ness: the root's own quiescence
+    /// node is a PV node, not a second root. Writing that as an associated type is what lets
+    /// `node` hand its kind straight to `qsearch` without a branch and without letting a
+    /// `Root` through.
+    type Quiescent: QuiescentKind;
 }
+
+/// A node kind that quiescence can reach: every kind except [`Root`].
+///
+/// Quiescence is never entered at the root, and this is what says so — `qsearch::<Root>` does
+/// not compile.
+pub trait QuiescentKind: NodeKind {}
+
+/// The node the search was entered from. Always a PV node.
+#[derive(Clone, Copy, Debug)]
+pub struct Root;
+
+/// A node whose exact score is wanted, below the root.
+#[derive(Clone, Copy, Debug)]
+pub struct Pv;
+
+/// A node where a bound is enough.
+#[derive(Clone, Copy, Debug)]
+pub struct NonPv;
+
+mod sealed {
+    /// Closes [`super::NodeKind`]: the three kinds are the whole domain, and a fourth
+    /// implementor outside this module would be a node the search has no meaning for.
+    pub trait Sealed {}
+    impl Sealed for super::Root {}
+    impl Sealed for super::Pv {}
+    impl Sealed for super::NonPv {}
+}
+
+impl NodeKind for Root {
+    const PV: bool = true;
+    const ROOT: bool = true;
+    type Quiescent = Pv;
+}
+
+impl NodeKind for Pv {
+    const PV: bool = true;
+    const ROOT: bool = false;
+    type Quiescent = Pv;
+}
+
+impl NodeKind for NonPv {
+    const PV: bool = false;
+    const ROOT: bool = false;
+    type Quiescent = NonPv;
+}
+
+impl QuiescentKind for Pv {}
+impl QuiescentKind for NonPv {}
 
 /// The transposition table's bound kind for a stored score.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
