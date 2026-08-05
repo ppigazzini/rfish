@@ -150,11 +150,40 @@ fn subsets(mask: u64) -> impl Iterator<Item = u64> {
     })
 }
 
+/// What can go wrong building a slider's magics.
+///
+/// One variant, and it is an enum rather than a `&'static str` so this path matches the rest
+/// of the tree: `NetError`, `FenError` and `ProbeState` are all real error types, and a
+/// string is the one thing a caller cannot match on. The failure is fatal either way, which
+/// is why it survived as prose for so long.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MagicError {
+    /// The per-square blocks did not tile the table exactly. The table size is a compile-time
+    /// constant and the block sizes are derived from the masks, so this means one of the two
+    /// was changed without the other.
+    TableSizeMismatch {
+        /// Bitboards the blocks actually consumed.
+        filled: usize,
+        /// Bitboards the table has room for.
+        capacity: usize,
+    },
+}
+
+impl core::fmt::Display for MagicError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            MagicError::TableSizeMismatch { filled, capacity } => {
+                write!(f, "slider blocks filled {filled} of {capacity} entries")
+            }
+        }
+    }
+}
+
 /// Build one slider's magics and fill its block of the shared attack table.
 fn build_magics(
     dirs: [Direction; 4],
     table: &mut [Bitboard],
-) -> Result<[Magic; SQUARE_NB], &'static str> {
+) -> Result<[Magic; SQUARE_NB], MagicError> {
     let mut magics = [Magic::default(); SQUARE_NB];
     let mut offset = 0usize;
     // Scratch, reused per square: `epoch` records which attempt last wrote a slot, so a
@@ -227,7 +256,11 @@ fn build_magics(
         offset += size;
     }
 
-    if offset == table.len() { Ok(magics) } else { Err("slider table size does not match") }
+    if offset == table.len() {
+        Ok(magics)
+    } else {
+        Err(MagicError::TableSizeMismatch { filled: offset, capacity: table.len() })
+    }
 }
 
 impl SliderTables {
