@@ -17,7 +17,7 @@ use crate::board::bitboard::{Bitboard, file_bb, pawn_attacks_from};
 use crate::board::position::Position;
 use crate::board::types::{
     BISHOP_VALUE, Color, KNIGHT_VALUE, PAWN_VALUE, PieceType, QUEEN_VALUE, ROOK_VALUE, Rank,
-    SQUARE_NB, Square, Value,
+    SQUARE_NB, Square, VALUE_ZERO, Value,
 };
 
 /// A midgame/endgame score pair, interpolated at the end by the game phase.
@@ -179,7 +179,7 @@ pub fn evaluate(pos: &Position) -> Value {
                 PieceType::Bishop => BISHOP_VALUE,
                 PieceType::Rook => ROOK_VALUE,
                 PieceType::Queen => QUEEN_VALUE,
-                _ => 0,
+                _ => VALUE_ZERO,
             };
             for sq in pos.pieces_of(c, pt) {
                 phase += PHASE_WEIGHT[pt.index()];
@@ -190,7 +190,7 @@ pub fn evaluate(pos: &Position) -> Value {
                     PieceType::King => (PSQT_MG[6][s], PSQT_EG_KING[s]),
                     _ => (PSQT_MG[pt.index()][s], PSQT_MG[pt.index()][s]),
                 };
-                side += Score::new(material + mg_extra, material + eg_extra);
+                side += Score::new(material.get() + mg_extra, material.get() + eg_extra);
 
                 if !matches!(pt, PieceType::Pawn | PieceType::King) {
                     // Mobility counts squares not occupied by our own pieces and not
@@ -229,7 +229,7 @@ pub fn evaluate(pos: &Position) -> Value {
     // differently by twice the bonus, and the search would see a different game depending
     // on which side it happened to be.
     let v = if pos.side_to_move() == Color::White { v } else { -v };
-    v + 15
+    Value::new(v) + 15
 }
 
 /// Doubled, isolated and passed pawns.
@@ -326,7 +326,8 @@ mod tests {
         let pair = Position::from_fen("4k3/8/8/8/8/8/8/2B1KB2 w - - 0 1", false).expect("valid");
         let split = Position::from_fen("4k3/8/8/8/8/8/8/2B1KN2 w - - 0 1", false).expect("valid");
         assert!(
-            evaluate(&pair) - 2 * BISHOP_VALUE > evaluate(&split) - BISHOP_VALUE - KNIGHT_VALUE
+            evaluate(&pair) - (2 * BISHOP_VALUE).get()
+                > evaluate(&split) - BISHOP_VALUE.get() - KNIGHT_VALUE.get()
         );
     }
 

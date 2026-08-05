@@ -120,7 +120,7 @@ impl Default for SearchOptions {
 ///
 /// Minus infinity squared, which no real score can produce, so the first search replaces
 /// it outright instead of averaging against it.
-pub const MEAN_SQUARED_SENTINEL: Value = -(VALUE_INFINITE * VALUE_INFINITE);
+pub const MEAN_SQUARED_SENTINEL: Value = Value::new(-(VALUE_INFINITE.get() * VALUE_INFINITE.get()));
 
 /// One move from the root, with everything the emitter needs to report it.
 #[derive(Clone, Debug)]
@@ -620,11 +620,11 @@ mod tests {
     fn root_moves_sort_best_first() {
         let mut a = RootMove::new(Move::from_raw(1));
         let mut b = RootMove::new(Move::from_raw(2));
-        a.score = 10;
-        b.score = 50;
+        a.score = Value::new(10);
+        b.score = Value::new(50);
         let mut v = [a, b];
         v.sort();
-        assert_eq!(v[0].score, 50);
+        assert_eq!(v[0].score, Value::new(50));
     }
 
     #[test]

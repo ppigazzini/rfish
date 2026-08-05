@@ -970,24 +970,190 @@ impl fmt::Debug for Move {
 // ---------------------------------------------------------------------------
 
 /// A centipawn-domain score. `i32` throughout, matching upstream's `Value`.
-pub type Value = i32;
+///
+/// The operators form an AFFINE space over `i32`, which is what a score actually is: a
+/// difference of two scores is a MARGIN and not a score, while a score offset by a margin is
+/// a score again. So `Sub<Value>` yields `i32` and `Sub<i32>` yields `Value`, and the two
+/// coexist because they differ in their right-hand side.
+///
+/// There is no `From<i32>` and no `Add<Value>`. Adding two scores is meaningless — upstream
+/// never does it — and a conversion is a place a reader should be able to see.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Value(i32);
 
-pub const VALUE_ZERO: Value = 0;
-pub const VALUE_DRAW: Value = 0;
-pub const VALUE_NONE: Value = 32002;
-pub const VALUE_INFINITE: Value = 32001;
-pub const VALUE_MATE: Value = 32000;
-pub const VALUE_MATE_IN_MAX_PLY: Value = VALUE_MATE - MAX_PLY as Value;
-pub const VALUE_MATED_IN_MAX_PLY: Value = -VALUE_MATE_IN_MAX_PLY;
-pub const VALUE_TB: Value = VALUE_MATE_IN_MAX_PLY - 1;
-pub const VALUE_TB_WIN_IN_MAX_PLY: Value = VALUE_TB - MAX_PLY as Value;
-pub const VALUE_TB_LOSS_IN_MAX_PLY: Value = -VALUE_TB_WIN_IN_MAX_PLY;
+impl Value {
+    /// Build a score from a number. Explicit, so a raw integer entering the score domain is
+    /// visible at the line that does it.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(v: i32) -> Value {
+        Value(v)
+    }
 
-pub const PAWN_VALUE: Value = 208;
-pub const KNIGHT_VALUE: Value = 781;
-pub const BISHOP_VALUE: Value = 825;
-pub const ROOK_VALUE: Value = 1276;
-pub const QUEEN_VALUE: Value = 2538;
+    /// The score as a number, for the reporting and quantisation paths that need one.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+
+    /// Offset by a margin, in a `const` context. `Sub<i32>` is not a `const fn`, and the
+    /// tablebase score table is a `const`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn offset(self, m: i32) -> Value {
+        Value(self.0 + m)
+    }
+
+    /// Negated, in a `const` context, for the same reason as [`Value::offset`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn negate(self) -> Value {
+        Value(-self.0)
+    }
+
+    /// The magnitude, ignoring which side the score favours.
+    #[inline(always)]
+    #[must_use]
+    pub const fn abs(self) -> Value {
+        Value(self.0.abs())
+    }
+}
+
+impl core::ops::Neg for Value {
+    type Output = Value;
+    #[inline(always)]
+    fn neg(self) -> Value {
+        Value(-self.0)
+    }
+}
+
+impl core::ops::Add<i32> for Value {
+    type Output = Value;
+    #[inline(always)]
+    fn add(self, m: i32) -> Value {
+        Value(self.0 + m)
+    }
+}
+
+impl core::ops::Sub<i32> for Value {
+    type Output = Value;
+    #[inline(always)]
+    fn sub(self, m: i32) -> Value {
+        Value(self.0 - m)
+    }
+}
+
+/// The difference of two scores is a MARGIN, which is not a score.
+impl core::ops::Sub<Value> for Value {
+    type Output = i32;
+    #[inline(always)]
+    fn sub(self, other: Value) -> i32 {
+        self.0 - other.0
+    }
+}
+
+impl core::ops::Mul<i32> for Value {
+    type Output = Value;
+    #[inline(always)]
+    fn mul(self, k: i32) -> Value {
+        Value(self.0 * k)
+    }
+}
+
+/// Scaling written the other way round, as upstream spells several of its margins.
+impl core::ops::Mul<Value> for i32 {
+    type Output = Value;
+    #[inline(always)]
+    fn mul(self, v: Value) -> Value {
+        Value(self * v.0)
+    }
+}
+
+impl core::ops::Div<i32> for Value {
+    type Output = Value;
+    #[inline(always)]
+    fn div(self, k: i32) -> Value {
+        Value(self.0 / k)
+    }
+}
+
+impl core::ops::AddAssign<i32> for Value {
+    #[inline(always)]
+    fn add_assign(&mut self, m: i32) {
+        self.0 += m;
+    }
+}
+
+impl core::ops::SubAssign<i32> for Value {
+    #[inline(always)]
+    fn sub_assign(&mut self, m: i32) {
+        self.0 -= m;
+    }
+}
+
+/// Widen for the quantisation arithmetic, which must not overflow an `i32`.
+impl From<Value> for i64 {
+    #[inline(always)]
+    fn from(v: Value) -> i64 {
+        i64::from(v.0)
+    }
+}
+
+/// Widen for the win-rate model, which is fitted in floating point.
+impl From<Value> for f64 {
+    #[inline(always)]
+    fn from(v: Value) -> f64 {
+        f64::from(v.0)
+    }
+}
+
+/// Compare a score against a bare MARGIN, which is what upstream writes throughout the
+/// pruning conditions: `beta >= -2000` is a test, not a conversion, so it does not put a raw
+/// integer into the score domain and does not need to be spelled out.
+impl PartialEq<i32> for Value {
+    #[inline(always)]
+    fn eq(&self, m: &i32) -> bool {
+        self.0 == *m
+    }
+}
+
+impl PartialOrd<i32> for Value {
+    #[inline(always)]
+    fn partial_cmp(&self, m: &i32) -> Option<core::cmp::Ordering> {
+        self.0.partial_cmp(m)
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+pub const VALUE_ZERO: Value = Value(0);
+pub const VALUE_DRAW: Value = Value(0);
+pub const VALUE_NONE: Value = Value(32002);
+pub const VALUE_INFINITE: Value = Value(32001);
+pub const VALUE_MATE: Value = Value(32000);
+pub const VALUE_MATE_IN_MAX_PLY: Value = Value(VALUE_MATE.0 - MAX_PLY as i32);
+pub const VALUE_MATED_IN_MAX_PLY: Value = Value(-VALUE_MATE_IN_MAX_PLY.0);
+pub const VALUE_TB: Value = Value(VALUE_MATE_IN_MAX_PLY.0 - 1);
+pub const VALUE_TB_WIN_IN_MAX_PLY: Value = Value(VALUE_TB.0 - MAX_PLY as i32);
+pub const VALUE_TB_LOSS_IN_MAX_PLY: Value = Value(-VALUE_TB_WIN_IN_MAX_PLY.0);
+
+pub const PAWN_VALUE: Value = Value(208);
+pub const KNIGHT_VALUE: Value = Value(781);
+pub const BISHOP_VALUE: Value = Value(825);
+pub const ROOK_VALUE: Value = Value(1276);
+pub const QUEEN_VALUE: Value = Value(2538);
 
 /// Value of a raw [`Piece`], indexed without masking off the colour bit.
 ///
@@ -995,22 +1161,22 @@ pub const QUEEN_VALUE: Value = 2538;
 /// The colour bit selects a mirrored half, so the `& 7` a [`PieceType`] lookup would need
 /// never happens on that hot path.
 pub const PIECE_VALUE: [Value; PIECE_NB] = [
-    0,
+    VALUE_ZERO,
     PAWN_VALUE,
     KNIGHT_VALUE,
     BISHOP_VALUE,
     ROOK_VALUE,
     QUEEN_VALUE,
-    0,
-    0,
-    0,
+    VALUE_ZERO,
+    VALUE_ZERO,
+    VALUE_ZERO,
     PAWN_VALUE,
     KNIGHT_VALUE,
     BISHOP_VALUE,
     ROOK_VALUE,
     QUEEN_VALUE,
-    0,
-    0,
+    VALUE_ZERO,
+    VALUE_ZERO,
 ];
 
 /// Value of a piece type.
@@ -1031,35 +1197,35 @@ pub const fn piece_value(pc: Piece) -> Value {
 #[inline(always)]
 #[must_use]
 pub const fn mate_in(ply: Ply) -> Value {
-    VALUE_MATE - ply.get()
+    Value(VALUE_MATE.0 - ply.get())
 }
 
 /// The score for being mated in `ply` plies.
 #[inline(always)]
 #[must_use]
 pub const fn mated_in(ply: Ply) -> Value {
-    ply.get() - VALUE_MATE
+    Value(ply.get() - VALUE_MATE.0)
 }
 
 /// True unless the value is the "no score" sentinel.
 #[inline(always)]
 #[must_use]
 pub const fn is_valid(v: Value) -> bool {
-    v != VALUE_NONE
+    v.0 != VALUE_NONE.0
 }
 
 /// True when the value is a proven win — a mate or a tablebase win.
 #[inline(always)]
 #[must_use]
 pub const fn is_win(v: Value) -> bool {
-    v >= VALUE_TB_WIN_IN_MAX_PLY
+    v.0 >= VALUE_TB_WIN_IN_MAX_PLY.0
 }
 
 /// True when the value is a proven loss.
 #[inline(always)]
 #[must_use]
 pub const fn is_loss(v: Value) -> bool {
-    v <= VALUE_TB_LOSS_IN_MAX_PLY
+    v.0 <= VALUE_TB_LOSS_IN_MAX_PLY.0
 }
 
 /// True when the value settles the game either way.
@@ -1076,14 +1242,14 @@ pub const fn is_decisive(v: Value) -> bool {
 #[inline(always)]
 #[must_use]
 pub const fn is_mate(v: Value) -> bool {
-    v >= VALUE_MATE_IN_MAX_PLY
+    v.0 >= VALUE_MATE_IN_MAX_PLY.0
 }
 
 /// True when the value is a being-mated score.
 #[inline(always)]
 #[must_use]
 pub const fn is_mated(v: Value) -> bool {
-    v <= VALUE_MATED_IN_MAX_PLY
+    v.0 <= VALUE_MATED_IN_MAX_PLY.0
 }
 
 /// True when the value is a mate score for either side.
@@ -1317,8 +1483,8 @@ const _: () = {
     // `MAX_PLY` is compared against a ply held as `i32` throughout the search, and mate scores
     // are `VALUE_MATE - ply`. Both break silently if the bound outgrows the score domain.
     assert!(MAX_PLY < i32::MAX as usize);
-    assert!(VALUE_MATE_IN_MAX_PLY > VALUE_TB);
-    assert!(VALUE_TB_WIN_IN_MAX_PLY > 0);
+    assert!(VALUE_MATE_IN_MAX_PLY.get() > VALUE_TB.get());
+    assert!(VALUE_TB_WIN_IN_MAX_PLY.get() > 0);
 };
 
 #[cfg(test)]

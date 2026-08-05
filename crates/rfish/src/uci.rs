@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use rfish_engine::board::movegen::{move_to_uci, parse_uci_move, perft_divide};
 use rfish_engine::board::position::{Position, START_FEN};
-use rfish_engine::board::types::{Color, Ply};
+use rfish_engine::board::types::{Color, Ply, VALUE_ZERO, Value};
 use rfish_engine::eval::nnue;
 use rfish_engine::platform::numa::{self, NumaConfig};
 use rfish_engine::platform::syzygy::TableRegistry;
@@ -820,7 +820,7 @@ impl Engine {
             row.push_str("   |  ");
             row.push_str(&self.aligned_dot(positional));
             row.push_str("   |  ");
-            row.push_str(&self.aligned_dot(psqt + positional));
+            row.push_str(&self.aligned_dot(Value::new(psqt.get() + positional.get())));
             row.push_str("   |");
             if b == t.correct_bucket {
                 row.push_str(" <-- this bucket is used");
@@ -830,8 +830,9 @@ impl Engine {
         let _ = writeln!(out, "{rule}\n");
 
         let raw = net.evaluate(&self.pos, Ply::ROOT, &mut scratch);
-        let v = raw.psqt + raw.positional;
-        let _ = writeln!(out, "NNUE evaluation          {v:+} (side to move, internal units)");
+        let v = Value::new(raw.psqt.get() + raw.positional.get());
+        let _ =
+            writeln!(out, "NNUE evaluation          {:+} (side to move, internal units)", v.get());
         let white = if self.pos.side_to_move() == Color::White { v } else { -v };
         let _ = writeln!(
             out,
@@ -839,7 +840,8 @@ impl Engine {
             0.01 * f64::from(score::to_cp(white, &self.pos))
         );
 
-        let full = rfish_engine::eval::evaluate(&self.pos, Some(net), Ply::ROOT, &mut scratch, 0);
+        let full =
+            rfish_engine::eval::evaluate(&self.pos, Some(net), Ply::ROOT, &mut scratch, VALUE_ZERO);
         let white = if self.pos.side_to_move() == Color::White { full } else { -full };
         let _ = writeln!(
             out,

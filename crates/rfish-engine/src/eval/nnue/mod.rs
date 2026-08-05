@@ -36,7 +36,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use crate::board::position::Position;
-use crate::board::types::{Ply, Value};
+use crate::board::types::{Ply, VALUE_ZERO, Value};
 
 pub use common::NetError;
 use common::{
@@ -287,8 +287,8 @@ impl Network {
         let psqt = self.transformer.transform(pos, bucket, ply.index(), scratch);
         let positional = self.stacks[bucket].propagate(scratch.transformed());
         NetworkOutput {
-            psqt: (i64::from(psqt) / OUTPUT_SCALE) as Value,
-            positional: (i64::from(positional) / OUTPUT_SCALE) as Value,
+            psqt: Value::new((i64::from(psqt) / OUTPUT_SCALE) as i32),
+            positional: Value::new((i64::from(positional) / OUTPUT_SCALE) as i32),
         }
     }
 
@@ -300,15 +300,15 @@ impl Network {
     #[must_use]
     pub fn trace_evaluate(&self, pos: &Position, scratch: &mut EvalScratch) -> NetworkTrace {
         let mut trace = NetworkTrace {
-            psqt: [0; LAYER_STACKS],
-            positional: [0; LAYER_STACKS],
+            psqt: [VALUE_ZERO; LAYER_STACKS],
+            positional: [VALUE_ZERO; LAYER_STACKS],
             correct_bucket: (pos.piece_total() as usize - 1) / 4,
         };
         for bucket in 0..LAYER_STACKS {
             let psqt = self.transformer.transform(pos, bucket, 0, scratch);
             let positional = self.stacks[bucket].propagate(scratch.transformed());
-            trace.psqt[bucket] = (i64::from(psqt) / OUTPUT_SCALE) as Value;
-            trace.positional[bucket] = (i64::from(positional) / OUTPUT_SCALE) as Value;
+            trace.psqt[bucket] = Value::new((i64::from(psqt) / OUTPUT_SCALE) as i32);
+            trace.positional[bucket] = Value::new((i64::from(positional) / OUTPUT_SCALE) as i32);
         }
         trace
     }

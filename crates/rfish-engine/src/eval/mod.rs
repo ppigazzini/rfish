@@ -46,7 +46,7 @@ pub fn evaluate(
 
     // Damp the score as the fifty-move counter runs out: a winning position that cannot be
     // converted in the remaining plies is not worth its material.
-    let v = v - v * pos.rule50_count() / 199;
+    let v = v - (v * pos.rule50_count() / 199).get();
     v.clamp(VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1)
 }
 
@@ -89,7 +89,7 @@ fn material_only(pos: &Position) -> Value {
     {
         v += WEIGHT[pt.index()] * (pos.count(us, pt) - pos.count(them, pt));
     }
-    v
+    Value::new(v)
 }
 
 #[cfg(not(feature = "eval-material"))]
@@ -105,7 +105,9 @@ fn nnue_value(
     optimism: Value,
 ) -> Value {
     let out = net.evaluate(pos, ply, scratch);
-    let mut nnue = i64::from(out.psqt + out.positional);
+    // The two heads are COMPONENTS of one score, so their sum is a score; `Add<Value>` is
+    // deliberately absent, which is what makes the summing explicit here.
+    let mut nnue = i64::from(out.psqt) + i64::from(out.positional);
     let mut optimism = i64::from(optimism);
 
     // How far apart the material head and the positional head are. A large gap means the
@@ -116,7 +118,7 @@ fn nnue_value(
 
     let material =
         534 * i64::from(pos.count_both(PieceType::Pawn)) + i64::from(pos.non_pawn_material_total());
-    ((nnue * (77871 + material) + optimism * (7191 + material)) / 77871) as Value
+    Value::new(((nnue * (77871 + material) + optimism * (7191 + material)) / 77871) as i32)
 }
 
 /// True when neither side has enough material to force mate.
@@ -160,11 +162,12 @@ pub const fn draw_value() -> Value {
 mod tests {
     use super::*;
     use crate::board::position::START_FEN;
+    use crate::board::types::VALUE_ZERO;
 
     /// Evaluate with no network, which is the fallback path.
     fn eval_classical(pos: &Position) -> Value {
         let mut scratch = nnue::Scratch::default();
-        evaluate(pos, None, Ply::ROOT, &mut scratch, 0)
+        evaluate(pos, None, Ply::ROOT, &mut scratch, VALUE_ZERO)
     }
 
     #[test]

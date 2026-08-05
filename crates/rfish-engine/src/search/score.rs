@@ -16,7 +16,7 @@
 //! Golden: `Stockfish/src/score.cpp`, `Stockfish/src/uci.cpp`.
 
 use crate::board::position::Position;
-use crate::board::types::{PieceType, VALUE_INFINITE, VALUE_MATE, VALUE_TB, Value};
+use crate::board::types::{PieceType, VALUE_INFINITE, VALUE_MATE, VALUE_TB, VALUE_ZERO, Value};
 
 /// The centipawn magnitude a tablebase verdict is reported at.
 ///
@@ -45,14 +45,14 @@ impl Score {
             Score::InternalUnits { value: to_cp(v, pos) }
         } else if v.abs() <= VALUE_TB {
             let distance = VALUE_TB - v.abs();
-            if v > 0 {
+            if v > VALUE_ZERO {
                 Score::Tablebase { plies: distance, win: true }
             } else {
                 Score::Tablebase { plies: -distance, win: false }
             }
         } else {
             let distance = VALUE_MATE - v.abs();
-            Score::Mate { plies: if v > 0 { distance } else { -distance } }
+            Score::Mate { plies: if v > VALUE_ZERO { distance } else { -distance } }
         }
     }
 
@@ -142,7 +142,7 @@ mod tests {
     fn a_draw_is_zero_and_the_scale_is_odd_symmetric() {
         let pos = Position::startpos();
         assert_eq!(to_cp(VALUE_DRAW, &pos), 0);
-        for v in [1, 50, 137, 800] {
+        for v in [1, 50, 137, 800].map(Value::new) {
             assert_eq!(to_cp(v, &pos), -to_cp(-v, &pos));
         }
     }
@@ -152,14 +152,14 @@ mod tests {
         // The whole point of the conversion: the number a GUI sees is NOT the number the
         // search works in, or a net change would silently move every reported score.
         let pos = Position::startpos();
-        assert_ne!(to_cp(300, &pos), 300);
+        assert_ne!(to_cp(Value::new(300), &pos), 300);
     }
 
     #[test]
     fn the_win_rate_is_monotonic_and_bounded() {
         let pos = Position::startpos();
         let mut previous = -1;
-        for v in (-2000..=2000).step_by(50) {
+        for v in (-2000..=2000).step_by(50).map(Value::new) {
             let w = win_rate_model(v, &pos);
             assert!((0..=1000).contains(&w), "win rate {w} out of range at {v}");
             assert!(w >= previous, "win rate fell at {v}");
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn wdl_always_sums_to_one_thousand() {
         let pos = Position::startpos();
-        for v in [-3000, -500, 0, 25, 500, 3000] {
+        for v in [-3000, -500, 0, 25, 500, 3000].map(Value::new) {
             assert_eq!(wdl(v, &pos).iter().sum::<i32>(), 1000, "at {v}");
         }
     }
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn an_ordinary_score_stays_an_estimate() {
         let pos = Position::startpos();
-        assert!(matches!(Score::new(58, &pos), Score::InternalUnits { .. }));
-        assert!(matches!(Score::new(-58, &pos), Score::InternalUnits { .. }));
+        assert!(matches!(Score::new(Value::new(58), &pos), Score::InternalUnits { .. }));
+        assert!(matches!(Score::new(Value::new(-58), &pos), Score::InternalUnits { .. }));
     }
 }
