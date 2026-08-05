@@ -102,6 +102,7 @@ lands, and nobody knows which claim broke better than the person who broke it.
 | [08-idiomatic-rust.md](08-idiomatic-rust.md) | the Rust patterns, the falsified list, the measured shapes | cold as prose, append-only as a ledger |
 | [09-tooling-ci.md](09-tooling-ci.md) | `cargo xtask` steps, the tiers, `.github/workflows/` | hot — a step added here is a page edit there |
 | [10-references.md](10-references.md) | external links | cold |
+| [12-what-the-types-prevent.md](12-what-the-types-prevent.md) | the domain newtypes and their boundary | warm — a type added without a row here makes the page wrong |
 | this page | the rules | cold |
 
 Cold does not mean unowned. It means the claim outlives a release, so when it *is* wrong it
