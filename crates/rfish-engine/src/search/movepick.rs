@@ -22,30 +22,19 @@ use crate::board::types::{
     MAX_MOVES, Move, MoveType, Piece, PieceType, Square, Value, piece_value,
 };
 
-use super::history::{Histories, PawnHistory};
+use super::history::{ContKey, Histories, PawnHistory, PawnRow};
 
-/// Which continuation plane a parent move selects, as a flat index into the continuation
-/// table.
+/// The six continuation planes a node reads, one to six plies back.
 ///
 /// Plain data, not a borrow. The picker is called with `&Position` and `&Histories` at
 /// every step rather than holding them, so the search can make and unmake a move between
 /// two calls — which is exactly what a picker that held a `&Position` would forbid. That
 /// is the one structural difference from upstream's `MovePicker`, and it is forced by the
 /// borrow checker rather than chosen.
-pub type ContKey = usize;
-
-/// The six continuation planes a node reads, one to six plies back.
-pub type ContKeys = [ContKey; 6];
-
-/// The plane given to a slot a picker never reads.
 ///
-/// Not every sequence reads all six: the quiescence and `ProbCut` sequences read plane zero
-/// through `score_evasions` or no plane at all, because `score_quiets` runs only from
-/// `QuietInit` and they never reach it. Those slots were `None`, which put an `Option` branch
-/// per plane on the picker's hottest line -- 17.2M instructions on a bench sit there, and
-/// the branch could never be taken from it. A placeholder index says the same thing without
-/// the branch: the slot is never read, so what it names does not matter.
-pub const UNREAD_PLANE: ContKey = 0;
+/// [`ContKey`] itself, and the plane a sequence never reads, are owned by
+/// [`super::history`] alongside the table they index.
+pub type ContKeys = [ContKey; 6];
 
 /// Where the picker is in its sequence. The numbering is upstream's, and the fallthrough
 /// order below depends on it.
@@ -245,7 +234,7 @@ pub struct MovePicker {
     /// One past everything generated.
     end_generated: usize,
 
-    pawn_row: usize,
+    pawn_row: PawnRow,
 }
 
 impl core::fmt::Debug for MovePicker {
@@ -303,7 +292,7 @@ impl MovePicker {
         debug_assert!(!pos.in_check(), "ProbCut is never entered in check");
         let usable = tt_move.is_ok() && pos.is_capture_stage(tt_move) && pos.pseudo_legal(tt_move);
         MovePicker {
-            continuations: [UNREAD_PLANE; 6],
+            continuations: [ContKey::UNREAD; 6],
             tt_move: if usable { tt_move } else { Move::NONE },
             threshold,
             stage: if usable { Stage::ProbCutTt } else { Stage::ProbCutInit },
@@ -637,7 +626,7 @@ mod tests {
     use crate::board::position::START_FEN;
 
     fn collect(pos: &Position, h: &Histories, tt: Move) -> Vec<Move> {
-        let mut mp = MovePicker::new(pos, [UNREAD_PLANE; 6], tt, 4, 0);
+        let mut mp = MovePicker::new(pos, [ContKey::UNREAD; 6], tt, 4, 0);
         let mut buf = MoveBuf::new();
         let mut out = Vec::new();
         loop {
@@ -704,7 +693,7 @@ mod tests {
     fn qsearch_yields_only_forcing_moves() {
         let h = Histories::default();
         let pos = Position::from_fen("4k3/8/8/3q4/4P3/8/8/R3K3 w - - 0 1", false).expect("valid");
-        let mut mp = MovePicker::new(&pos, [UNREAD_PLANE; 6], Move::NONE, 0, 0);
+        let mut mp = MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, 0, 0);
         let mut buf = MoveBuf::new();
         let mut any = false;
         loop {
@@ -723,7 +712,7 @@ mod tests {
     fn qsearch_in_check_yields_every_evasion() {
         let h = Histories::default();
         let pos = Position::from_fen("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1", false).expect("valid");
-        let mut mp = MovePicker::new(&pos, [UNREAD_PLANE; 6], Move::NONE, 0, 0);
+        let mut mp = MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, 0, 0);
         let mut buf = MoveBuf::new();
         let mut out = Vec::new();
         loop {
@@ -745,7 +734,7 @@ mod tests {
     fn skip_quiets_stops_the_quiet_stage_mid_node() {
         let h = Histories::default();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
-        let mut mp = MovePicker::new(&pos, [UNREAD_PLANE; 6], Move::NONE, 4, 0);
+        let mut mp = MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, 4, 0);
         let mut buf = MoveBuf::new();
         mp.skip_quiet_moves();
         let mut seen = 0;

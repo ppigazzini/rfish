@@ -44,9 +44,9 @@ use crate::state::{
 };
 
 use super::history::{
-    CORRECTION_LIMIT, Histories, LOW_PLY_HISTORY_SIZE, cont_plane_index, corr_plane_index,
+    CORRECTION_LIMIT, ContKey, Histories, LOW_PLY_HISTORY_SIZE, cont_plane_index, corr_plane_index,
 };
-use super::movepick::{ContKeys, MoveBuf, MovePicker, UNREAD_PLANE};
+use super::movepick::{ContKeys, MoveBuf, MovePicker};
 use super::score::Score;
 use super::skill::{Prng, Skill};
 use super::tt::{TranspositionTable, value_from_tt, value_to_tt};
@@ -2519,14 +2519,14 @@ impl SearchWorker {
         }
 
         // Only plane zero is ever read here: quiescence reaches `score_evasions` at most and
-        // never `QuietInit`. See `movepick::UNREAD_PLANE`.
+        // never `QuietInit`. See `movepick::ContKey::UNREAD`.
         let cont_keys: ContKeys = [
             self.stack[si - 1].continuation,
-            UNREAD_PLANE,
-            UNREAD_PLANE,
-            UNREAD_PLANE,
-            UNREAD_PLANE,
-            UNREAD_PLANE,
+            ContKey::UNREAD,
+            ContKey::UNREAD,
+            ContKey::UNREAD,
+            ContKey::UNREAD,
+            ContKey::UNREAD,
         ];
         let prev_sq = if self.stack[si - 1].current_move.is_ok() {
             self.stack[si - 1].current_move.to()
