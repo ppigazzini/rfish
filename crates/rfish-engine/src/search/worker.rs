@@ -40,7 +40,7 @@ use crate::eval;
 use crate::eval::nnue::{Network, Scratch};
 use crate::state::{
     Limits, MEAN_SQUARED_SENTINEL, RootMove, STACK_BASE, STACK_SIZE, SearchOptions, SharedState,
-    StackEntry, TimeBudget,
+    StackEntry, StackIx, TimeBudget,
 };
 
 use super::history::{
@@ -420,10 +420,10 @@ impl SearchWorker {
     // Always: zfish has no separate wrapper here at all -- the work is inline in
     // `searchImpl`, where the stack entry being written is already addressed.
     #[inline(always)]
-    fn do_move(&mut self, mv: Move, gives_check: bool, si: usize) {
+    fn do_move(&mut self, mv: Move, gives_check: bool, si: StackIx) {
         let capture = self.pos.is_capture_stage(mv);
         let moved = self.pos.moved_piece(mv);
-        let in_check = self.stack[si].in_check;
+        let in_check = self.stack[si.index()].in_check;
         self.nodes += 1;
         // Every 1024 nodes, and on every worker rather than only the one that reports:
         // a helper that never publishes leaves the pool total reading as if it had searched
@@ -435,7 +435,7 @@ impl SearchWorker {
         }
         // Record what the child's accumulator will roll forward from. Split the borrow by
         // FIELD: the record list belongs to the scratch and the pieces to the position.
-        let ply = Ply::new((si - STACK_BASE) as i32 + 1);
+        let ply = si.ply().next();
         #[cfg(not(feature = "eval-material"))]
         {
             let dts = self.scratch.record_threats(ply);
@@ -453,9 +453,9 @@ impl SearchWorker {
             let dpp = self.pos.do_move_recording(mv, gives_check, None);
             self.scratch.record(ply, &self.pos, self.pos.raw_key(), dpp);
         }
-        self.stack[si].current_move = mv;
-        self.stack[si].continuation = cont_plane_index(in_check, capture, moved, mv.to());
-        self.stack[si].continuation_correction = corr_plane_index(moved, mv.to());
+        self.stack[si.index()].current_move = mv;
+        self.stack[si.index()].continuation = cont_plane_index(in_check, capture, moved, mv.to());
+        self.stack[si.index()].continuation_correction = corr_plane_index(moved, mv.to());
     }
 
     fn undo_move(&mut self, mv: Move) {
@@ -464,18 +464,15 @@ impl SearchWorker {
 
     /// Pass the move. The continuation planes fall back to the sentinel, which no real
     /// move can select and which is therefore never written.
-    fn do_null_move(&mut self, si: usize) {
+    fn do_null_move(&mut self, si: StackIx) {
         self.pos.do_null_move();
         // A null move moves no piece, so it changes no threat and no pawn pair: the child
         // rolls forward from the parent with an EMPTY delta rather than refreshing.
-        self.scratch.record_null(
-            Ply::new((si - STACK_BASE) as i32 + 1),
-            &self.pos,
-            self.pos.raw_key(),
-        );
-        self.stack[si].current_move = Move::NULL;
-        self.stack[si].continuation = cont_plane_index(false, false, Piece::NONE, Square::A1);
-        self.stack[si].continuation_correction = corr_plane_index(Piece::NONE, Square::A1);
+        self.scratch.record_null(si.ply().next(), &self.pos, self.pos.raw_key());
+        self.stack[si.index()].current_move = Move::NULL;
+        self.stack[si.index()].continuation =
+            cont_plane_index(false, false, Piece::NONE, Square::A1);
+        self.stack[si.index()].continuation_correction = corr_plane_index(Piece::NONE, Square::A1);
     }
 
     fn undo_null_move(&mut self) {
@@ -499,7 +496,7 @@ impl SearchWorker {
     // Always, not a hint: zfish folds its correction read into `searchImpl`, and the caller
     // already holds the state this walks.
     #[inline(always)]
-    fn correction_value(&self, si: usize) -> i32 {
+    fn correction_value(&self, si: StackIx) -> i32 {
         let us = self.pos.side_to_move();
         let st = self.pos.st();
         let h = &self.histories;
@@ -508,16 +505,16 @@ impl SearchWorker {
         let wnpcv = i32::from(h.correction.entry(st.non_pawn_key[0], us).non_pawn_white);
         let bnpcv = i32::from(h.correction.entry(st.non_pawn_key[1], us).non_pawn_black);
 
-        let m = self.stack[si - 1].current_move;
+        let m = self.stack[si.back(1).index()].current_move;
         let cntcv = if m.is_ok() {
             let to = m.to();
             let pc = self.pos.piece_on(to);
             8761 * (h.continuation_correction.get(
-                self.stack[si - 2].continuation_correction,
+                self.stack[si.back(2).index()].continuation_correction,
                 pc,
                 to,
             ) + h.continuation_correction.get(
-                self.stack[si - 4].continuation_correction,
+                self.stack[si.back(4).index()].continuation_correction,
                 pc,
                 to,
             ))
@@ -538,7 +535,7 @@ impl SearchWorker {
     }
 
     /// Record how far the static evaluation was from what the search found.
-    fn update_correction_history(&mut self, si: usize, bonus: i32) {
+    fn update_correction_history(&mut self, si: StackIx, bonus: i32) {
         // Material changes far less often than structure, so an error attributed to it is
         // weaker evidence and is recorded at a lower weight.
         const NON_PAWN_WEIGHT: i32 = 186;
@@ -565,13 +562,13 @@ impl SearchWorker {
             bonus * NON_PAWN_WEIGHT / 128,
         );
 
-        let m = self.stack[si - 1].current_move;
+        let m = self.stack[si.back(1).index()].current_move;
         if m.is_ok() {
             let to = m.to();
             let pc = self.pos.piece_on(to);
             let (p2, p4) = (
-                self.stack[si - 2].continuation_correction,
-                self.stack[si - 4].continuation_correction,
+                self.stack[si.back(2).index()].continuation_correction,
+                self.stack[si.back(4).index()].continuation_correction,
             );
             self.histories.continuation_correction.update(p2, pc, to, bonus * 130 / 128);
             self.histories.continuation_correction.update(p4, pc, to, bonus * 70 / 128);
@@ -585,10 +582,10 @@ impl SearchWorker {
     /// The multiplier grows with how many of those planes already rate this follow-up
     /// positively: a move several previous contexts agree about is stronger evidence than
     /// one only the immediate parent likes.
-    fn update_continuation_histories(&mut self, si: usize, pc: Piece, to: Square, bonus: i32) {
+    fn update_continuation_histories(&mut self, si: StackIx, pc: Piece, to: Square, bonus: i32) {
         const CMHC_MULTIPLIERS: [i32; 7] = [94, 103, 110, 106, 119, 126, 121];
 
-        let in_check = self.stack[si].in_check;
+        let in_check = self.stack[si.index()].in_check;
         let mut positive_count = 0usize;
         let histories = &mut self.histories;
         // Written out per ply rather than looped over the table above. The loop did not
@@ -603,7 +600,7 @@ impl SearchWorker {
         macro_rules! ply_back {
             ($i:literal, $weight:literal) => {{
                 if !(in_check && $i > 2) {
-                    let entry = &self.stack[si - $i];
+                    let entry = &self.stack[si.back($i).index()];
                     if entry.current_move.is_ok() {
                         let plane = entry.continuation;
                         if histories.continuation.get(plane, pc, to) > 0 {
@@ -628,9 +625,9 @@ impl SearchWorker {
     }
 
     /// Reward or punish a quiet move across every table that orders quiet moves.
-    fn update_quiet_histories(&mut self, si: usize, mv: Move, bonus: i32) {
+    fn update_quiet_histories(&mut self, si: StackIx, mv: Move, bonus: i32) {
         let us = self.pos.side_to_move();
-        let ply = Ply::new((si - STACK_BASE) as i32);
+        let ply = si.ply();
         let pc = self.pos.moved_piece(mv);
         let to = mv.to();
         let pawn_row = super::history::PawnHistory::row(self.pos.st().pawn_key);
@@ -651,7 +648,7 @@ impl SearchWorker {
     #[allow(clippy::too_many_arguments)]
     fn update_all_stats(
         &mut self,
-        si: usize,
+        si: StackIx,
         best_move: Move,
         prev_sq: SquareOrNone,
         quiets_searched: &[Move],
@@ -664,7 +661,7 @@ impl SearchWorker {
 
         let mut bonus = (133 * depth - 81).min(1487)
             + 364 * i32::from(best_move == tt_move)
-            + self.stack[si - 1].stat_score / 28;
+            + self.stack[si.back(1).index()].stat_score / 28;
         let malus = (968 * depth - 235).min(2244);
 
         if !pv_node {
@@ -706,11 +703,12 @@ impl SearchWorker {
         // An early quiet move at the previous ply that was not its transposition move, and
         // that this node just refuted, is punished there rather than here.
         if let Some(prev_sq) = prev_sq.square()
-            && self.stack[si - 1].move_count == 1 + i32::from(self.stack[si - 1].tt_hit)
+            && self.stack[si.back(1).index()].move_count
+                == 1 + i32::from(self.stack[si.back(1).index()].tt_hit)
             && self.pos.captured_piece().is_none()
         {
             let pc = self.pos.piece_on(prev_sq);
-            self.update_continuation_histories(si - 1, pc, prev_sq, -malus * 713 / 1024);
+            self.update_continuation_histories(si.back(1), pc, prev_sq, -malus * 713 / 1024);
         }
 
         for &mv in captures_searched {
@@ -738,15 +736,16 @@ impl SearchWorker {
     /// and the search spends its depth going nowhere. The test looks for the move that
     /// completes a two-ply cycle. Its parameters are deliberately untuned upstream, and
     /// tuning them here would be an improvement rather than a port.
-    fn is_shuffling(&self, mv: Move, si: usize) -> bool {
+    fn is_shuffling(&self, mv: Move, si: StackIx) -> bool {
         if self.pos.is_capture_stage(mv) || self.pos.rule50_count() < 10 {
             return false;
         }
-        if self.pos.st().plies_from_null < 6 || (si - STACK_BASE) < 20 {
+        if self.pos.st().plies_from_null < 6 || si.ply() < Ply::new(20) {
             return false;
         }
-        mv.from() == self.stack[si - 2].current_move.to()
-            && self.stack[si - 2].current_move.from() == self.stack[si - 4].current_move.to()
+        mv.from() == self.stack[si.back(2).index()].current_move.to()
+            && self.stack[si.back(2).index()].current_move.from()
+                == self.stack[si.back(4).index()].current_move.to()
     }
 
     // -- the driver --------------------------------------------------------
@@ -907,10 +906,10 @@ impl SearchWorker {
         // rather than as a number, or the improving test at ply 0 and 1 would compare
         // against a value that was never computed.
         for i in 1..=7 {
-            self.stack[STACK_BASE - i].static_eval = VALUE_NONE;
-            self.stack[STACK_BASE - i].continuation =
+            self.stack[StackIx::pre_root(i).index()].static_eval = VALUE_NONE;
+            self.stack[StackIx::pre_root(i).index()].continuation =
                 cont_plane_index(false, false, Piece::NONE, Square::A1);
-            self.stack[STACK_BASE - i].continuation_correction =
+            self.stack[StackIx::pre_root(i).index()].continuation_correction =
                 corr_plane_index(Piece::NONE, Square::A1);
         }
 
@@ -1345,7 +1344,7 @@ impl SearchWorker {
             }
         }
 
-        let si = STACK_BASE + ply.index();
+        let si = StackIx::from_ply(ply);
         let mut best_value;
         let mut max_value = VALUE_INFINITE;
         // Fixed arrays, not `Vec`. Upstream's `ValueList<Move, 32>` is inline storage and
@@ -1358,19 +1357,20 @@ impl SearchWorker {
         let mut n_quiets = 0usize;
 
         // Step 1. Initialize node
-        self.stack[si].in_check = self.pos.in_check();
-        let in_check = self.stack[si].in_check;
+        self.stack[si.index()].in_check = self.pos.in_check();
+        let in_check = self.stack[si.index()].in_check;
         let prior_capture = !self.pos.captured_piece().is_none();
         let us = self.pos.side_to_move();
-        self.stack[si].move_count = 0;
+        self.stack[si.index()].move_count = 0;
         best_value = -VALUE_INFINITE;
 
         // Still on the previous iteration's principal variation? Several pruning rules are
         // relaxed there, because that line is the one the iteration most needs resolved.
-        self.stack[si].follow_pv = ROOT
-            || (self.stack[si - 1].follow_pv
+        self.stack[si.index()].follow_pv = ROOT
+            || (self.stack[si.back(1).index()].follow_pv
                 && ply.prev().index() < self.last_iteration_pv.len()
-                && self.stack[si - 1].current_move == self.last_iteration_pv[ply.prev().index()]);
+                && self.stack[si.back(1).index()].current_move
+                    == self.last_iteration_pv[ply.prev().index()]);
 
         if self.id == 0 {
             self.check_time();
@@ -1400,25 +1400,25 @@ impl SearchWorker {
             }
         }
 
-        let prev_sq = if self.stack[si - 1].current_move.is_ok() {
-            self.stack[si - 1].current_move.to().some()
+        let prev_sq = if self.stack[si.back(1).index()].current_move.is_ok() {
+            self.stack[si.back(1).index()].current_move.to().some()
         } else {
             SquareOrNone::NONE
         };
         let mut best_move = Move::NONE;
-        let prior_reduction = self.stack[si - 1].reduction;
-        self.stack[si - 1].reduction = 0;
-        self.stack[si].stat_score = 0;
-        self.stack[si + 2].cutoff_count = 0;
+        let prior_reduction = self.stack[si.back(1).index()].reduction;
+        self.stack[si.back(1).index()].reduction = 0;
+        self.stack[si.index()].stat_score = 0;
+        self.stack[si.next().next().index()].cutoff_count = 0;
 
         let correction_value = self.correction_value(si);
 
         // Step 4. Transposition table lookup
-        let excluded_move = self.stack[si].excluded_move;
+        let excluded_move = self.stack[si.index()].excluded_move;
         let pos_key = self.pos.key();
         let probe = tt.probe(pos_key);
         let tt_hit = probe.hit;
-        self.stack[si].tt_hit = tt_hit;
+        self.stack[si.index()].tt_hit = tt_hit;
         let tt_move = if ROOT {
             self.root_moves[self.pv_index].pv[0]
         } else if tt_hit {
@@ -1433,8 +1433,8 @@ impl SearchWorker {
         };
         let tt_depth = probe.data.depth;
         let tt_bound = probe.data.bound;
-        self.stack[si].tt_pv = if excluded_move.is_some() {
-            self.stack[si].tt_pv
+        self.stack[si.index()].tt_pv = if excluded_move.is_some() {
+            self.stack[si.index()].tt_pv
         } else {
             PV || (tt_hit && probe.data.is_pv)
         };
@@ -1446,21 +1446,21 @@ impl SearchWorker {
         if in_check {
             // In check there is no standing estimate: every move is forced. The value two
             // plies back is carried forward so the improving test still has an anchor.
-            self.stack[si].static_eval = self.stack[si - 2].static_eval;
-            eval = self.stack[si].static_eval;
+            self.stack[si.index()].static_eval = self.stack[si.back(2).index()].static_eval;
+            eval = self.stack[si.index()].static_eval;
         } else if excluded_move.is_some() {
             // The singular search re-enters this node; re-evaluating would be wasted work
             // and, through the correction tables, would not even give the same answer.
-            unadjusted_static_eval = self.stack[si].static_eval;
-            eval = self.stack[si].static_eval;
+            unadjusted_static_eval = self.stack[si.index()].static_eval;
+            eval = self.stack[si.index()].static_eval;
         } else if tt_hit {
             unadjusted_static_eval = probe.data.eval;
             if !is_valid(unadjusted_static_eval) {
                 unadjusted_static_eval = self.evaluate(ply);
             }
-            self.stack[si].static_eval =
+            self.stack[si.index()].static_eval =
                 Self::to_corrected_static_eval(unadjusted_static_eval, correction_value);
-            eval = self.stack[si].static_eval;
+            eval = self.stack[si.index()].static_eval;
 
             // A searched score is a better estimate than a static one, when its bound
             // points the right way.
@@ -1476,9 +1476,9 @@ impl SearchWorker {
             }
         } else {
             unadjusted_static_eval = self.evaluate(ply);
-            self.stack[si].static_eval =
+            self.stack[si.index()].static_eval =
                 Self::to_corrected_static_eval(unadjusted_static_eval, correction_value);
-            eval = self.stack[si].static_eval;
+            eval = self.stack[si.index()].static_eval;
 
             // The evaluation is stored as it was BEFORE the correction. The table is shared
             // between nodes whose histories differ, and a corrected value would not mean
@@ -1490,12 +1490,14 @@ impl SearchWorker {
                 unadjusted_static_eval,
                 DEPTH_UNSEARCHED,
                 Bound::None,
-                self.stack[si].tt_pv,
+                self.stack[si.index()].tt_pv,
             );
         }
 
-        let mut improving = self.stack[si].static_eval > self.stack[si - 2].static_eval;
-        let opponent_worsening = self.stack[si].static_eval > -self.stack[si - 1].static_eval;
+        let mut improving =
+            self.stack[si.index()].static_eval > self.stack[si.back(2).index()].static_eval;
+        let opponent_worsening =
+            self.stack[si.index()].static_eval > -self.stack[si.back(1).index()].static_eval;
 
         // Hindsight adjustment. The parent reduced this node on an expectation the static
         // evaluation has now contradicted, so the reduction is partly undone — or, when the
@@ -1505,7 +1507,9 @@ impl SearchWorker {
         }
         if prior_reduction >= 2
             && depth >= 2
-            && self.stack[si].static_eval.get() + self.stack[si - 1].static_eval.get() > 166
+            && self.stack[si.index()].static_eval.get()
+                + self.stack[si.back(1).index()].static_eval.get()
+                > 166
         {
             depth -= 1;
         }
@@ -1529,11 +1533,11 @@ impl SearchWorker {
                     self.update_quiet_histories(si, tt_move, (112 * depth).min(695));
                 }
                 if let Some(prev_sq) = prev_sq.square()
-                    && self.stack[si - 1].move_count < 5
+                    && self.stack[si.back(1).index()].move_count < 5
                     && !prior_capture
                 {
                     let pc = self.pos.piece_on(prev_sq);
-                    self.update_continuation_histories(si - 1, pc, prev_sq, -2210);
+                    self.update_continuation_histories(si.back(1), pc, prev_sq, -2210);
                 }
             }
 
@@ -1605,15 +1609,15 @@ impl SearchWorker {
             // Use the static evaluation's own change to order quiet moves. A move after
             // which the evaluation jumped is a move worth trying earlier next time, and
             // this is the cheapest possible measurement of that.
-            if self.stack[si - 1].current_move.is_ok()
-                && !self.stack[si - 1].in_check
+            if self.stack[si.back(1).index()].current_move.is_ok()
+                && !self.stack[si.back(1).index()].in_check
                 && !prior_capture
             {
-                let eval_diff = (-(self.stack[si - 1].static_eval.get()
-                    + self.stack[si].static_eval.get()))
+                let eval_diff = (-(self.stack[si.back(1).index()].static_eval.get()
+                    + self.stack[si.index()].static_eval.get()))
                 .clamp(-189, 194)
                     + 60;
-                let prev_move = self.stack[si - 1].current_move;
+                let prev_move = self.stack[si.back(1).index()].current_move;
                 self.histories.main.update(!us, prev_move.raw(), eval_diff * 11);
                 if let Some(prev_sq) = prev_sq.square()
                     && !tt_hit
@@ -1634,7 +1638,7 @@ impl SearchWorker {
 
             // Step 8. Futility pruning at a child node. Far enough above beta that even
             // giving material away could not bring the position below it.
-            if !self.stack[si].tt_pv
+            if !self.stack[si.index()].tt_pv
                 && depth < 19
                 && eval >= beta
                 && (tt_move.is_none() || tt_capture)
@@ -1642,7 +1646,7 @@ impl SearchWorker {
                 && !is_win(eval)
             {
                 let mut futility_mult = (45 + depth * 4).min(85);
-                futility_mult -= 20 * i32::from(!self.stack[si].tt_hit);
+                futility_mult -= 20 * i32::from(!self.stack[si.index()].tt_hit);
 
                 let futility_margin = futility_mult * depth
                     - (2789 * i32::from(improving) + 335 * i32::from(opponent_worsening))
@@ -1659,7 +1663,8 @@ impl SearchWorker {
 
             // Step 9. Null move search with verification search
             if cut_node
-                && self.stack[si].static_eval >= beta - 13 * depth - 47 * i32::from(improving) + 365
+                && self.stack[si.index()].static_eval
+                    >= beta - 13 * depth - 47 * i32::from(improving) + 365
                 && excluded_move.is_none()
                 && self.pos.non_pawn_material(us) > 0
                 && ply >= self.nmp_min_ply
@@ -1668,7 +1673,7 @@ impl SearchWorker {
                 // Give the opponent a free move; if the position still beats beta, the
                 // real move would too. Skipped in a pawn endgame, where zugzwang makes
                 // "pass" a genuinely good option and the assumption fails.
-                let r = 7 + depth / 3 + ((self.stack[si].static_eval - beta) / 256).max(0);
+                let r = 7 + depth / 3 + ((self.stack[si.index()].static_eval - beta) / 256).max(0);
                 self.do_null_move(si);
                 let null_value =
                     -self.node::<false, false>(-beta, -beta + 1, depth - r, ply.next(), false, tt);
@@ -1691,11 +1696,11 @@ impl SearchWorker {
                 }
             }
 
-            improving |= self.stack[si].static_eval >= beta;
+            improving |= self.stack[si.index()].static_eval >= beta;
 
             // Step 10. Internal iterative reductions. A node with no transposition move has
             // no ordering to work with, so the depth mostly buys a badly ordered tree.
-            if !self.stack[si].follow_pv && !all_node && depth >= 6 && tt_move.is_none() {
+            if !self.stack[si.index()].follow_pv && !all_node && depth >= 6 && tt_move.is_none() {
                 depth -= 1;
             }
 
@@ -1710,7 +1715,7 @@ impl SearchWorker {
                 let mut mp = MovePicker::new_probcut(
                     &self.pos,
                     tt_move,
-                    Value::new(prob_cut_beta - self.stack[si].static_eval),
+                    Value::new(prob_cut_beta - self.stack[si.index()].static_eval),
                 );
                 let prob_cut_depth = depth - if improving { 5 } else { 3 };
 
@@ -1750,7 +1755,7 @@ impl SearchWorker {
                             unadjusted_static_eval,
                             prob_cut_depth + 1,
                             Bound::Lower,
-                            self.stack[si].tt_pv,
+                            self.stack[si.index()].tt_pv,
                         );
                         if !is_decisive(value) {
                             return value - (prob_cut_beta - beta);
@@ -1774,12 +1779,12 @@ impl SearchWorker {
         }
 
         let cont_keys: ContKeys = [
-            self.stack[si - 1].continuation,
-            self.stack[si - 2].continuation,
-            self.stack[si - 3].continuation,
-            self.stack[si - 4].continuation,
-            self.stack[si - 5].continuation,
-            self.stack[si - 6].continuation,
+            self.stack[si.back(1).index()].continuation,
+            self.stack[si.back(2).index()].continuation,
+            self.stack[si.back(3).index()].continuation,
+            self.stack[si.back(4).index()].continuation,
+            self.stack[si.back(5).index()].continuation,
+            self.stack[si.back(6).index()].continuation,
         ];
 
         let slot = SLOTS_PER_PLY * ply.index()
@@ -1803,13 +1808,13 @@ impl SearchWorker {
             }
 
             move_count += 1;
-            self.stack[si].move_count = move_count;
+            self.stack[si.index()].move_count = move_count;
 
             if ROOT && self.id == 0 && self.nodes > NODES_LIMIT_OUTPUT {
                 // Reported through the sink by the shell; the search itself never prints.
             }
             if PV {
-                self.stack[si + 1].pv_valid = false;
+                self.stack[si.next().index()].pv_valid = false;
             }
 
             let mut extension = 0i32;
@@ -1823,7 +1828,7 @@ impl SearchWorker {
 
             // A node the table considers important is reduced MORE, not less: it will be
             // revisited, so a cheap first look costs little.
-            if self.stack[si].tt_pv {
+            if self.stack[si.index()].tt_pv {
                 r += 929;
             }
 
@@ -1844,7 +1849,7 @@ impl SearchWorker {
                     );
 
                     if !gives_check && lmr_depth < 8 {
-                        let futility_value = self.stack[si].static_eval
+                        let futility_value = self.stack[si.index()].static_eval
                             + 234
                             + 247 * lmr_depth
                             + piece_value(captured_piece).get()
@@ -1863,15 +1868,15 @@ impl SearchWorker {
                     {
                         continue;
                     }
-                } else if !self.stack[si].follow_pv || !PV {
+                } else if !self.stack[si.index()].follow_pv || !PV {
                     let d_index = (depth.min(LMR_DIVISOR.len() as i32) - 1) as usize;
                     let pawn_row = super::history::PawnHistory::row(self.pos.st().pawn_key);
                     let mut history = self.histories.continuation.get(
-                        self.stack[si - 1].continuation,
+                        self.stack[si.back(1).index()].continuation,
                         moved_piece,
                         mv.to(),
                     ) + self.histories.continuation.get(
-                        self.stack[si - 2].continuation,
+                        self.stack[si.back(2).index()].continuation,
                         moved_piece,
                         mv.to(),
                     ) + self.histories.pawn.get(pawn_row, moved_piece, mv.to());
@@ -1883,11 +1888,11 @@ impl SearchWorker {
                     history += 69 * self.histories.main.get(us, mv.raw()) / 32;
                     lmr_depth += history / LMR_DIVISOR[d_index];
 
-                    let futility_value = self.stack[si].static_eval
+                    let futility_value = self.stack[si.index()].static_eval
                         + 39
                         + 127 * i32::from(best_move.is_none())
                         + 119 * lmr_depth
-                        + 90 * i32::from(self.stack[si].static_eval > alpha);
+                        + 90 * i32::from(self.stack[si.index()].static_eval > alpha);
 
                     if !in_check && lmr_depth < 12 && futility_value <= alpha {
                         if best_value <= futility_value
@@ -1912,18 +1917,18 @@ impl SearchWorker {
             if !ROOT
                 && mv == tt_move
                 && excluded_move.is_none()
-                && depth >= 6 + i32::from(self.stack[si].tt_pv)
+                && depth >= 6 + i32::from(self.stack[si.index()].tt_pv)
                 && is_valid(tt_value)
                 && !is_decisive(tt_value)
                 && (tt_bound == Bound::Lower || tt_bound == Bound::Exact)
                 && tt_depth >= depth - 3
                 && !self.is_shuffling(mv, si)
             {
-                let singular_beta =
-                    tt_value - (59 + 66 * i32::from(self.stack[si].tt_pv && !PV)) * depth / 63;
+                let singular_beta = tt_value
+                    - (59 + 66 * i32::from(self.stack[si.index()].tt_pv && !PV)) * depth / 63;
                 let singular_depth = new_depth / 2;
 
-                self.stack[si].excluded_move = mv;
+                self.stack[si.index()].excluded_move = mv;
                 let v = self.node::<false, false>(
                     singular_beta - 1,
                     singular_beta,
@@ -1932,7 +1937,7 @@ impl SearchWorker {
                     cut_node,
                     tt,
                 );
-                self.stack[si].excluded_move = Move::NONE;
+                self.stack[si.index()].excluded_move = Move::NONE;
 
                 if v < singular_beta {
                     // How far below the margin decides how far to extend: a move that is
@@ -1944,7 +1949,7 @@ impl SearchWorker {
                         - 1175 * i32::from(self.histories.tt_move) / 114_178
                         - i32::from(ply.get() > self.root_depth) * 38;
                     let triple_margin = 70 + 279 * i32::from(PV) - 188 * i32::from(!tt_capture)
-                        + 81 * i32::from(self.stack[si].tt_pv)
+                        + 81 * i32::from(self.stack[si.index()].tt_pv)
                         - corr_val_adj
                         - i32::from(ply.get() > self.root_depth) * 43;
 
@@ -1961,10 +1966,10 @@ impl SearchWorker {
                     // The fail-high is evidence about the static evaluation too: the search
                     // found more here than the evaluation said was available, so feed the
                     // difference back the way a completed search would.
-                    if !self.stack[si].in_check && v > self.stack[si].static_eval {
+                    if !self.stack[si.index()].in_check && v > self.stack[si.index()].static_eval {
                         let bonus = multicut_correction_bonus(
                             v,
-                            self.stack[si].static_eval,
+                            self.stack[si.index()].static_eval,
                             singular_depth,
                         );
                         self.update_correction_history(si, bonus);
@@ -1988,7 +1993,7 @@ impl SearchWorker {
 
             // A node the table considers important is worth a fuller look once it has been
             // reached, which is why this undoes more than the pre-move increase added.
-            if self.stack[si].tt_pv {
+            if self.stack[si.index()].tt_pv {
                 r -= 3023
                     + i32::from(PV) * 1004
                     + i32::from(tt_value > alpha) * 885
@@ -2008,15 +2013,15 @@ impl SearchWorker {
 
             // A child that has already produced several cutoffs is an easy node; its
             // siblings can afford to be looked at less carefully.
-            if self.stack[si + 1].cutoff_count > 1 {
+            if self.stack[si.next().index()].cutoff_count > 1 {
                 r += 264
-                    + 1095 * i32::from(self.stack[si + 1].cutoff_count > 2)
+                    + 1095 * i32::from(self.stack[si.next().index()].cutoff_count > 2)
                     + 1138 * i32::from(all_node);
             } else if mv == tt_move {
                 r -= 2179;
             }
 
-            self.stack[si].stat_score = if capture {
+            self.stack[si.index()].stat_score = if capture {
                 let captured = self.pos.captured_piece();
                 873 * piece_value(captured).get() / 128
                     + self.histories.captures.get(moved_piece, mv.to(), captured.piece_type())
@@ -2024,20 +2029,20 @@ impl SearchWorker {
                 (2252 * self.histories.main.get(us, mv.raw())
                     + 1126
                         * self.histories.continuation.get(
-                            self.stack[si - 1].continuation,
+                            self.stack[si.back(1).index()].continuation,
                             moved_piece,
                             mv.to(),
                         )
                     + 1093
                         * self.histories.continuation.get(
-                            self.stack[si - 2].continuation,
+                            self.stack[si.back(2).index()].continuation,
                             moved_piece,
                             mv.to(),
                         ))
                     / 1024
             };
 
-            r -= self.stack[si].stat_score * 439 / 4096;
+            r -= self.stack[si.index()].stat_score * 439 / 4096;
 
             // An all-node will be searched exhaustively whatever happens, so reducing there
             // costs the least and saves the most.
@@ -2053,9 +2058,9 @@ impl SearchWorker {
                 // treats as a programming error rather than as the intended behaviour.
                 let d = (new_depth - r / 1024).min(new_depth + 2).max(1) + i32::from(PV);
 
-                self.stack[si].reduction = new_depth - d;
+                self.stack[si.index()].reduction = new_depth - d;
                 value = -self.node::<false, false>(-(alpha + 1), -alpha, d, ply.next(), true, tt);
-                self.stack[si].reduction = 0;
+                self.stack[si.index()].reduction = 0;
 
                 if value > alpha {
                     // The reduced search's own result says how much depth this move
@@ -2093,8 +2098,8 @@ impl SearchWorker {
             // For PV nodes only, do a full PV search on the first move or after a fail
             // high; otherwise let the parent fail low and try another move.
             if PV && (move_count == 1 || value > alpha) {
-                self.stack[si + 1].pv.clear();
-                self.stack[si + 1].pv_valid = true;
+                self.stack[si.next().index()].pv.clear();
+                self.stack[si.next().index()].pv_valid = true;
 
                 // A transposition move about to drop into quiescence is given one ply, so
                 // a decisive score the table already knows is not thrown away at the
@@ -2138,18 +2143,18 @@ impl SearchWorker {
                     best_move = mv;
 
                     if PV && !ROOT {
-                        let child = core::mem::take(&mut self.stack[si + 1].pv);
-                        let child_valid = self.stack[si + 1].pv_valid;
-                        self.stack[si].pv.clear();
-                        self.stack[si].pv.push(mv);
+                        let child = core::mem::take(&mut self.stack[si.next().index()].pv);
+                        let child_valid = self.stack[si.next().index()].pv_valid;
+                        self.stack[si.index()].pv.clear();
+                        self.stack[si.index()].pv.push(mv);
                         if child_valid {
-                            self.stack[si].pv.extend_from_slice(&child);
+                            self.stack[si.index()].pv.extend_from_slice(&child);
                         }
-                        self.stack[si + 1].pv = child;
+                        self.stack[si.next().index()].pv = child;
                     }
 
                     if value >= beta {
-                        self.stack[si].cutoff_count += i32::from(extension < 2 || PV);
+                        self.stack[si.index()].cutoff_count += i32::from(extension < 2 || PV);
                         break;
                     }
 
@@ -2213,24 +2218,24 @@ impl SearchWorker {
             // No move improved on alpha, so the move that led here is looking good for the
             // opponent. Reward it, scaled by how badly this node failed.
             let mut bonus_scale = -241;
-            bonus_scale -= self.stack[si - 1].stat_score / 98;
+            bonus_scale -= self.stack[si.back(1).index()].stat_score / 98;
             bonus_scale += (59 * depth).min(420);
-            bonus_scale += 186 * i32::from(self.stack[si - 1].move_count > 9);
-            bonus_scale +=
-                142 * i32::from(!in_check && best_value <= self.stack[si].static_eval - 106);
+            bonus_scale += 186 * i32::from(self.stack[si.back(1).index()].move_count > 9);
+            bonus_scale += 142
+                * i32::from(!in_check && best_value <= self.stack[si.index()].static_eval - 106);
             bonus_scale += 159
                 * i32::from(
-                    !self.stack[si - 1].in_check
-                        && best_value <= -self.stack[si - 1].static_eval - 68,
+                    !self.stack[si.back(1).index()].in_check
+                        && best_value <= -self.stack[si.back(1).index()].static_eval - 68,
                 );
             bonus_scale = bonus_scale.max(0);
 
             let scaled_bonus = (150 * depth - 85).min(1337) * bonus_scale;
 
             let pc = self.pos.piece_on(prev_sq);
-            self.update_continuation_histories(si - 1, pc, prev_sq, scaled_bonus * 263 / 16384);
+            self.update_continuation_histories(si.back(1), pc, prev_sq, scaled_bonus * 263 / 16384);
 
-            let prev_move = self.stack[si - 1].current_move;
+            let prev_move = self.stack[si.back(1).index()].current_move;
             self.histories.main.update(!us, prev_move.raw(), scaled_bonus * 215 / 32768);
 
             if self.pos.piece_on(prev_sq).piece_type() != PieceType::Pawn
@@ -2255,7 +2260,8 @@ impl SearchWorker {
         // variation, is probably where the opponent's good move led. Mark it so the table
         // treats it as important next time.
         if best_value <= alpha {
-            self.stack[si].tt_pv = self.stack[si].tt_pv || self.stack[si - 1].tt_pv;
+            self.stack[si.index()].tt_pv =
+                self.stack[si.index()].tt_pv || self.stack[si.back(1).index()].tt_pv;
         }
 
         if excluded_move.is_none() && !(ROOT && self.pv_index > 0) {
@@ -2275,7 +2281,7 @@ impl SearchWorker {
                 unadjusted_static_eval,
                 store_depth,
                 bound,
-                self.stack[si].tt_pv,
+                self.stack[si.index()].tt_pv,
             );
         }
 
@@ -2286,11 +2292,11 @@ impl SearchWorker {
         let best_was_capture = best_move.is_some() && self.pos.is_capture(best_move);
         if !in_check
             && !best_was_capture
-            && (best_value > self.stack[si].static_eval) == best_move.is_some()
+            && (best_value > self.stack[si.index()].static_eval) == best_move.is_some()
         {
             let limit = super::history::CORRECTION_LIMIT;
             let scale = if best_move.is_none() { 18 } else { 12 };
-            let bonus = ((best_value - self.stack[si].static_eval) * depth * scale / 128)
+            let bonus = ((best_value - self.stack[si.index()].static_eval) * depth * scale / 128)
                 .clamp(-limit / 4, limit / 4);
             self.update_correction_history(si, 1061 * bonus / 1024);
         }
@@ -2307,7 +2313,7 @@ impl SearchWorker {
         beta: Value,
         node_count: u64,
         move_count: i32,
-        si: usize,
+        si: StackIx,
     ) {
         // An exponential moving average whose weight depends on how much of the tree this
         // one search contributed. A move whose first search was most of its total effort
@@ -2374,14 +2380,14 @@ impl SearchWorker {
                 self.root_moves[idx].uci_score = alpha;
             }
 
-            let child = core::mem::take(&mut self.stack[si + 1].pv);
-            let child_valid = self.stack[si + 1].pv_valid;
+            let child = core::mem::take(&mut self.stack[si.next().index()].pv);
+            let child_valid = self.stack[si.next().index()].pv_valid;
             self.root_moves[idx].pv.truncate(1);
             self.root_moves[idx].pv[0] = mv;
             if child_valid {
                 self.root_moves[idx].pv.extend_from_slice(&child);
             }
-            self.stack[si + 1].pv = child;
+            self.stack[si.next().index()].pv = child;
 
             if move_count > 1 && self.pv_index == 0 {
                 self.best_move_changes += 1.0;
@@ -2412,18 +2418,18 @@ impl SearchWorker {
             }
         }
 
-        let si = STACK_BASE + ply.index();
+        let si = StackIx::from_ply(ply);
 
         // Step 1. Initialize node
         if PV {
-            self.stack[si + 1].pv.clear();
-            self.stack[si + 1].pv_valid = true;
-            self.stack[si].pv.clear();
+            self.stack[si.next().index()].pv.clear();
+            self.stack[si.next().index()].pv_valid = true;
+            self.stack[si.index()].pv.clear();
         }
 
         let mut best_move = Move::NONE;
-        self.stack[si].in_check = self.pos.in_check();
-        let in_check = self.stack[si].in_check;
+        self.stack[si.index()].in_check = self.pos.in_check();
+        let in_check = self.stack[si.index()].in_check;
         let mut move_count = 0i32;
 
         if PV && self.sel_depth < ply.next().get() {
@@ -2439,7 +2445,7 @@ impl SearchWorker {
         let pos_key = self.pos.key();
         let probe = tt.probe(pos_key);
         let tt_hit = probe.hit;
-        self.stack[si].tt_hit = tt_hit;
+        self.stack[si.index()].tt_hit = tt_hit;
         let tt_move = if tt_hit { probe.data.mv } else { Move::NONE };
         let tt_value = if tt_hit {
             value_from_tt(probe.data.value, ply, self.pos.rule50_count())
@@ -2478,9 +2484,9 @@ impl SearchWorker {
                 if !is_valid(unadjusted_static_eval) {
                     unadjusted_static_eval = self.evaluate(ply);
                 }
-                self.stack[si].static_eval =
+                self.stack[si.index()].static_eval =
                     Self::to_corrected_static_eval(unadjusted_static_eval, correction_value);
-                best_value = self.stack[si].static_eval;
+                best_value = self.stack[si.index()].static_eval;
 
                 if is_valid(tt_value)
                     && !is_decisive(tt_value)
@@ -2495,9 +2501,9 @@ impl SearchWorker {
                 }
             } else {
                 unadjusted_static_eval = self.evaluate(ply);
-                self.stack[si].static_eval =
+                self.stack[si.index()].static_eval =
                     Self::to_corrected_static_eval(unadjusted_static_eval, correction_value);
-                best_value = self.stack[si].static_eval;
+                best_value = self.stack[si.index()].static_eval;
             }
 
             // Stand pat: the side to move is not obliged to capture, so the static
@@ -2526,21 +2532,21 @@ impl SearchWorker {
                 alpha = best_value;
             }
 
-            futility_base = self.stack[si].static_eval + 306;
+            futility_base = self.stack[si.index()].static_eval + 306;
         }
 
         // Only plane zero is ever read here: quiescence reaches `score_evasions` at most and
         // never `QuietInit`. See `movepick::ContKey::UNREAD`.
         let cont_keys: ContKeys = [
-            self.stack[si - 1].continuation,
+            self.stack[si.back(1).index()].continuation,
             ContKey::UNREAD,
             ContKey::UNREAD,
             ContKey::UNREAD,
             ContKey::UNREAD,
             ContKey::UNREAD,
         ];
-        let prev_sq = if self.stack[si - 1].current_move.is_ok() {
-            self.stack[si - 1].current_move.to().some()
+        let prev_sq = if self.stack[si.back(1).index()].current_move.is_ok() {
+            self.stack[si.back(1).index()].current_move.to().some()
         } else {
             SquareOrNone::NONE
         };
@@ -2611,14 +2617,14 @@ impl SearchWorker {
                     best_move = mv;
 
                     if PV {
-                        let child = core::mem::take(&mut self.stack[si + 1].pv);
-                        let child_valid = self.stack[si + 1].pv_valid;
-                        self.stack[si].pv.clear();
-                        self.stack[si].pv.push(mv);
+                        let child = core::mem::take(&mut self.stack[si.next().index()].pv);
+                        let child_valid = self.stack[si.next().index()].pv_valid;
+                        self.stack[si.index()].pv.clear();
+                        self.stack[si.index()].pv.push(mv);
                         if child_valid {
-                            self.stack[si].pv.extend_from_slice(&child);
+                            self.stack[si.index()].pv.extend_from_slice(&child);
                         }
-                        self.stack[si + 1].pv = child;
+                        self.stack[si.next().index()].pv = child;
                     }
 
                     if value < beta {
