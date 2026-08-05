@@ -335,6 +335,113 @@ impl fmt::Debug for Piece {
 // Square, file, rank
 // ---------------------------------------------------------------------------
 
+/// A board file, `A` through `H`.
+///
+/// Split from a bare `usize` because a file and a rank are the two halves of a square and
+/// were the same type: [`Square::make`] takes them in one order, the Syzygy index arithmetic
+/// multiplies them by different constants, and nothing said which was which. They also index
+/// eight-element tables, so a caller that has one has a bound the compiler can use.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[repr(transparent)]
+pub struct File(u8);
+
+impl File {
+    pub const A: File = File(0);
+    pub const B: File = File(1);
+    pub const C: File = File(2);
+    pub const D: File = File(3);
+    pub const E: File = File(4);
+    pub const F: File = File(5);
+    pub const G: File = File(6);
+    pub const H: File = File(7);
+
+    /// Checked construction, per the rule at the top of this file.
+    ///
+    /// # Panics
+    /// Panics at or above [`FILE_NB`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(i: usize) -> File {
+        assert!(i < FILE_NB, "file out of range");
+        File(i as u8)
+    }
+
+    /// Index this file into a `[T; FILE_NB]`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl File {
+    /// The lower-case letter naming this file, as FEN and algebraic notation spell it.
+    #[inline(always)]
+    #[must_use]
+    pub const fn to_char(self) -> u8 {
+        b'a' + self.0
+    }
+}
+
+impl fmt::Display for File {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(core::str::from_utf8(&[self.to_char()]).unwrap_or("?"))
+    }
+}
+
+/// A board rank, 0 for rank 1.
+///
+/// Numbered from zero because every consumer is an index or a relative distance, and because
+/// [`Square::relative_rank`] returns one measured from the moving side's own back rank. See
+/// [`File`] for why it is a type.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[repr(transparent)]
+pub struct Rank(u8);
+
+impl Rank {
+    pub const R1: Rank = Rank(0);
+    pub const R2: Rank = Rank(1);
+    pub const R3: Rank = Rank(2);
+    pub const R4: Rank = Rank(3);
+    pub const R5: Rank = Rank(4);
+    pub const R6: Rank = Rank(5);
+    pub const R7: Rank = Rank(6);
+    pub const R8: Rank = Rank(7);
+
+    /// Checked construction, per the rule at the top of this file.
+    ///
+    /// # Panics
+    /// Panics at or above [`RANK_NB`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(i: usize) -> Rank {
+        assert!(i < RANK_NB, "rank out of range");
+        Rank(i as u8)
+    }
+
+    /// Index this rank into a `[T; RANK_NB]`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Rank {
+    /// The digit naming this rank, as FEN and algebraic notation spell it.
+    #[inline(always)]
+    #[must_use]
+    pub const fn to_char(self) -> u8 {
+        b'1' + self.0
+    }
+}
+
+impl fmt::Display for Rank {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(core::str::from_utf8(&[self.to_char()]).unwrap_or("?"))
+    }
+}
+
 /// A board square, ordered A1..H8 rank-major so `sq >> 3` is the rank and `sq & 7` the
 /// file.
 ///
@@ -364,12 +471,15 @@ impl Square {
         Square(i as u8)
     }
 
-    /// Build from a file and a rank, each in 0..8.
+    /// Build from a file and a rank.
+    ///
+    /// Both are checked at construction, so this needs no assertion of its own -- which is
+    /// the point of them being types: the bound is discharged once, where the value is made,
+    /// rather than at every place one is used.
     #[inline(always)]
     #[must_use]
-    pub const fn make(file: usize, rank: usize) -> Square {
-        debug_assert!(file < 8 && rank < 8);
-        Square((rank * 8 + file) as u8)
+    pub const fn make(file: File, rank: Rank) -> Square {
+        Square((rank.index() * 8 + file.index()) as u8)
     }
 
     /// Index this square into a `[T; SQUARE_NB]`.
@@ -400,18 +510,18 @@ impl Square {
         self.0 < 64
     }
 
-    /// The file, 0 for the a-file.
+    /// The file this square stands on.
     #[inline(always)]
     #[must_use]
-    pub const fn file(self) -> usize {
-        (self.0 & 7) as usize
+    pub const fn file(self) -> File {
+        File(self.0 & 7)
     }
 
-    /// The rank, 0 for rank 1.
+    /// The rank this square stands on.
     #[inline(always)]
     #[must_use]
-    pub const fn rank(self) -> usize {
-        (self.0 >> 3) as usize
+    pub const fn rank(self) -> Rank {
+        Rank(self.0 >> 3)
     }
 
     /// Mirror across the horizontal axis: a1 becomes a8.
@@ -432,8 +542,8 @@ impl Square {
     /// can be written once for both colours.
     #[inline(always)]
     #[must_use]
-    pub const fn relative_rank(self, c: Color) -> usize {
-        self.rank() ^ ((c as usize) * 7)
+    pub const fn relative_rank(self, c: Color) -> Rank {
+        Rank(self.rank().0 ^ ((c as u8) * 7))
     }
 
     /// The square as `c` sees it: identity for White, vertically mirrored for Black.
@@ -458,8 +568,8 @@ impl Square {
     #[inline(always)]
     #[must_use]
     pub const fn distance(self, other: Square) -> usize {
-        let df = (self.file() as isize - other.file() as isize).unsigned_abs();
-        let dr = (self.rank() as isize - other.rank() as isize).unsigned_abs();
+        let df = (self.file().index() as isize - other.file().index() as isize).unsigned_abs();
+        let dr = (self.rank().index() as isize - other.rank().index() as isize).unsigned_abs();
         if df > dr { df } else { dr }
     }
 
@@ -467,7 +577,7 @@ impl Square {
     #[must_use]
     pub const fn from_coords(file: u8, rank: u8) -> Option<Square> {
         if file.is_ascii_lowercase() && file <= b'h' && rank >= b'1' && rank <= b'8' {
-            Some(Square::make((file - b'a') as usize, (rank - b'1') as usize))
+            Some(Square::make(File::new((file - b'a') as usize), Rank::new((rank - b'1') as usize)))
         } else {
             None
         }
@@ -484,8 +594,11 @@ impl fmt::Display for Square {
         if self.is_none() {
             return f.write_str("-");
         }
-        let file = (b'a' + self.file() as u8) as char;
-        let rank = (b'1' + self.rank() as u8) as char;
+        // Written as two chars rather than as `"{}{}"` over the file and the rank. Those
+        // have their own `Display`, and delegating to them runs `core::fmt::write` twice more
+        // per square: measured at +507K instructions on `bench 16 1 8`, at BOTH tiers.
+        let file = self.file().to_char() as char;
+        let rank = self.rank().to_char() as char;
         write!(f, "{file}{rank}")
     }
 }
@@ -1036,9 +1149,9 @@ mod tests {
 
     #[test]
     fn relative_rank_is_own_side_first() {
-        assert_eq!(Square::A1.relative_rank(Color::White), 0);
-        assert_eq!(Square::A1.relative_rank(Color::Black), 7);
-        assert_eq!(Square::A8.relative_rank(Color::Black), 0);
+        assert_eq!(Square::A1.relative_rank(Color::White), Rank::R1);
+        assert_eq!(Square::A1.relative_rank(Color::Black), Rank::R8);
+        assert_eq!(Square::A8.relative_rank(Color::Black), Rank::R1);
     }
 
     #[test]

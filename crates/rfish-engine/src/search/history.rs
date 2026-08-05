@@ -649,6 +649,7 @@ impl Histories {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::types::{File, Rank};
 
     #[test]
     fn gravity_saturates_without_pinning() {
@@ -685,7 +686,8 @@ mod tests {
     #[test]
     fn promotions_to_different_pieces_do_not_share_an_entry() {
         use crate::board::types::{Move, MoveType};
-        let (from, to) = (Square::make(0, 6), Square::make(0, 7));
+        let (from, to) =
+            (Square::make(File::new(0), Rank::new(6)), Square::make(File::new(0), Rank::new(7)));
         let q = Move::typed(MoveType::Promotion, from, to, PieceType::Queen);
         let n = Move::typed(MoveType::Promotion, from, to, PieceType::Knight);
         assert_ne!(q.raw(), n.raw());
@@ -703,12 +705,37 @@ mod tests {
         h.main.update(Color::White, 100, 1000);
         h.clear();
         assert_eq!(h.main.get(Color::White, 100), -5);
-        assert_eq!(h.captures.get(Piece::W_PAWN, Square::make(0, 0), PieceType::Queen), -742);
-        assert_eq!(h.pawn.get(PawnHistory::row(0), Piece::W_PAWN, Square::make(0, 0)), -1338);
-        assert_eq!(h.correction.entry(0, Color::White).pawn, -5);
-        assert_eq!(h.continuation.get(ContKey::UNREAD, Piece::W_PAWN, Square::make(0, 0)), -586);
         assert_eq!(
-            h.continuation_correction.get(CorrKey::UNREAD, Piece::W_PAWN, Square::make(0, 0)),
+            h.captures.get(
+                Piece::W_PAWN,
+                Square::make(File::new(0), Rank::new(0)),
+                PieceType::Queen
+            ),
+            -742
+        );
+        assert_eq!(
+            h.pawn.get(
+                PawnHistory::row(0),
+                Piece::W_PAWN,
+                Square::make(File::new(0), Rank::new(0))
+            ),
+            -1338
+        );
+        assert_eq!(h.correction.entry(0, Color::White).pawn, -5);
+        assert_eq!(
+            h.continuation.get(
+                ContKey::UNREAD,
+                Piece::W_PAWN,
+                Square::make(File::new(0), Rank::new(0))
+            ),
+            -586
+        );
+        assert_eq!(
+            h.continuation_correction.get(
+                CorrKey::UNREAD,
+                Piece::W_PAWN,
+                Square::make(File::new(0), Rank::new(0))
+            ),
             5
         );
     }
@@ -729,10 +756,30 @@ mod tests {
     /// never share one.
     #[test]
     fn continuation_planes_are_distinct_per_parent() {
-        let a = cont_plane_index(false, false, Piece::W_KNIGHT, Square::make(0, 0));
-        let b = cont_plane_index(false, true, Piece::W_KNIGHT, Square::make(0, 0));
-        let c = cont_plane_index(true, false, Piece::W_KNIGHT, Square::make(0, 0));
-        let d = cont_plane_index(false, false, Piece::W_KNIGHT, Square::make(0, 1));
+        let a = cont_plane_index(
+            false,
+            false,
+            Piece::W_KNIGHT,
+            Square::make(File::new(0), Rank::new(0)),
+        );
+        let b = cont_plane_index(
+            false,
+            true,
+            Piece::W_KNIGHT,
+            Square::make(File::new(0), Rank::new(0)),
+        );
+        let c = cont_plane_index(
+            true,
+            false,
+            Piece::W_KNIGHT,
+            Square::make(File::new(0), Rank::new(0)),
+        );
+        let d = cont_plane_index(
+            false,
+            false,
+            Piece::W_KNIGHT,
+            Square::make(File::new(0), Rank::new(1)),
+        );
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_ne!(a, d);

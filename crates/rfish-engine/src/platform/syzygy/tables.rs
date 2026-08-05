@@ -14,7 +14,7 @@
 use std::sync::LazyLock;
 
 use crate::board::bitboard::KING_ATTACKS;
-use crate::board::types::{SQUARE_NB, Square};
+use crate::board::types::{File, Rank, SQUARE_NB, Square};
 
 /// The largest piece count the format supports.
 pub const TB_PIECES: usize = 7;
@@ -23,7 +23,7 @@ pub const TB_PIECES: usize = 7;
 #[inline]
 #[must_use]
 pub fn off_a1h8(sq: Square) -> i32 {
-    sq.rank() as i32 - sq.file() as i32
+    sq.rank().index() as i32 - sq.file().index() as i32
 }
 
 /// Everything the index computation needs, built once.
@@ -78,10 +78,10 @@ impl IndexTables {
             if s.index() > 27 {
                 break;
             }
-            if off_a1h8(s) < 0 && s.file() <= 3 {
+            if off_a1h8(s) < 0 && s.file() <= File::D {
                 t.map_a1d1d4[s.index()] = code;
                 code += 1;
-            } else if off_a1h8(s) == 0 && s.file() <= 3 {
+            } else if off_a1h8(s) == 0 && s.file() <= File::D {
                 diagonal.push(s);
             }
         }
@@ -148,7 +148,7 @@ impl IndexTables {
                 // same index range is reused.
                 let mut idx = 0;
                 for r in 1..=6usize {
-                    let sq = Square::make(f, r);
+                    let sq = Square::make(File::new(f), Rank::new(r));
                     if lead_count == 1 {
                         t.map_pawns[sq.index()] = available;
                         available -= 1;
@@ -238,7 +238,7 @@ mod tests {
         values.sort_unstable();
         assert_eq!(values, (0..48).collect::<Vec<_>>());
         // a2 is the leading square: nothing can be more toward an edge or lower.
-        assert_eq!(t.map_pawns[Square::make(0, 1).index()], 47);
+        assert_eq!(t.map_pawns[Square::make(File::new(0), Rank::new(1)).index()], 47);
     }
 
     #[test]

@@ -301,6 +301,7 @@ pub fn update_piece_threats(
 mod tests {
     use super::*;
     use crate::board::types::Color;
+    use crate::board::types::{File, Rank};
     use crate::eval::nnue::features::{THREAT_DIMENSIONS, threat_active, threat_index};
 
     /// The threat feature indices active in `pos`, one sorted list per perspective.
@@ -324,7 +325,7 @@ mod tests {
             let mut row = String::new();
             let mut gap = 0;
             for file in 0..8 {
-                let sq = Square::make(file, rank);
+                let sq = Square::make(File::new(file), Rank::new(rank));
                 let pc = pos.piece_on(sq);
                 if pc == Piece::NONE || sq == s {
                     gap += 1;

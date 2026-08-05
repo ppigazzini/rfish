@@ -29,7 +29,7 @@ use crate::board::bitboard::{Bitboard, KING_ATTACKS, KNIGHT_ATTACKS, pawn_attack
 use crate::board::position::Position;
 use crate::board::threats::{DirtyPawnPairs, DirtyThreat};
 use crate::board::types::{
-    COLOR_NB, Color, Direction, PIECE_NB, Piece, PieceType, SQUARE_NB, Square,
+    COLOR_NB, Color, Direction, PIECE_NB, Piece, PieceType, Rank, SQUARE_NB, Square,
 };
 
 // ---------------------------------------------------------------------------
@@ -406,8 +406,8 @@ impl ThreatTables {
                 }
                 // A pawn on the first or last rank cannot exist, so it contributes nothing
                 // and its slots are not reserved.
-                let counts =
-                    pc.piece_type() != PieceType::Pawn || (from.rank() >= 1 && from.rank() <= 6);
+                let counts = pc.piece_type() != PieceType::Pawn
+                    || (from.rank() >= Rank::R2 && from.rank() <= Rank::R7);
                 if counts {
                     used += attacks.count();
                 }
@@ -871,6 +871,7 @@ pub const THREAT_AND_PP_DIMENSIONS: usize = (THREAT_DIMENSIONS + PP_DIMENSIONS) 
 mod tests {
     use super::*;
     use crate::board::position::START_FEN;
+    use crate::board::types::File;
 
     /// The delta the accumulator will be fed carries the child's set exactly.
     ///
@@ -1032,9 +1033,9 @@ mod tests {
     /// relationship is counted twice.
     #[test]
     fn a_pawn_pair_index_is_symmetric() {
-        let ksq = Square::make(4, 0);
-        let a = Square::make(3, 3);
-        let b = Square::make(4, 4);
+        let ksq = Square::make(File::new(4), Rank::new(0));
+        let a = Square::make(File::new(3), Rank::new(3));
+        let b = Square::make(File::new(4), Rank::new(4));
         for p in Color::ALL {
             assert_eq!(
                 pawn_pair_index(p, Color::White, a, b, Color::Black, ksq),
@@ -1046,14 +1047,17 @@ mod tests {
     /// The band is the pawn's own file plus its two neighbours, ranks 2..7, minus itself.
     #[test]
     fn the_pawn_pair_band_is_three_files_wide() {
-        let d4 = Square::make(3, 3);
+        let d4 = Square::make(File::new(3), Rank::new(3));
         let band = PAWN_PAIR_BB[d4.index()];
-        assert!(band.contains(Square::make(2, 4)));
-        assert!(band.contains(Square::make(4, 1)));
+        assert!(band.contains(Square::make(File::new(2), Rank::new(4))));
+        assert!(band.contains(Square::make(File::new(4), Rank::new(1))));
         assert!(!band.contains(d4));
-        assert!(!band.contains(Square::make(3, 0)), "rank 1 is excluded");
-        assert!(!band.contains(Square::make(3, 7)), "rank 8 is excluded");
-        assert!(!band.contains(Square::make(1, 3)), "two files away is excluded");
+        assert!(!band.contains(Square::make(File::new(3), Rank::new(0))), "rank 1 is excluded");
+        assert!(!band.contains(Square::make(File::new(3), Rank::new(7))), "rank 8 is excluded");
+        assert!(
+            !band.contains(Square::make(File::new(1), Rank::new(3))),
+            "two files away is excluded"
+        );
         // 3 files x 6 ranks, minus the pawn itself.
         assert_eq!(band.count(), 17);
     }

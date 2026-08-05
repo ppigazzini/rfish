@@ -29,8 +29,8 @@ use super::bitboard::{
 };
 use super::threats::{self, DirtyPawnPairs, DirtyThreat};
 use super::types::{
-    COLOR_NB, CastlingRights, Color, Direction, Key, Move, MoveType, PIECE_NB, PIECE_TYPE_NB,
-    Piece, PieceType, SQUARE_NB, Square, Value, piece_value,
+    COLOR_NB, CastlingRights, Color, Direction, File, Key, Move, MoveType, PIECE_NB, PIECE_TYPE_NB,
+    Piece, PieceType, Rank, SQUARE_NB, Square, Value, piece_value,
 };
 use super::zobrist;
 
@@ -705,7 +705,7 @@ impl Position {
                     if pieces > 32 {
                         return Err(FenError::TooManyPieces);
                     }
-                    self.put_piece(pc, Square::make(file, rank));
+                    self.put_piece(pc, Square::make(File::new(file), Rank::new(rank)));
                     file += 1;
                 }
             }
@@ -717,7 +717,7 @@ impl Position {
         // The checks upstream calls "Unsupported position": placements no legal game
         // reaches, which it refuses rather than searches. rfish accepted all of them.
         if (self.pieces(PieceType::Pawn)
-            & (relative_rank_bb(Color::White, 0) | relative_rank_bb(Color::Black, 0)))
+            & (relative_rank_bb(Color::White, Rank::R1) | relative_rank_bb(Color::Black, Rank::R1)))
         .any()
         {
             return Err(FenError::PawnsOnBackRank);
@@ -788,7 +788,7 @@ impl Position {
             let color = if ch.is_ascii_uppercase() { Color::White } else { Color::Black };
             let rook = Piece::new(color, PieceType::Rook);
             let king = Piece::new(color, PieceType::King);
-            let back_rank = if color == Color::White { 0 } else { 7 };
+            let back_rank = if color == Color::White { Rank::R1 } else { Rank::R8 };
             let mut rook_sq = Square::NONE;
             let mut king_sq = Square::NONE;
 
@@ -801,7 +801,7 @@ impl Position {
                     let mut file = if kingside { 7i32 } else { 0i32 };
                     let step = if kingside { -1 } else { 1 };
                     for _ in 0..7 {
-                        let sq = Square::make(file as usize, back_rank);
+                        let sq = Square::make(File::new(file as usize), back_rank);
                         let pc = self.piece_on(sq);
                         if pc == king {
                             king_sq = sq;
@@ -817,14 +817,14 @@ impl Position {
                     // The BACK rank, not the king's rank: a king that has left the back rank
                     // cannot castle, and looking for the rook beside it found a square the
                     // FEN never named.
-                    let candidate = Square::make((file - b'A') as usize, back_rank);
+                    let candidate = Square::make(File::new((file - b'A') as usize), back_rank);
                     if self.piece_on(candidate) == rook {
                         rook_sq = candidate;
                     }
                     // A king on the a- or h-file has no room to castle, so upstream only
                     // looks for it between the b- and g-files.
                     for f in 1..7 {
-                        let sq = Square::make(f, back_rank);
+                        let sq = Square::make(File::new(f), back_rank);
                         if self.piece_on(sq) == king {
                             king_sq = sq;
                         }
@@ -899,7 +899,7 @@ impl Position {
         // so this is rank 7.
         let vacated = sq.shift(Direction::pawn_push(us));
         let movers = pawn_attacks_from(them, sq) & self.pieces_of(us, PieceType::Pawn);
-        let available = sq.relative_rank(us) == 5
+        let available = sq.relative_rank(us) == Rank::R6
             && self.is_empty_square(sq)
             && vacated.is_ok()
             && self.is_empty_square(vacated)
@@ -946,8 +946,8 @@ impl Position {
 
         // The destinations are fixed by the rules, in both dialects: g1/c1 for the king,
         // f1/d1 for the rook, mirrored for Black.
-        let king_to = Square::make(if king_side { 6 } else { 2 }, ksq.rank());
-        let rook_to = Square::make(if king_side { 5 } else { 3 }, ksq.rank());
+        let king_to = Square::make(if king_side { File::G } else { File::C }, ksq.rank());
+        let rook_to = Square::make(if king_side { File::F } else { File::D }, ksq.rank());
 
         // The path is everything the king and rook travel through, minus the two movers.
         // In Chess960 either can already stand on a square the other needs.
@@ -1248,7 +1248,7 @@ impl Position {
             // along the rank.
             let king_side = to > from;
             let rook_from = to;
-            let king_to = Square::make(if king_side { 6 } else { 2 }, from.rank());
+            let king_to = Square::make(if king_side { File::G } else { File::C }, from.rank());
             let step = if king_side { Direction::East } else { Direction::West };
 
             let mut s = from;
@@ -1314,7 +1314,7 @@ impl Position {
         if pc.piece_type() == PieceType::Pawn {
             // A Normal pawn move can never reach the last rank -- that would have to be a
             // Promotion.
-            if (relative_rank_bb(us, 7) & Bitboard::from_square(to)).any() {
+            if (relative_rank_bb(us, Rank::R8) & Bitboard::from_square(to)).any() {
                 return false;
             }
             let push = Direction::pawn_push(us);
@@ -1322,7 +1322,7 @@ impl Position {
             let capture = (pawn_attacks_from(us, from) & self.colored(!us)).contains(to);
             let single_push = to == single && self.is_empty_square(to);
             let double_push = to == single.shift(push)
-                && from.relative_rank(us) == 1
+                && from.relative_rank(us) == Rank::R2
                 && self.is_empty_square(to)
                 && self.is_empty_square(single);
             if !(capture || single_push || double_push) {
@@ -1402,8 +1402,8 @@ impl Position {
             MoveType::Castling => {
                 // Only the rook can give check after castling; the king cannot.
                 let king_side = to > from;
-                let rook_to = Square::make(if king_side { 5 } else { 3 }, from.rank());
-                let king_to = Square::make(if king_side { 6 } else { 2 }, from.rank());
+                let rook_to = Square::make(if king_side { File::F } else { File::D }, from.rank());
+                let king_to = Square::make(if king_side { File::G } else { File::C }, from.rank());
                 let occ =
                     (self.occupied() ^ Bitboard::from_square(from) ^ Bitboard::from_square(to))
                         | Bitboard::from_square(rook_to)
@@ -1485,8 +1485,8 @@ impl Position {
         if mt == MoveType::Castling {
             // King takes rook: both movers leave, both destinations are fixed.
             let king_side = to > from;
-            let king_to = Square::make(if king_side { 6 } else { 2 }, from.rank());
-            let rook_to = Square::make(if king_side { 5 } else { 3 }, from.rank());
+            let king_to = Square::make(if king_side { File::G } else { File::C }, from.rank());
+            let rook_to = Square::make(if king_side { File::F } else { File::D }, from.rank());
             let rook = self.piece_on(to);
 
             self.remove_piece_dirty(from, dts.as_deref_mut());
@@ -1654,8 +1654,8 @@ impl Position {
 
         if mt == MoveType::Castling {
             let king_side = to > from;
-            let king_to = Square::make(if king_side { 6 } else { 2 }, from.rank());
-            let rook_to = Square::make(if king_side { 5 } else { 3 }, from.rank());
+            let king_to = Square::make(if king_side { File::G } else { File::C }, from.rank());
+            let rook_to = Square::make(if king_side { File::F } else { File::D }, from.rank());
             let king = self.piece_on(king_to);
             let rook = self.piece_on(rook_to);
             self.remove_piece(king_to);
@@ -2003,7 +2003,7 @@ impl Position {
         for rank in (0..8).rev() {
             let mut empty = 0;
             for file in 0..8 {
-                let pc = self.piece_on(Square::make(file, rank));
+                let pc = self.piece_on(Square::make(File::new(file), Rank::new(rank)));
                 if pc.is_none() {
                     empty += 1;
                 } else {
@@ -2038,8 +2038,8 @@ impl Position {
             }
             if self.chess960 {
                 // Shredder-FEN: name the rook's file, upper case for White.
-                let file = (b'A' + self.castling_rook_square(right).file() as u8) as char;
-                s.push(if c == Color::White { file } else { file.to_ascii_lowercase() });
+                let file = self.castling_rook_square(right).file().to_char() as char;
+                s.push(if c == Color::White { file.to_ascii_uppercase() } else { file });
             } else {
                 s.push(letter);
             }
@@ -2088,7 +2088,11 @@ impl fmt::Display for Position {
         writeln!(f, "\n +---+---+---+---+---+---+---+---+")?;
         for rank in (0..8).rev() {
             for file in 0..8 {
-                write!(f, " | {}", self.piece_on(Square::make(file, rank)).to_char() as char)?;
+                write!(
+                    f,
+                    " | {}",
+                    self.piece_on(Square::make(File::new(file), Rank::new(rank))).to_char() as char
+                )?;
             }
             writeln!(f, " | {}", rank + 1)?;
             writeln!(f, " +---+---+---+---+---+---+---+---+")?;

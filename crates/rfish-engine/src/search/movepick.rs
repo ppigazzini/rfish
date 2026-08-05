@@ -19,7 +19,7 @@
 use crate::board::movegen::{GenType, MoveSink, generate_into};
 use crate::board::position::Position;
 use crate::board::types::{
-    MAX_MOVES, Move, MoveType, Piece, PieceType, Square, Value, piece_value,
+    File, MAX_MOVES, Move, MoveType, Piece, PieceType, Square, Value, piece_value,
 };
 
 use super::history::{ContKey, Histories, PawnHistory, PawnRow};
@@ -613,7 +613,7 @@ impl MovePicker {
 pub fn continuation_to(m: Move) -> Square {
     if m.move_type() == MoveType::Castling {
         let king_side = m.to() > m.from();
-        Square::make(if king_side { 6 } else { 2 }, m.from().rank())
+        Square::make(if king_side { File::G } else { File::C }, m.from().rank())
     } else {
         m.to()
     }
@@ -624,6 +624,7 @@ mod tests {
     use super::*;
     use crate::board::movegen::generate_legal;
     use crate::board::position::START_FEN;
+    use crate::board::types::Rank;
 
     fn collect(pos: &Position, h: &Histories, tt: Move) -> Vec<Move> {
         let mut mp = MovePicker::new(pos, [ContKey::UNREAD; 6], tt, 4, 0);
@@ -682,7 +683,10 @@ mod tests {
     fn an_illegal_tt_move_is_dropped() {
         let h = Histories::default();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
-        let bogus = Move::new(Square::make(4, 4), Square::make(4, 5));
+        let bogus = Move::new(
+            Square::make(File::new(4), Rank::new(4)),
+            Square::make(File::new(4), Rank::new(5)),
+        );
         let picked = collect(&pos, &h, bogus);
         assert!(!picked.contains(&bogus));
         assert_eq!(picked.len(), generate_legal(&pos).len());
@@ -772,8 +776,13 @@ mod tests {
     /// would follow it.
     #[test]
     fn the_partial_sort_orders_only_above_the_limit() {
-        let mk =
-            |score| ScoredMove { mv: Move::new(Square::make(0, 0), Square::make(0, 1)), score };
+        let mk = |score| ScoredMove {
+            mv: Move::new(
+                Square::make(File::new(0), Rank::new(0)),
+                Square::make(File::new(0), Rank::new(1)),
+            ),
+            score,
+        };
         let mut v = vec![mk(10), mk(-100), mk(50), mk(-200), mk(30)];
         partial_insertion_sort(&mut v, 0);
         // The three entries at or above zero come first, in descending order.
@@ -788,9 +797,18 @@ mod tests {
     /// permutation reproducible.
     #[test]
     fn equal_scores_keep_generation_order() {
-        let a = Move::new(Square::make(0, 0), Square::make(0, 1));
-        let b = Move::new(Square::make(1, 0), Square::make(1, 1));
-        let c = Move::new(Square::make(2, 0), Square::make(2, 1));
+        let a = Move::new(
+            Square::make(File::new(0), Rank::new(0)),
+            Square::make(File::new(0), Rank::new(1)),
+        );
+        let b = Move::new(
+            Square::make(File::new(1), Rank::new(0)),
+            Square::make(File::new(1), Rank::new(1)),
+        );
+        let c = Move::new(
+            Square::make(File::new(2), Rank::new(0)),
+            Square::make(File::new(2), Rank::new(1)),
+        );
         let mut v = vec![
             ScoredMove { mv: a, score: 5 },
             ScoredMove { mv: b, score: 5 },
@@ -808,6 +826,6 @@ mod tests {
             .copied()
             .find(|m| m.move_type() == MoveType::Castling && m.to() > m.from())
             .expect("O-O is legal");
-        assert_eq!(continuation_to(castle), Square::make(6, 0));
+        assert_eq!(continuation_to(castle), Square::make(File::new(6), Rank::new(0)));
     }
 }

@@ -16,8 +16,8 @@ use crate::board::attacks::piece_attacks;
 use crate::board::bitboard::{Bitboard, file_bb, pawn_attacks_from};
 use crate::board::position::Position;
 use crate::board::types::{
-    BISHOP_VALUE, Color, KNIGHT_VALUE, PAWN_VALUE, PieceType, QUEEN_VALUE, ROOK_VALUE, SQUARE_NB,
-    Square, Value,
+    BISHOP_VALUE, Color, KNIGHT_VALUE, PAWN_VALUE, PieceType, QUEEN_VALUE, ROOK_VALUE, Rank,
+    SQUARE_NB, Square, Value,
 };
 
 /// A midgame/endgame score pair, interpolated at the end by the game phase.
@@ -252,7 +252,7 @@ fn pawn_structure(pos: &Position, c: Color) -> Score {
         }
         // Passed: no enemy pawn ahead on this or a neighbouring file.
         if (theirs & front_span(c, sq)).is_empty() {
-            let rank = sq.relative_rank(c) as i32;
+            let rank = sq.relative_rank(c).index() as i32;
             s += Score::new(2 * rank * rank, 6 * rank * rank);
         }
     }
@@ -271,7 +271,7 @@ fn front_span(c: Color, sq: Square) -> Bitboard {
         }
         span |= Bitboard::from_square(s);
         span |= pawn_attacks_from(c, s.shift(crate::board::types::Direction::pawn_push(!c)));
-        if s.relative_rank(c) == 7 {
+        if s.relative_rank(c) == Rank::R8 {
             break;
         }
     }
@@ -282,6 +282,7 @@ fn front_span(c: Color, sq: Square) -> Bitboard {
 mod tests {
     use super::*;
     use crate::board::position::START_FEN;
+    use crate::board::types::File;
 
     #[test]
     fn the_start_position_is_symmetric_up_to_the_tempo_bonus() {
@@ -339,11 +340,11 @@ mod tests {
 
     #[test]
     fn front_span_covers_three_files_ahead() {
-        let span = front_span(Color::White, Square::make(3, 1));
-        assert!(span.contains(Square::make(3, 4)));
-        assert!(span.contains(Square::make(2, 4)));
-        assert!(span.contains(Square::make(4, 4)));
-        assert!(!span.contains(Square::make(1, 4)));
-        assert!(!span.contains(Square::make(3, 0)));
+        let span = front_span(Color::White, Square::make(File::new(3), Rank::new(1)));
+        assert!(span.contains(Square::make(File::new(3), Rank::new(4))));
+        assert!(span.contains(Square::make(File::new(2), Rank::new(4))));
+        assert!(span.contains(Square::make(File::new(4), Rank::new(4))));
+        assert!(!span.contains(Square::make(File::new(1), Rank::new(4))));
+        assert!(!span.contains(Square::make(File::new(3), Rank::new(0))));
     }
 }
