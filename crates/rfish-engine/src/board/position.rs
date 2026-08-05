@@ -29,9 +29,9 @@ use super::bitboard::{
 };
 use super::threats::{self, DirtyPawnPairs, DirtyThreat};
 use super::types::{
-    COLOR_NB, CastlingRights, Color, Direction, File, GamePly, Key, MinorKey, Move, MoveKey,
-    MoveType, NonPawnKey, PIECE_NB, PIECE_TYPE_NB, PawnKey, Piece, PieceType, Ply, PosKey, Rank,
-    SQUARE_NB, Square, SquareOrNone, TtKey, VALUE_ZERO, Value, piece_value,
+    COLOR_NB, CastlingRights, Color, Direction, File, GamePly, Key, MaterialKey, MinorKey, Move,
+    MoveKey, MoveType, NonPawnKey, PIECE_NB, PIECE_TYPE_NB, PawnKey, Piece, PieceType, Ply, PosKey,
+    Rank, SQUARE_NB, Square, SquareOrNone, TtKey, VALUE_ZERO, Value, piece_value,
 };
 use super::zobrist;
 
@@ -61,7 +61,7 @@ pub struct StateInfo {
     // ---- copied forward and updated incrementally ----
     /// Hashes the MATERIAL only — every piece of each kind, counted, with no square
     /// information. Syzygy looks its tables up by this.
-    pub material_key: Key,
+    pub material_key: MaterialKey,
     /// Pawns ONLY, seeded with [`zobrist::no_pawns`] so an empty pawn structure still has
     /// a distinct key.
     pub pawn_key: PawnKey,
@@ -103,7 +103,7 @@ impl StateInfo {
     /// The zero state, used only as the base of a fresh chain before a FEN is parsed.
     fn empty() -> StateInfo {
         StateInfo {
-            material_key: 0,
+            material_key: MaterialKey::new(0),
             pawn_key: PawnKey::new(0),
             minor_piece_key: MinorKey::new(0),
             non_pawn_key: [0; COLOR_NB],
@@ -972,7 +972,7 @@ impl Position {
         let mut pawn_key = PawnKey::new(zobrist::no_pawns());
         let mut minor_key: Key = 0;
         let mut non_pawn_key = [0 as Key; COLOR_NB];
-        let mut material_key: Key = 0;
+        let mut material_key = MaterialKey::new(0);
         let mut non_pawn_material = [VALUE_ZERO; COLOR_NB];
 
         for sq in self.occupied() {

@@ -1461,6 +1461,39 @@ impl TtKey {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct PawnKey(Key);
 
+/// The key of the MATERIAL alone: which pieces are on the board, not where they stand.
+///
+/// What the Syzygy prober looks a table up by. Built by hashing each piece kind onto a canonical
+/// square per copy, so two positions with the same men share it however they are arranged —
+/// which is exactly the property a tablebase needs and exactly what makes it useless as a
+/// position key.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct MaterialKey(Key);
+
+impl MaterialKey {
+    /// Build from an accumulated Zobrist word.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(k: Key) -> MaterialKey {
+        MaterialKey(k)
+    }
+
+    /// The word, for the discovery map.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> Key {
+        self.0
+    }
+}
+
+impl core::ops::BitXorAssign<Key> for MaterialKey {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, w: Key) {
+        self.0 ^= w;
+    }
+}
+
 /// The key of the minor pieces alone, for the `minor` correction counter.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]

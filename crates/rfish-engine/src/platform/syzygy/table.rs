@@ -9,7 +9,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use crate::board::types::{Color, Key, Piece, PieceType, Square};
+use crate::board::types::{Color, MaterialKey, Piece, PieceType, Square};
 use crate::board::zobrist;
 
 use super::pairs::{PairsData, flag, set_groups, set_sizes};
@@ -58,7 +58,7 @@ impl TbType {
 /// Hashing the COUNTS rather than the squares is what makes it a table identity: every
 /// position with these pieces, wherever they stand, maps to the same file.
 #[must_use]
-pub fn material_key(counts: &[[i32; 7]; 2]) -> Key {
+pub fn material_key(counts: &[[i32; 7]; 2]) -> MaterialKey {
     let mut key = 0;
     for c in Color::ALL {
         for pt in PieceType::REAL {
@@ -68,7 +68,7 @@ pub fn material_key(counts: &[[i32; 7]; 2]) -> Key {
             }
         }
     }
-    key
+    MaterialKey::new(key)
 }
 
 /// Parse a table code such as `KRPvKR` into per-colour piece counts.
@@ -98,9 +98,9 @@ pub fn parse_code(code: &str) -> Option<[[i32; 7]; 2]> {
 pub struct TbTable {
     pub kind: TbType,
     /// The material key with the stronger side as White.
-    pub key: Key,
+    pub key: MaterialKey,
     /// The same with the colours swapped.
-    pub key2: Key,
+    pub key2: MaterialKey,
     pub piece_count: usize,
     pub has_pawns: bool,
     /// True when some non-king piece appears exactly once, which lets the leading group be

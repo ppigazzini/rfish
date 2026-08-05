@@ -32,7 +32,7 @@ pub use probe::{ProbeState, Wdl};
 use crate::board::movegen::generate_legal;
 use crate::board::position::Position;
 use crate::board::types::{
-    MAX_PLY, Move, MoveType, PAWN_VALUE, PieceType, Ply, VALUE_DRAW, VALUE_MATE, Value,
+    MAX_PLY, MaterialKey, Move, MoveType, PAWN_VALUE, PieceType, Ply, VALUE_DRAW, VALUE_MATE, Value,
 };
 use table::{TbTable, TbType};
 
@@ -40,7 +40,7 @@ use table::{TbTable, TbType};
 #[derive(Debug, Default)]
 pub struct TableRegistry {
     /// Keyed by material key; both of a table's two keys map to the same entry.
-    by_key: HashMap<u64, usize>,
+    by_key: HashMap<MaterialKey, usize>,
     tables: Vec<(Option<TbTable>, Option<TbTable>)>,
     max_cardinality: u32,
 }
@@ -125,7 +125,7 @@ impl TableRegistry {
         self.tables.is_empty()
     }
 
-    fn get(&self, key: u64, kind: TbType) -> Option<&TbTable> {
+    fn get(&self, key: MaterialKey, kind: TbType) -> Option<&TbTable> {
         let slot = *self.by_key.get(&key)?;
         let (wdl, dtz) = &self.tables[slot];
         match kind {
