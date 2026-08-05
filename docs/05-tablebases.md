@@ -209,6 +209,29 @@ at parse time is refused there, and clamping is only what remains. **None of it 
 valid table**: every bound is slack for a file upstream's own writer produced, `cargo xtask
 tb` still matches the oracle on all 264 probes, and the bench signature is untouched.
 
+There is a third place, and it is the one both bounds above walk past: the **domain of the
+value** they so carefully deliver. Every row of the table bounds an *index* into the file.
+None of them bounds what comes back out. `decompress` returns `min_sym_len` verbatim on the
+single-value path — a raw header byte — so a stored 255 leaves `map_score` as a WDL score of
+253, and no index was ever out of range on the way. A WDL file holds five outcomes, so
+[`Wdl::from_stored`](../crates/rfish-engine/src/platform/syzygy/probe.rs) refuses anything
+else and the probe answers `Fail`, exactly as it does for a table that is not there.
+
+- **At conversion time, make the domain unrepresentable.** `Wdl` is a five-valued enum with
+  one fallible constructor and no other way in, so the check cannot be forgotten by a
+  consumer added later. Both sibling ports close this hole with a range test at the probe
+  (`../mcfish` `f08ee9ef`, `../zfish` `741f8ffc`); neither language can stop a caller from
+  simply not writing one, which is why they had to bound it where it is born and rfish can
+  bound it in the type.
+
+**A total conversion over an untrusted value is a laundering step, not a convenience.** The
+constructor here had a catch-all arm reading `_ => Wdl::Draw`, and a unit test that *pinned*
+that behaviour as intended — so an invented byte became a confident draw, and `root_probe_wdl`
+ranked and scored it as a real tablebase verdict. In C and Zig the same hole ends as an
+out-of-bounds index into a five-entry map, which is loud; in safe Rust the enum makes the
+index impossible and the wrong answer silent. **The safer language moved the defect from a
+crash to a lie**, and only the missing domain check was common to all three.
+
 The last row of that table was refused only **half** way, and the nightly lane found the other
 half three days later. A pawnful file's `pieces[0]` was held to being a PAWN, which still
 accepts the pawn of the colour that has **none** — and `do_probe_table` picks the leading
