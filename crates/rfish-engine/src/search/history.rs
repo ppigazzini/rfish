@@ -434,14 +434,50 @@ impl ContKey {
     }
 }
 
+/// Whether the parent move was made while in check.
+///
+/// A two-variant type rather than a `bool` because it travelled next to [`WasCapture`], and
+/// two adjacent booleans have nothing to tell them apart. Swapping them selects a different
+/// plane of the continuation table — a valid entry of the wrong thing, which is the class
+/// [`ContKey`] itself exists to close. That type was put on the RESULT and not on the
+/// arguments.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InCheck {
+    No,
+    Yes,
+}
+
+/// Whether the parent move was a capture. See [`InCheck`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WasCapture {
+    No,
+    Yes,
+}
+
+impl InCheck {
+    /// Read from the position's own flag.
+    #[inline(always)]
+    #[must_use]
+    pub const fn of(yes: bool) -> InCheck {
+        if yes { InCheck::Yes } else { InCheck::No }
+    }
+}
+
+impl WasCapture {
+    /// Read from the move picker's stage test.
+    #[inline(always)]
+    #[must_use]
+    pub const fn of(yes: bool) -> WasCapture {
+        if yes { WasCapture::Yes } else { WasCapture::No }
+    }
+}
+
 /// The flat index of a continuation plane.
 #[inline(always)]
 #[must_use]
-pub fn cont_plane_index(in_check: bool, capture: bool, pc: Piece, to: Square) -> ContKey {
-    ContKey(
-        ((usize::from(in_check) * 2 + usize::from(capture)) * PIECE_NB + pc.index()) * SQUARE_NB
-            + to.index(),
-    )
+pub fn cont_plane_index(in_check: InCheck, capture: WasCapture, pc: Piece, to: Square) -> ContKey {
+    let quadrant = (in_check as usize) * 2 + capture as usize;
+    ContKey((quadrant * PIECE_NB + pc.index()) * SQUARE_NB + to.index())
 }
 
 impl Default for ContinuationHistory {
@@ -886,26 +922,26 @@ mod tests {
     #[test]
     fn continuation_planes_are_distinct_per_parent() {
         let a = cont_plane_index(
-            false,
-            false,
+            InCheck::No,
+            WasCapture::No,
             Piece::W_KNIGHT,
             Square::make(File::new(0), Rank::new(0)),
         );
         let b = cont_plane_index(
-            false,
-            true,
+            InCheck::No,
+            WasCapture::Yes,
             Piece::W_KNIGHT,
             Square::make(File::new(0), Rank::new(0)),
         );
         let c = cont_plane_index(
-            true,
-            false,
+            InCheck::Yes,
+            WasCapture::No,
             Piece::W_KNIGHT,
             Square::make(File::new(0), Rank::new(0)),
         );
         let d = cont_plane_index(
-            false,
-            false,
+            InCheck::No,
+            WasCapture::No,
             Piece::W_KNIGHT,
             Square::make(File::new(0), Rank::new(1)),
         );
