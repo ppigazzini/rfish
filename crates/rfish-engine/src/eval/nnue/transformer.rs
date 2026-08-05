@@ -446,21 +446,40 @@ impl EvalScratch {
 
 /// Accumulator entries the fold carries at once.
 ///
-/// Measured rather than reasoned, and measured TWICE. Too small and the per-tile sweep
+/// Measured rather than reasoned, and measured three times. Too small and the per-tile sweep
 /// overhead — the copy in and the copy out — is paid too many times; too large and the
 /// running values no longer stay in registers across the row loop.
 ///
-/// 32, 64, 128 and 256 at **nehalem**, whole-run search instructions on `bench 16 1 8`:
-/// 4,093M / 3,673M / 3,598M / 4,037M.
+/// **The peak is a property of the TIER, and this was one value for a long time because every
+/// sweep that set it predates [`FeatureTransformer::fold_hybrid`]**, which reads THREE source
+/// tiles where [`FeatureTransformer::fold_into`] reads one. Disassembled at sse41 with a
+/// 128-lane tile, `transform` spilled 58 vector stores and reloaded 45, against 10 and 7 at
+/// avx2, and the row loop round-tripped one lane through the stack on EVERY applied row: 128
+/// `i16` is 16 `xmm`, which is the whole register file.
 ///
-/// Re-swept at **avx2** after the fold was rewritten twice — once for the combined no-copy
-/// sweep and once to index the weight rows instead of zipping range slices — because that
-/// is the register and traffic context the earlier verdict was taken in, and zfish's own
-/// tile knob only landed on its third look after exactly that kind of change. 64 / 128 /
-/// 256 measured 1,947M / 1,751M / 1,768M. **128 is the peak on both tiers**, so the value
-/// travels further than the original note assumed — but re-measure rather than assume it,
-/// which is what turned this comment from one sweep into two.
+/// Re-swept at HEAD, search instructions on `bench 16 1 8`, startup subtracted:
+///
+/// | TILE | 32 | 64 | 128 | 256 |
+/// |---|---|---|---|---|
+/// | sse41 | 2,594M | **2,261M** | 2,421M | — |
+/// | avx2 | — | 1,688M | **1,505M** | 1,589M |
+///
+/// 64 is worth **160.4M at sse41**, where the previous sweep had measured it LOSING, and it
+/// costs 183M at avx2. ../mcfish tiers the same constant the same way and calls it
+/// `ROW_TILE_WIDTH`: 64 / 128 / 256 for sse41 / avx2 / avx512.
+///
+/// **The avx512 rung is not taken, because this box cannot measure it.** Callgrind implements
+/// no AVX-512, so the deterministic instrument stops at avx2. 256 there is the analogue by
+/// register count — 256 `i16` is 8 `zmm`, exactly what 128 is in `ymm` — and it is ../mcfish's
+/// value; it stays unclaimed until an instrument can settle it.
+///
+/// Every value divides `L1`, and none of them moves a score: a tile bounds how many lanes are
+/// carried at once, and each lane accumulates the same rows in the same order — which
+/// `arch-determinism` checks, all five tiers reading 2508687.
+#[cfg(target_feature = "avx2")]
 const TILE: usize = 128;
+#[cfg(not(target_feature = "avx2"))]
+const TILE: usize = 64;
 
 /// [`FT_MAX_VAL`] at the accumulator's own width.
 const FT_MAX: i16 = FT_MAX_VAL as i16;
