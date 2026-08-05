@@ -445,9 +445,13 @@ impl fmt::Display for Rank {
 /// A board square, ordered A1..H8 rank-major so `sq >> 3` is the rank and `sq & 7` the
 /// file.
 ///
-/// The valid range is 0..=63 plus [`Square::NONE`] at 64. That sentinel value is a
-/// contract with the NNUE feature indexer, which tests raw square bytes against 64.
+/// **A `Square` is always a real square, 0..=63.** "A square, or nothing" is
+/// [`SquareOrNone`], which is a different type. They were one type with a 65th value, and
+/// that made `is_ok()` a runtime test every consumer had to remember: the en-passant target,
+/// the castling rook table and the search's previous-move square are all optional, and
+/// nothing distinguished them from a square that had been checked.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
 pub struct Square(u8);
 
 impl Square {
@@ -455,19 +459,15 @@ impl Square {
     pub const H1: Square = Square(7);
     pub const A8: Square = Square(56);
     pub const H8: Square = Square(63);
-    /// The no-square sentinel. Must stay 64: `DirtyPiece` stores raw square bytes and
-    /// the accumulator tests them against 64.
-    pub const NONE: Square = Square(64);
-
     /// Reconstruct from an index in 0..64.
     ///
     /// # Panics
-    /// Panics above 64. A square index is always derived from a bitboard bit or a
-    /// file/rank pair, so out of range means the board is corrupt.
+    /// Panics at or above [`SQUARE_NB`]. A square index is always derived from a bitboard
+    /// bit or a file/rank pair, so out of range means the board is corrupt.
     #[inline(always)]
     #[must_use]
     pub const fn new(i: usize) -> Square {
-        assert!(i <= 64, "square index out of range");
+        assert!(i < SQUARE_NB, "square index out of range");
         Square(i as u8)
     }
 
@@ -496,18 +496,11 @@ impl Square {
         self.0
     }
 
-    /// True for [`Square::NONE`].
+    /// This square, in the type that can also be nothing.
     #[inline(always)]
     #[must_use]
-    pub const fn is_none(self) -> bool {
-        self.0 == 64
-    }
-
-    /// True for a real board square.
-    #[inline(always)]
-    #[must_use]
-    pub const fn is_ok(self) -> bool {
-        self.0 < 64
+    pub const fn some(self) -> SquareOrNone {
+        SquareOrNone(self.0)
     }
 
     /// The file this square stands on.
@@ -553,14 +546,30 @@ impl Square {
         Square(self.0 ^ ((c as u8) * 0b11_1000))
     }
 
-    /// Step one square in direction `d`.
+    /// Step one square in direction `d`, where the caller knows the step stays on the board.
     ///
     /// Wraps around the board edges exactly as upstream's pointer-free `Square + Direction`
-    /// does; every caller masks the result with a bitboard that excludes the wrap.
+    /// does; every caller of THIS one masks the result with a bitboard that excludes the
+    /// wrap, or is a pawn context where the rank cannot be the last. Use [`Square::try_shift`]
+    /// where the step may leave the board.
     #[inline(always)]
     #[must_use]
     pub const fn shift(self, d: Direction) -> Square {
-        Square((self.0 as i8).wrapping_add(d as i8) as u8)
+        let stepped = (self.0 as i8).wrapping_add(d as i8) as u8;
+        debug_assert!((stepped as usize) < SQUARE_NB, "the step left the board");
+        Square(stepped)
+    }
+
+    /// Step one square in direction `d`, or `None` when the step leaves the board.
+    ///
+    /// A step that stays in range may still have WRAPPED around a file edge, which is a real
+    /// square and the wrong one; the two callers here reject that with a Chebyshev distance
+    /// test, exactly as they did when this was an `is_ok()` on the result.
+    #[inline(always)]
+    #[must_use]
+    pub const fn try_shift(self, d: Direction) -> Option<Square> {
+        let stepped = self.0 as i16 + d as i16;
+        if stepped >= 0 && stepped < SQUARE_NB as i16 { Some(Square(stepped as u8)) } else { None }
     }
 
     /// The a1-relative distance in ranks and files, as upstream's `distance<Square>`:
@@ -591,9 +600,6 @@ impl Square {
 
 impl fmt::Display for Square {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_none() {
-            return f.write_str("-");
-        }
         // Written as two chars rather than as `"{}{}"` over the file and the rank. Those
         // have their own `Display`, and delegating to them runs `core::fmt::write` twice more
         // per square: measured at +507K instructions on `bench 16 1 8`, at BOTH tiers.
@@ -604,6 +610,80 @@ impl fmt::Display for Square {
 }
 
 impl fmt::Debug for Square {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+/// A square, or nothing: the en-passant target, a castling rook that a position does not
+/// have, the square a previous move arrived on when there was no previous move.
+///
+/// A distinct type from [`Square`] rather than a 65th `Square` value. The sentinel is one
+/// past the last square, so the raw byte still orders and still fits a `u8` — but nothing
+/// depends on the number 64 any more. It used to: the doc-comment here claimed a contract
+/// with a `DirtyPiece` record that the NNUE accumulator tested against 64. **rfish has no
+/// `DirtyPiece`.** Its accumulator diffs recomputed feature sets, so the only raw square
+/// bytes in the tree — `DirtyThreat`'s and the feature indexer's — are real squares. The
+/// contract had no holder and the assertion defending it proved nothing.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct SquareOrNone(u8);
+
+impl SquareOrNone {
+    /// No square.
+    pub const NONE: SquareOrNone = SquareOrNone(SQUARE_NB as u8);
+
+    /// True when there is no square.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_none(self) -> bool {
+        self.0 == Self::NONE.0
+    }
+
+    /// True when there is one.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_some(self) -> bool {
+        self.0 != Self::NONE.0
+    }
+
+    /// The square, if there is one.
+    #[inline(always)]
+    #[must_use]
+    pub const fn square(self) -> Option<Square> {
+        if self.is_some() { Some(Square(self.0)) } else { None }
+    }
+
+    /// The square, where the caller has already established there is one.
+    ///
+    /// # Panics
+    /// Panics on [`SquareOrNone::NONE`]. Every caller tests `is_some` first, so a panic here
+    /// means the test and the use disagree.
+    #[inline(always)]
+    #[must_use]
+    pub const fn unwrap(self) -> Square {
+        assert!(self.is_some(), "no square");
+        Square(self.0)
+    }
+
+    /// The raw byte, for a packed record.
+    #[inline(always)]
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for SquareOrNone {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.square() {
+            Some(sq) => fmt::Display::fmt(&sq, f),
+            None => f.write_str("-"),
+        }
+    }
+}
+
+impl fmt::Debug for SquareOrNone {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
@@ -1219,10 +1299,12 @@ const _: () = {
     assert!(FILE_NB * RANK_NB == SQUARE_NB);
     assert!(FILE_NB == 8 && RANK_NB == 8);
 
-    // `Square::NONE` must stay one past the last square: `DirtyPiece` stores raw square bytes
-    // and the accumulator tests them against that value. The unit test below says the same
-    // thing about the literal 64; this says it about the bound.
-    assert!(Square::NONE.raw() as usize == SQUARE_NB);
+    // `SquareOrNone` packs its sentinel one past the last square, so the raw byte still fits a
+    // `u8` and still orders after every square. NOTHING in this tree depends on the number
+    // being 64 -- see the type's own doc for the contract that used to be claimed here and
+    // had no holder.
+    assert!(SquareOrNone::NONE.raw() as usize == SQUARE_NB);
+    assert!(size_of::<SquareOrNone>() == 1 && align_of::<SquareOrNone>() == 1);
 
     // The 16 bits of a `Move` are `type << 14 | (promo - Knight) << 12 | from << 6 | to`.
     // Six bits per square, two for the promotion piece, two for the type.
@@ -1243,12 +1325,17 @@ const _: () = {
 mod tests {
     use super::*;
 
-    /// `DirtyPiece` stores raw square bytes and the NNUE accumulator tests them against
-    /// 64. Renumbering [`Square`] without renumbering that constant would silently make
-    /// every promotion and capture look like a real square.
+    /// A `Square` is a real square and a [`SquareOrNone`] may be neither; the two must not
+    /// collide on the raw byte, because the Syzygy prober and the NNUE feature indexer both
+    /// read `Square::raw()` and both would accept the sentinel as a square.
     #[test]
-    fn no_square_sentinel_is_64() {
-        assert_eq!(Square::NONE.raw(), 64);
+    fn the_sentinel_is_not_a_square() {
+        assert!(SquareOrNone::NONE.is_none());
+        assert_eq!(SquareOrNone::NONE.square(), None);
+        for sq in Square::all() {
+            assert_ne!(sq.raw(), SquareOrNone::NONE.raw());
+            assert_eq!(sq.some().square(), Some(sq));
+        }
     }
 
     #[test]

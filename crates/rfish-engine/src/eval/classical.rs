@@ -264,9 +264,9 @@ fn pawn_structure(pos: &Position, c: Color) -> Score {
 fn front_span(c: Color, sq: Square) -> Bitboard {
     let mut span = Bitboard::EMPTY;
     let mut s = sq;
-    loop {
-        s = s.shift(crate::board::types::Direction::pawn_push(c));
-        if !s.is_ok() || s.distance(sq) > 7 {
+    while let Some(next) = s.try_shift(crate::board::types::Direction::pawn_push(c)) {
+        s = next;
+        if s.distance(sq) > 7 {
             break;
         }
         span |= Bitboard::from_square(s);

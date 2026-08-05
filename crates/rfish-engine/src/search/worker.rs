@@ -31,8 +31,8 @@ use std::time::Instant;
 use crate::board::movegen::{generate_legal, has_legal_move, move_to_uci};
 use crate::board::position::Position;
 use crate::board::types::{
-    Bound, Color, MAX_MOVES, MAX_PLY, Move, Piece, PieceType, Ply, Square, VALUE_DRAW,
-    VALUE_INFINITE, VALUE_MATE, VALUE_MATE_IN_MAX_PLY, VALUE_NONE, VALUE_TB,
+    Bound, Color, MAX_MOVES, MAX_PLY, Move, Piece, PieceType, Ply, Square, SquareOrNone,
+    VALUE_DRAW, VALUE_INFINITE, VALUE_MATE, VALUE_MATE_IN_MAX_PLY, VALUE_NONE, VALUE_TB,
     VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY, VALUE_ZERO, Value, is_decisive, is_loss,
     is_mate_or_mated, is_valid, is_win, mate_in, mated_in, piece_value,
 };
@@ -653,7 +653,7 @@ impl SearchWorker {
         &mut self,
         si: usize,
         best_move: Move,
-        prev_sq: Square,
+        prev_sq: SquareOrNone,
         quiets_searched: &[Move],
         captures_searched: &[Move],
         depth: i32,
@@ -705,7 +705,7 @@ impl SearchWorker {
 
         // An early quiet move at the previous ply that was not its transposition move, and
         // that this node just refuted, is punished there rather than here.
-        if prev_sq != Square::NONE
+        if let Some(prev_sq) = prev_sq.square()
             && self.stack[si - 1].move_count == 1 + i32::from(self.stack[si - 1].tt_hit)
             && self.pos.captured_piece().is_none()
         {
@@ -1401,9 +1401,9 @@ impl SearchWorker {
         }
 
         let prev_sq = if self.stack[si - 1].current_move.is_ok() {
-            self.stack[si - 1].current_move.to()
+            self.stack[si - 1].current_move.to().some()
         } else {
-            Square::NONE
+            SquareOrNone::NONE
         };
         let mut best_move = Move::NONE;
         let prior_reduction = self.stack[si - 1].reduction;
@@ -1528,7 +1528,10 @@ impl SearchWorker {
                 if !tt_capture {
                     self.update_quiet_histories(si, tt_move, (112 * depth).min(695));
                 }
-                if prev_sq != Square::NONE && self.stack[si - 1].move_count < 5 && !prior_capture {
+                if let Some(prev_sq) = prev_sq.square()
+                    && self.stack[si - 1].move_count < 5
+                    && !prior_capture
+                {
                     let pc = self.pos.piece_on(prev_sq);
                     self.update_continuation_histories(si - 1, pc, prev_sq, -2210);
                 }
@@ -1611,7 +1614,8 @@ impl SearchWorker {
                     + 60;
                 let prev_move = self.stack[si - 1].current_move;
                 self.histories.main.update(!us, prev_move.raw(), eval_diff * 11);
-                if !tt_hit
+                if let Some(prev_sq) = prev_sq.square()
+                    && !tt_hit
                     && self.pos.piece_on(prev_sq).piece_type() != PieceType::Pawn
                     && prev_move.move_type() != crate::board::types::MoveType::Promotion
                 {
@@ -2202,7 +2206,9 @@ impl SearchWorker {
             if !PV {
                 self.histories.update_tt_move(if best_move == tt_move { 918 } else { -747 });
             }
-        } else if !prior_capture && prev_sq != Square::NONE {
+        } else if let Some(prev_sq) = prev_sq.square()
+            && !prior_capture
+        {
             // No move improved on alpha, so the move that led here is looking good for the
             // opponent. Reward it, scaled by how badly this node failed.
             let mut bonus_scale = -241;
@@ -2232,7 +2238,9 @@ impl SearchWorker {
                 let pawn_row = super::history::PawnHistory::row(self.pos.st().pawn_key);
                 self.histories.pawn.update(pawn_row, pc, prev_sq, scaled_bonus * 324 / 8192);
             }
-        } else if prior_capture && prev_sq != Square::NONE {
+        } else if let Some(prev_sq) = prev_sq.square()
+            && prior_capture
+        {
             let captured = self.pos.captured_piece();
             let pc = self.pos.piece_on(prev_sq);
             self.histories.captures.update(pc, prev_sq, captured.piece_type(), 892);
@@ -2531,9 +2539,9 @@ impl SearchWorker {
             ContKey::UNREAD,
         ];
         let prev_sq = if self.stack[si - 1].current_move.is_ok() {
-            self.stack[si - 1].current_move.to()
+            self.stack[si - 1].current_move.to().some()
         } else {
-            Square::NONE
+            SquareOrNone::NONE
         };
 
         let slot = SLOTS_PER_PLY * ply.index() + SLOT_QSEARCH;
@@ -2557,7 +2565,7 @@ impl SearchWorker {
             // Step 6. Pruning
             if !is_loss(best_value) {
                 if !gives_check
-                    && mv.to() != prev_sq
+                    && mv.to().some() != prev_sq
                     && !is_loss(futility_base)
                     && mv.move_type() != crate::board::types::MoveType::Promotion
                 {

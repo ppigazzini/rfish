@@ -73,11 +73,10 @@ fn sliding_attacks(dirs: [Direction; 4], sq: Square, occupied: Bitboard) -> Bitb
     let mut attacks = Bitboard::EMPTY;
     for d in dirs {
         let mut s = sq;
-        loop {
-            let next = s.shift(d);
-            // Stop at the board edge. `Square::shift` wraps, so the guard is that the
-            // step stayed on the board AND moved exactly one square in Chebyshev terms.
-            if !next.is_ok() || next.distance(s) != 1 {
+        while let Some(next) = s.try_shift(d) {
+            // `try_shift` rejects a step that leaves the board; a step that stays in range
+            // may still have wrapped a file edge, which is a real square and the wrong one.
+            if next.distance(s) != 1 {
                 break;
             }
             attacks |= next;

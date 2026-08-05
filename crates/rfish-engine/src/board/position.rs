@@ -30,7 +30,8 @@ use super::bitboard::{
 use super::threats::{self, DirtyPawnPairs, DirtyThreat};
 use super::types::{
     COLOR_NB, CastlingRights, Color, Direction, File, GamePly, Key, Move, MoveType, PIECE_NB,
-    PIECE_TYPE_NB, Piece, PieceType, Ply, Rank, SQUARE_NB, Square, Value, piece_value,
+    PIECE_TYPE_NB, Piece, PieceType, Ply, Rank, SQUARE_NB, Square, SquareOrNone, Value,
+    piece_value,
 };
 use super::zobrist;
 
@@ -77,7 +78,7 @@ pub struct StateInfo {
     /// Plies since the last null move, bounding the repetition walk.
     pub plies_from_null: i32,
     /// The en-passant target, or [`Square::NONE`].
-    pub ep_square: Square,
+    pub ep_square: SquareOrNone,
 
     // ---- recomputed, never copied ----
     /// The position key.
@@ -109,7 +110,7 @@ impl StateInfo {
             non_pawn_material: [0; COLOR_NB],
             rule50: 0,
             plies_from_null: 0,
-            ep_square: Square::NONE,
+            ep_square: SquareOrNone::NONE,
             castling_rights: CastlingRights::NONE,
             key: 0,
             checkers: Bitboard::EMPTY,
@@ -243,7 +244,7 @@ pub struct Position {
     castling_rights_mask: [CastlingRights; SQUARE_NB],
     /// The rook origin per castling right, so Chess960 castling is a data lookup rather
     /// than a special case in the generator.
-    castling_rook_square: [Square; 16],
+    castling_rook_square: [SquareOrNone; 16],
     /// The squares the king and rook must find EMPTY for each right, minus the two movers
     /// themselves. Precomputed so the test is one AND against the occupancy.
     castling_path: [Bitboard; 16],
@@ -288,7 +289,7 @@ impl Position {
             piece_count: [0; PIECE_NB],
             side_to_move: Color::White,
             game_ply: GamePly::START,
-            castling_rook_square: [Square::NONE; 16],
+            castling_rook_square: [SquareOrNone::NONE; 16],
             castling_path: [Bitboard::EMPTY; 16],
             castling_rights_mask: [CastlingRights::NONE; SQUARE_NB],
             chess960: false,
@@ -462,7 +463,7 @@ impl Position {
     /// The en-passant target square, or [`Square::NONE`].
     #[inline(always)]
     #[must_use]
-    pub fn ep_square(&self) -> Square {
+    pub fn ep_square(&self) -> SquareOrNone {
         self.st().ep_square
     }
 
@@ -511,8 +512,11 @@ impl Position {
     /// The rook that castling right `cr` moves.
     #[inline(always)]
     #[must_use]
+    ///
+    /// # Panics
+    /// Panics for a right the position does not have. Every caller tests the right first.
     pub fn castling_rook_square(&self, cr: CastlingRights) -> Square {
-        self.castling_rook_square[cr.index()]
+        self.castling_rook_square[cr.index()].unwrap()
     }
 
     /// True when a piece between the king and the rook blocks castling right `cr`.
@@ -789,8 +793,8 @@ impl Position {
             let rook = Piece::new(color, PieceType::Rook);
             let king = Piece::new(color, PieceType::King);
             let back_rank = if color == Color::White { Rank::R1 } else { Rank::R8 };
-            let mut rook_sq = Square::NONE;
-            let mut king_sq = Square::NONE;
+            let mut rook_sq = SquareOrNone::NONE;
+            let mut king_sq = SquareOrNone::NONE;
 
             match ch.to_ascii_uppercase() {
                 token @ (b'K' | b'Q') => {
@@ -804,11 +808,11 @@ impl Position {
                         let sq = Square::make(File::new(file as usize), back_rank);
                         let pc = self.piece_on(sq);
                         if pc == king {
-                            king_sq = sq;
+                            king_sq = sq.some();
                             break;
                         }
                         if pc == rook && rook_sq.is_none() {
-                            rook_sq = sq;
+                            rook_sq = sq.some();
                         }
                         file += step;
                     }
@@ -819,14 +823,14 @@ impl Position {
                     // FEN never named.
                     let candidate = Square::make(File::new((file - b'A') as usize), back_rank);
                     if self.piece_on(candidate) == rook {
-                        rook_sq = candidate;
+                        rook_sq = candidate.some();
                     }
                     // A king on the a- or h-file has no room to castle, so upstream only
                     // looks for it between the b- and g-files.
                     for f in 1..7 {
                         let sq = Square::make(File::new(f), back_rank);
                         if self.piece_on(sq) == king {
-                            king_sq = sq;
+                            king_sq = sq.some();
                         }
                     }
                 }
@@ -834,8 +838,8 @@ impl Position {
             }
 
             // Both halves of the right must exist for it to mean anything.
-            if king_sq.is_ok() && rook_sq.is_ok() {
-                self.set_castling_right(color, rook_sq);
+            if king_sq.is_some() && rook_sq.is_some() {
+                self.set_castling_right(color, rook_sq.unwrap());
             }
         }
 
@@ -879,39 +883,39 @@ impl Position {
     fn set_ep_square(&mut self, field: &str) -> Result<(), FenError> {
         let bytes = field.as_bytes();
         let sq = match bytes {
-            b"-" => Square::NONE,
-            [f, r] => Square::from_coords(*f, *r).ok_or(FenError::EnPassant)?,
+            b"-" => SquareOrNone::NONE,
+            [f, r] => Square::from_coords(*f, *r).ok_or(FenError::EnPassant)?.some(),
             _ => return Err(FenError::EnPassant),
         };
-        if sq.is_none() {
-            self.st_mut().ep_square = Square::NONE;
+        let Some(sq) = sq.square() else {
+            self.st_mut().ep_square = SquareOrNone::NONE;
             return Ok(());
-        }
+        };
 
         // Upstream's four conditions, all of them. An en-passant square that survives any
         // fewer is recorded here and not there -- and the square is MIXED INTO THE KEY, so the
         // two engines then disagree about which transposition-table entry a position owns.
         let us = self.side_to_move;
         let them = !us;
-        let captured = sq.shift(Direction::pawn_push(them));
-        // The square BEYOND the ep square from the mover's side: the one the enemy pawn left.
-        // A piece standing there means the double push never happened, so the FEN is claiming
-        // a capture that cannot exist. Never off the board: an ep square is on relative rank 6,
-        // so this is rank 7.
-        let vacated = sq.shift(Direction::pawn_push(us));
+        // Both steps are FALLIBLE, because `sq` came out of a FEN and has been checked for
+        // nothing yet. On a well-formed record the ep square is on relative rank 6 and both
+        // neighbours exist; on a hostile one it can be on rank 1 or 8 and a step leaves the
+        // board. `captured` is the enemy pawn's square, `vacated` the one it left.
+        let captured = sq.try_shift(Direction::pawn_push(them));
+        let vacated = sq.try_shift(Direction::pawn_push(us));
         let movers = pawn_attacks_from(them, sq) & self.pieces_of(us, PieceType::Pawn);
         let available = sq.relative_rank(us) == Rank::R6
             && self.is_empty_square(sq)
-            && vacated.is_ok()
-            && self.is_empty_square(vacated)
-            && self.piece_on(captured) == Piece::new(them, PieceType::Pawn)
+            && vacated.is_some_and(|v| self.is_empty_square(v))
+            && captured.is_some_and(|c| self.piece_on(c) == Piece::new(them, PieceType::Pawn))
             && movers.any();
 
         // And the capture must be PLAYABLE by at least one of those pawns. A pawn pinned
         // against its own king cannot take, and if none of them can the square is not an
         // en-passant square at all -- upstream's `legalEP`.
         let legal = available && {
-            let target = Bitboard::from_square(captured);
+            // `available` established both steps landed, so this cannot be `None`.
+            let target = Bitboard::from_square(captured.expect("checked by `available`"));
             // Occupancy AFTER the capture: the captured pawn goes, the ep square is filled by
             // whichever pawn took. Each candidate then leaves its own origin square in turn.
             let after = self.occupied() ^ target ^ Bitboard::from_square(sq);
@@ -928,7 +932,7 @@ impl Position {
             any
         };
 
-        self.st_mut().ep_square = if legal { sq } else { Square::NONE };
+        self.st_mut().ep_square = if legal { sq.some() } else { SquareOrNone::NONE };
         Ok(())
     }
 
@@ -943,7 +947,7 @@ impl Position {
         self.castling_rights_mask[ksq.index()] = self.castling_rights_mask[ksq.index()].union(cr);
         self.castling_rights_mask[rook_from.index()] =
             self.castling_rights_mask[rook_from.index()].union(cr);
-        self.castling_rook_square[cr.index()] = rook_from;
+        self.castling_rook_square[cr.index()] = rook_from.some();
 
         // The destinations are fixed by the rules, in both dialects: g1/c1 for the king,
         // f1/d1 for the rook, mirrored for Black.
@@ -1001,7 +1005,7 @@ impl Position {
         }
 
         let ep = self.st().ep_square;
-        if ep.is_ok() {
+        if let Some(ep) = ep.square() {
             key ^= zobrist::en_passant(ep.file());
         }
         if self.side_to_move == Color::Black {
@@ -1468,9 +1472,9 @@ impl Position {
         self.game_ply = self.game_ply.next();
 
         // Clear the parent's en-passant key before anything else can set a new one.
-        if self.st.ep_square.is_ok() {
-            key ^= zobrist::en_passant(self.st.ep_square.file());
-            self.st.ep_square = Square::NONE;
+        if let Some(ep) = self.st.ep_square.square() {
+            key ^= zobrist::en_passant(ep.file());
+            self.st.ep_square = SquareOrNone::NONE;
         }
 
         // Castling rights die when the king or a rook leaves, or when a rook is captured.
@@ -1560,7 +1564,7 @@ impl Position {
                         let not_blockers = !self.st.blockers[them.index()];
                         let no_discovery = not_blockers.contains(from) || from.file() == ksq.file();
                         if no_discovery && (pawns & (not_blockers | line_bb(ep, ksq))).any() {
-                            self.st.ep_square = ep;
+                            self.st.ep_square = ep.some();
                             key ^= zobrist::en_passant(ep.file());
                         }
                     }
@@ -1691,9 +1695,9 @@ impl Position {
         // Carry the child forward in place, as `do_move_recording` does.
         self.prev.push(self.st.clone());
         let mut key = self.st.key ^ zobrist::side();
-        if self.st.ep_square.is_ok() {
-            key ^= zobrist::en_passant(self.st.ep_square.file());
-            self.st.ep_square = Square::NONE;
+        if let Some(ep) = self.st.ep_square.square() {
+            key ^= zobrist::en_passant(ep.file());
+            self.st.ep_square = SquareOrNone::NONE;
         }
         self.st.key = key;
         // The halfmove clock is deliberately NOT advanced. A null move is not a move: no
@@ -2050,11 +2054,9 @@ impl Position {
         }
 
         s.push(' ');
-        if self.st().ep_square.is_ok() {
-            s.push_str(&self.st().ep_square.to_string());
-        } else {
-            s.push('-');
-        }
+        // `SquareOrNone`'s `Display` is the square, or `-` when there is none, which is
+        // exactly the FEN spelling of the field.
+        s.push_str(&self.st().ep_square.to_string());
 
         let fullmove = 1 + (self.game_ply.get() - i32::from(self.side_to_move == Color::Black)) / 2;
         write!(s, " {} {fullmove}", self.st().rule50).expect("writing to a String cannot fail");
