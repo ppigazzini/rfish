@@ -44,7 +44,8 @@ use crate::state::{
 };
 
 use super::history::{
-    CORRECTION_LIMIT, ContKey, Histories, LOW_PLY_HISTORY_SIZE, cont_plane_index, corr_plane_index,
+    Bonus, CORRECTION_LIMIT, ContKey, Histories, LOW_PLY_HISTORY_SIZE, cont_plane_index,
+    corr_plane_index,
 };
 use super::movepick::{ContKeys, MoveBuf, MovePicker};
 use super::score::Score;
@@ -109,9 +110,11 @@ fn value_draw(nodes: u64) -> Value {
 /// cannot say WHICH term moved, and cannot tell a transcription slip from an intended
 /// retune at all.
 #[inline]
-fn multicut_correction_bonus(value: Value, static_eval: Value, singular_depth: i32) -> i32 {
-    ((value - static_eval) * singular_depth * 177 / 1024)
-        .clamp(-CORRECTION_LIMIT / 4, CORRECTION_LIMIT / 4)
+fn multicut_correction_bonus(value: Value, static_eval: Value, singular_depth: i32) -> Bonus {
+    Bonus::new(
+        ((value - static_eval) * singular_depth * 177 / 1024)
+            .clamp(-CORRECTION_LIMIT / 4, CORRECTION_LIMIT / 4),
+    )
 }
 
 /// How the search reports progress.
@@ -535,7 +538,7 @@ impl SearchWorker {
     }
 
     /// Record how far the static evaluation was from what the search found.
-    fn update_correction_history(&mut self, si: StackIx, bonus: i32) {
+    fn update_correction_history(&mut self, si: StackIx, bonus: Bonus) {
         // Material changes far less often than structure, so an error attributed to it is
         // weaker evidence and is recorded at a lower weight.
         const NON_PAWN_WEIGHT: i32 = 186;
@@ -582,7 +585,7 @@ impl SearchWorker {
     /// The multiplier grows with how many of those planes already rate this follow-up
     /// positively: a move several previous contexts agree about is stronger evidence than
     /// one only the immediate parent likes.
-    fn update_continuation_histories(&mut self, si: StackIx, pc: Piece, to: Square, bonus: i32) {
+    fn update_continuation_histories(&mut self, si: StackIx, pc: Piece, to: Square, bonus: Bonus) {
         const CMHC_MULTIPLIERS: [i32; 7] = [94, 103, 110, 106, 119, 126, 121];
 
         let in_check = self.stack[si.index()].in_check;
@@ -625,7 +628,7 @@ impl SearchWorker {
     }
 
     /// Reward or punish a quiet move across every table that orders quiet moves.
-    fn update_quiet_histories(&mut self, si: StackIx, mv: Move, bonus: i32) {
+    fn update_quiet_histories(&mut self, si: StackIx, mv: Move, bonus: Bonus) {
         let us = self.pos.side_to_move();
         let ply = si.ply();
         let pc = self.pos.moved_piece(mv);
@@ -659,10 +662,10 @@ impl SearchWorker {
     ) {
         let moved_piece = self.pos.moved_piece(best_move);
 
-        let mut bonus = (133 * depth - 81).min(1487)
+        let mut bonus = Bonus::new((133 * depth - 81).min(1487))
             + 364 * i32::from(best_move == tt_move)
             + self.stack[si.back(1).index()].stat_score / 28;
-        let malus = (968 * depth - 235).min(2244);
+        let malus = Bonus::new((968 * depth - 235).min(2244));
 
         if !pv_node {
             // A node that searched many moves before finding its best one has stronger
@@ -675,8 +678,8 @@ impl SearchWorker {
             // because "corrected" is a different engine — the off-by-one propagates into
             // every history table and moves the node count.
             let searched = (quiets_searched.len() + captures_searched.len()) as u64;
-            let scaled = (bonus as i64 as u64).wrapping_mul(searched) / 256;
-            bonus = bonus.wrapping_add(scaled as u32 as i32);
+            let scaled = (bonus.get() as i64 as u64).wrapping_mul(searched) / 256;
+            bonus = Bonus::new(bonus.get().wrapping_add(scaled as u32 as i32));
         }
 
         if self.pos.is_capture_stage(best_move) {
@@ -1530,14 +1533,14 @@ impl SearchWorker {
         {
             if tt_move.is_some() && tt_value >= beta {
                 if !tt_capture {
-                    self.update_quiet_histories(si, tt_move, (112 * depth).min(695));
+                    self.update_quiet_histories(si, tt_move, Bonus::new((112 * depth).min(695)));
                 }
                 if let Some(prev_sq) = prev_sq.square()
                     && self.stack[si.back(1).index()].move_count < 5
                     && !prior_capture
                 {
                     let pc = self.pos.piece_on(prev_sq);
-                    self.update_continuation_histories(si.back(1), pc, prev_sq, -2210);
+                    self.update_continuation_histories(si.back(1), pc, prev_sq, Bonus::new(-2210));
                 }
             }
 
@@ -1618,7 +1621,7 @@ impl SearchWorker {
                 .clamp(-189, 194)
                     + 60;
                 let prev_move = self.stack[si.back(1).index()].current_move;
-                self.histories.main.update(!us, prev_move.raw(), eval_diff * 11);
+                self.histories.main.update(!us, prev_move.raw(), Bonus::new(eval_diff * 11));
                 if let Some(prev_sq) = prev_sq.square()
                     && !tt_hit
                     && self.pos.piece_on(prev_sq).piece_type() != PieceType::Pawn
@@ -1626,7 +1629,7 @@ impl SearchWorker {
                 {
                     let pawn_row = super::history::PawnHistory::row(self.pos.st().pawn_key);
                     let pc = self.pos.piece_on(prev_sq);
-                    self.histories.pawn.update(pawn_row, pc, prev_sq, eval_diff * 13);
+                    self.histories.pawn.update(pawn_row, pc, prev_sq, Bonus::new(eval_diff * 13));
                 }
             }
 
@@ -1961,7 +1964,7 @@ impl SearchWorker {
                     // Multi-cut. The transposition move was assumed to fail high, and with
                     // it excluded the node STILL fails high -- so more than one move does,
                     // and the whole subtree can be skipped.
-                    self.histories.update_tt_move(-421 - 110 * depth);
+                    self.histories.update_tt_move(Bonus::new(-421 - 110 * depth));
 
                     // The fail-high is evidence about the static evaluation too: the search
                     // found more here than the evaluation said was available, so feed the
@@ -2082,7 +2085,7 @@ impl SearchWorker {
                         );
                     }
 
-                    self.update_continuation_histories(si, moved_piece, mv.to(), 1334);
+                    self.update_continuation_histories(si, moved_piece, mv.to(), Bonus::new(1334));
                 }
             }
             // Step 18. Full-depth search when LMR is skipped
@@ -2210,7 +2213,11 @@ impl SearchWorker {
                 PV,
             );
             if !PV {
-                self.histories.update_tt_move(if best_move == tt_move { 918 } else { -747 });
+                self.histories.update_tt_move(Bonus::new(if best_move == tt_move {
+                    918
+                } else {
+                    -747
+                }));
             }
         } else if let Some(prev_sq) = prev_sq.square()
             && !prior_capture
@@ -2233,23 +2240,37 @@ impl SearchWorker {
             let scaled_bonus = (150 * depth - 85).min(1337) * bonus_scale;
 
             let pc = self.pos.piece_on(prev_sq);
-            self.update_continuation_histories(si.back(1), pc, prev_sq, scaled_bonus * 263 / 16384);
+            self.update_continuation_histories(
+                si.back(1),
+                pc,
+                prev_sq,
+                Bonus::new(scaled_bonus * 263 / 16384),
+            );
 
             let prev_move = self.stack[si.back(1).index()].current_move;
-            self.histories.main.update(!us, prev_move.raw(), scaled_bonus * 215 / 32768);
+            self.histories.main.update(
+                !us,
+                prev_move.raw(),
+                Bonus::new(scaled_bonus * 215 / 32768),
+            );
 
             if self.pos.piece_on(prev_sq).piece_type() != PieceType::Pawn
                 && prev_move.move_type() != crate::board::types::MoveType::Promotion
             {
                 let pawn_row = super::history::PawnHistory::row(self.pos.st().pawn_key);
-                self.histories.pawn.update(pawn_row, pc, prev_sq, scaled_bonus * 324 / 8192);
+                self.histories.pawn.update(
+                    pawn_row,
+                    pc,
+                    prev_sq,
+                    Bonus::new(scaled_bonus * 324 / 8192),
+                );
             }
         } else if let Some(prev_sq) = prev_sq.square()
             && prior_capture
         {
             let captured = self.pos.captured_piece();
             let pc = self.pos.piece_on(prev_sq);
-            self.histories.captures.update(pc, prev_sq, captured.piece_type(), 892);
+            self.histories.captures.update(pc, prev_sq, captured.piece_type(), Bonus::new(892));
         }
 
         if PV {
@@ -2296,9 +2317,11 @@ impl SearchWorker {
         {
             let limit = super::history::CORRECTION_LIMIT;
             let scale = if best_move.is_none() { 18 } else { 12 };
-            let bonus = ((best_value - self.stack[si.index()].static_eval) * depth * scale / 128)
-                .clamp(-limit / 4, limit / 4);
-            self.update_correction_history(si, 1061 * bonus / 1024);
+            let bonus = Bonus::new(
+                ((best_value - self.stack[si.index()].static_eval) * depth * scale / 128)
+                    .clamp(-limit / 4, limit / 4),
+            );
+            self.update_correction_history(si, bonus * 1061 / 1024);
         }
 
         best_value
