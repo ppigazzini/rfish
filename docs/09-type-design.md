@@ -366,6 +366,11 @@ fail on purpose.
   outside; `qsearch::<Root>` does not compile, because quiescence is never entered at the root.
 - A boolean passed positionally where the name was the content: `cut_node`, and the two halves
   of a continuation plane's quadrant.
+- A wall-clock reading compared against a search bound. Under `nodestime` the bounds count
+  nodes, so `elapsed_time()` and `elapsed(nodes)` measure different things; they used to be
+  one type and a `bool` stored beside the bounds was said to prevent the confusion. It did
+  not — the bounds now live inside the enum that names their unit, and reporting has its own
+  type.
 - A widened domain type. `board/types.rs` closes with a `const` block asserting each width
   against the *relationship* that implies it, so the assertion cannot go stale:
   `PIECE_NB == COLOR_NB * 8` because a piece is `colour << 3 | type`, and
