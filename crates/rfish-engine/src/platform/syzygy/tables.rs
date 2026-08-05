@@ -177,14 +177,44 @@ impl IndexTables {
 /// The tables, built on first use.
 pub static INDEX: LazyLock<IndexTables> = LazyLock::new(IndexTables::build);
 
-/// How far a file is from the nearest edge: 0 for the a- and h-files, 3 for d and e.
+/// Which of a pawnful table's four per-file sub-tables a position uses.
 ///
-/// The four per-file sub-tables are keyed by this, which is why a leading pawn on the
-/// e-file and one on the d-file share a table.
-#[inline]
-#[must_use]
-pub const fn edge_distance(file: usize) -> usize {
-    if file < 7 - file { file } else { 7 - file }
+/// **Not a [`File`].** A board file is one of eight; a `TbFile` is one of four, and the map
+/// between them is [`TbFile::for_board_file`] — which is why a leading pawn on the e-file and
+/// one on the d-file share a table. The two were both `usize` and the conversion was an
+/// unannotated `usize -> usize` hop, in the one module where `AGENTS.md` records that an
+/// index computed one off returns a CONFIDENT wrong verdict.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[repr(transparent)]
+pub struct TbFile(u8);
+
+impl TbFile {
+    /// The only sub-table a pawnless position has.
+    pub const ONLY: TbFile = TbFile(0);
+    /// The highest sub-table index a pawnful table has.
+    pub const MAX_PAWNFUL: TbFile = TbFile(3);
+
+    /// The sub-table a leading pawn on `file` selects: how far that file is from the nearest
+    /// edge, 0 for the a- and h-files and 3 for d and e.
+    #[inline]
+    #[must_use]
+    pub const fn for_board_file(file: File) -> TbFile {
+        let f = file.index();
+        TbFile(if f < 7 - f { f as u8 } else { (7 - f) as u8 })
+    }
+
+    /// Index the sub-table array.
+    #[inline]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    /// Every sub-table up to and including `self`, for the loaders that walk them.
+    #[inline]
+    pub fn up_to(self) -> impl Iterator<Item = TbFile> {
+        (0..=self.0).map(TbFile)
+    }
 }
 
 #[cfg(test)]
@@ -254,9 +284,9 @@ mod tests {
 
     #[test]
     fn the_edge_distance_is_symmetric_about_the_centre() {
-        assert_eq!(edge_distance(0), 0);
-        assert_eq!(edge_distance(7), 0);
-        assert_eq!(edge_distance(3), 3);
-        assert_eq!(edge_distance(4), 3);
+        assert_eq!(TbFile::for_board_file(File::A), TbFile::ONLY);
+        assert_eq!(TbFile::for_board_file(File::H), TbFile::ONLY);
+        assert_eq!(TbFile::for_board_file(File::D), TbFile::MAX_PAWNFUL);
+        assert_eq!(TbFile::for_board_file(File::E), TbFile::MAX_PAWNFUL);
     }
 }

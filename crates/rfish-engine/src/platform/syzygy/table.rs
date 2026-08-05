@@ -13,6 +13,7 @@ use crate::board::types::{Color, Key, Piece, PieceType, Square};
 use crate::board::zobrist;
 
 use super::pairs::{PairsData, flag, set_groups, set_sizes};
+use super::tables::TbFile;
 
 /// Which kind of table a file is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -224,16 +225,16 @@ impl TbTable {
         &self,
         bytes: &[u8],
         mut off: usize,
-        max_file: usize,
+        max_file: TbFile,
     ) -> Option<(Vec<Vec<PairsData>>, usize)> {
         let sides = if self.kind.sides() == 2 && self.key != self.key2 { 2 } else { 1 };
         let pp = self.has_pawns && self.pawn_count[1] != 0;
         let lead_pawn = Piece::new(self.lead_color, PieceType::Pawn).raw();
 
         let mut items: Vec<Vec<PairsData>> =
-            (0..sides).map(|_| (0..=max_file).map(|_| PairsData::default()).collect()).collect();
+            (0..sides).map(|_| max_file.up_to().map(|_| PairsData::default()).collect()).collect();
 
-        for f in 0..=max_file {
+        for f in max_file.up_to() {
             let b0 = *bytes.get(off)?;
             let b1 = if pp { *bytes.get(off + 1)? } else { 0 };
             let order = [
@@ -245,7 +246,7 @@ impl TbTable {
             for k in 0..self.piece_count {
                 let byte = *bytes.get(off)?;
                 for (i, side) in items.iter_mut().enumerate() {
-                    side[f].pieces[k] = if i != 0 { byte >> 4 } else { byte & 0xF };
+                    side[f.index()].pieces[k] = if i != 0 { byte >> 4 } else { byte & 0xF };
                 }
                 off += 1;
             }
@@ -258,18 +259,18 @@ impl TbTable {
             // and indexes `lead_pawn_idx[0]` with a square it never wrote. Refuse it here,
             // where there is still an error channel to refuse through, so the invariant the
             // prober relies on is one the parse established.
-            if self.has_pawns && items.iter().any(|side| side[f].pieces[0] != lead_pawn) {
+            if self.has_pawns && items.iter().any(|side| side[f.index()].pieces[0] != lead_pawn) {
                 return None;
             }
             for (i, side) in items.iter_mut().enumerate() {
                 set_groups(
-                    &mut side[f],
+                    &mut side[f.index()],
                     self.piece_count,
                     self.has_pawns,
                     self.has_unique_pieces,
                     self.pawn_count,
                     order[i],
-                    f,
+                    f.index(),
                 );
             }
         }
@@ -297,14 +298,14 @@ impl TbTable {
         }
         off += 1;
 
-        let max_file = if self.has_pawns { 3 } else { 0 };
+        let max_file = if self.has_pawns { TbFile::MAX_PAWNFUL } else { TbFile::ONLY };
         let (mut items, mut off) = self.piece_lists(&bytes, off, max_file)?;
 
         off += off & 1; // word alignment
 
-        for f in 0..=max_file {
+        for f in max_file.up_to() {
             for side in &mut items {
-                off = set_sizes(&mut side[f], &bytes, off)?;
+                off = set_sizes(&mut side[f.index()], &bytes, off)?;
             }
         }
 
@@ -313,24 +314,24 @@ impl TbTable {
             off = set_dtz_map(&mut items, &bytes, off, max_file)?;
         }
 
-        for f in 0..=max_file {
+        for f in max_file.up_to() {
             for side in &mut items {
-                side[f].sparse_index = off;
-                off += side[f].sparse_index_size * 6;
+                side[f.index()].sparse_index = off;
+                off += side[f.index()].sparse_index_size * 6;
             }
         }
-        for f in 0..=max_file {
+        for f in max_file.up_to() {
             for side in &mut items {
-                side[f].block_length = off;
-                off += side[f].block_length_size as usize * 2;
+                side[f.index()].block_length = off;
+                off += side[f.index()].block_length_size as usize * 2;
             }
         }
-        for f in 0..=max_file {
+        for f in max_file.up_to() {
             for side in &mut items {
                 // The payload of each sub-table is 64-byte aligned.
                 off = (off + 0x3F) & !0x3F;
-                side[f].data = off;
-                off += side[f].blocks_num as usize * side[f].sizeof_block;
+                side[f.index()].data = off;
+                off += side[f.index()].blocks_num as usize * side[f.index()].sizeof_block;
             }
         }
         if off > bytes.len() {
@@ -342,10 +343,10 @@ impl TbTable {
 
     /// The sub-table for a side to move and a leading-pawn file.
     #[must_use]
-    pub fn pairs<'a>(&self, loaded: &'a Loaded, stm: usize, file: usize) -> &'a PairsData {
+    pub fn pairs<'a>(&self, loaded: &'a Loaded, stm: usize, file: TbFile) -> &'a PairsData {
         let side = stm % loaded.items.len();
-        let f = if self.has_pawns { file } else { 0 };
-        &loaded.items[side][f]
+        let f = if self.has_pawns { file } else { TbFile::ONLY };
+        &loaded.items[side][f.index()]
     }
 }
 
@@ -357,10 +358,10 @@ fn set_dtz_map(
     items: &mut [Vec<PairsData>],
     bytes: &[u8],
     mut off: usize,
-    max_file: usize,
+    max_file: TbFile,
 ) -> Option<usize> {
     let base = off;
-    for entry in items[0].iter_mut().take(max_file + 1) {
+    for entry in items[0].iter_mut().take(max_file.index() + 1) {
         let flags = entry.flags;
         if flags & flag::MAPPED == 0 {
             continue;
@@ -462,23 +463,24 @@ mod tests {
         assert_eq!(t.lead_color, Color::White);
 
         // Upstream's own nibbles: a white pawn in both colour views, and the headers parse.
-        let (items, off) =
-            t.piece_lists(&pawnful_header(0x11, 3), 5, 3).expect("the real file's byte");
+        let (items, off) = t
+            .piece_lists(&pawnful_header(0x11, 3), 5, TbFile::MAX_PAWNFUL)
+            .expect("the real file's byte");
         assert_eq!(off, 21, "four files of one order byte and three piece bytes");
         assert_eq!(items[0][0].pieces[0], Piece::W_PAWN.raw());
 
         // The same pawn, the other colour. A type-only check takes it, and the position it is
         // probed against has no black pawn at all.
-        assert!(t.piece_lists(&pawnful_header(0x99, 3), 5, 3).is_none());
+        assert!(t.piece_lists(&pawnful_header(0x99, 3), 5, TbFile::MAX_PAWNFUL).is_none());
         // Not a pawn at all, which is the half that was already refused.
-        assert!(t.piece_lists(&pawnful_header(0x66, 3), 5, 3).is_none());
+        assert!(t.piece_lists(&pawnful_header(0x66, 3), 5, TbFile::MAX_PAWNFUL).is_none());
 
         // Black leads when White has no pawns, and then `0x99` is the correct nibble and
         // `0x11` the refused one — the check is against the MATERIAL, not a fixed colour.
         let t = TbTable::new(TbType::Wdl, "KNvKP", "x".into()).expect("built");
         assert_eq!(t.lead_color, Color::Black);
-        assert!(t.piece_lists(&pawnful_header(0x99, 4), 5, 3).is_some());
-        assert!(t.piece_lists(&pawnful_header(0x11, 4), 5, 3).is_none());
+        assert!(t.piece_lists(&pawnful_header(0x99, 4), 5, TbFile::MAX_PAWNFUL).is_some());
+        assert!(t.piece_lists(&pawnful_header(0x11, 4), 5, TbFile::MAX_PAWNFUL).is_none());
     }
 
     #[test]
