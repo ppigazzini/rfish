@@ -226,6 +226,7 @@ impl PieceType {
 /// 7 and 15 are unused. The gap keeps the colour bit at a fixed position, so
 /// [`Piece::color`] is a shift rather than a table lookup.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
 pub struct Piece(u8);
 
 impl Piece {
@@ -722,6 +723,7 @@ impl Direction {
 /// Castling rights, packed as one nibble so the whole right set is a single Zobrist
 /// index rather than four.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+#[repr(transparent)]
 pub struct CastlingRights(u8);
 
 impl CastlingRights {
@@ -833,6 +835,7 @@ pub enum MoveType {
 /// upstream's king-takes-rook convention, which is what makes Chess960 castling fit the
 /// same 16 bits as every other move.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
 pub struct Move(u16);
 
 impl Move {
