@@ -263,7 +263,7 @@ stops moving, check what the allocator is doing before concluding the gap is alg
 **The gap WIDENS when the comparison is made fair, and the reason is one-sided.** PGO is
 worth almost nothing to rustc here and 15% to clang, so the honest figure is the largest of
 the three, not the smallest. A number quoted from either of the first two rows understates
-where the port is; `docs/09-tooling-ci.md` records what has to be held equal, and
+where the port is; `docs/10-tooling-ci.md` records what has to be held equal, and
 `cargo xtask pgo` / `cargo xtask oracle` / `cargo xtask perf` are what hold it.
 
 `cargo xtask signature` against the PGO binary reproduces the golden exactly, which is the
@@ -303,7 +303,7 @@ have a time ratio and no instruction ratio.
 **The `native` row above cannot be reproduced, and is kept only as a record.** It was taken
 when `native` meant `-C target-cpu=native` on both sides, so it describes two binaries that
 were a property of this box rather than of any tier. `native` now SELECTS an enumerated tier
-(`avx512icl` here) — see `docs/09-tooling-ci.md` — so a rerun measures a differently
+(`avx512icl` here) — see `docs/10-tooling-ci.md` — so a rerun measures a differently
 compiled pair and the numbers are not comparable. Re-take it under a named tier before
 quoting it.
 

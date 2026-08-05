@@ -2,7 +2,7 @@ name: rfish parity
 
 # Every lane below runs a gate that also exists locally, and nothing local is weaker than
 # what runs here: a contributor who sees a green `cargo xtask parity` should not be
-# surprised by the merge gate. See docs/09-tooling-ci.md.
+# surprised by the merge gate. See docs/10-tooling-ci.md.
 #
 # Every action is pinned BY COMMIT SHA, with the tag in a trailing comment. A tag is a
 # mutable pointer -- the owner can move `v7` to anything -- so a tag-pinned action is an
@@ -274,7 +274,7 @@ jobs:
   # would fail on its first line for a reason no contributor could act on. The toolchain
   # requirement is now a PIN rather than a floor -- `rust-toolchain.toml` names one dated
   # nightly and every lane above reads it from there -- and a floor lane tests nothing a
-  # pin does not already fix. See docs/09-tooling-ci.md.
+  # pin does not already fix. See docs/10-tooling-ci.md.
 
   cross-build:
     name: Cross-build (${{ matrix.target }})

@@ -31,7 +31,7 @@ use std::path::Path;
 ///
 /// Substrings, not patterns: every one of these is a directory or a filename, so there is
 /// nothing to compile and nothing that can silently match more than it says. They are
-/// case-sensitive on purpose — `docs/10-references.md` is a shipped page and `1-REFERENCES`
+/// case-sensitive on purpose — `docs/11-references.md` is a shipped page and `1-REFERENCES`
 /// is not it.
 const NEEDLES: &[&str] = &[
     "__DEV",

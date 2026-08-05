@@ -1027,7 +1027,7 @@ pub(crate) fn docs_lint() -> Result<Outcome, String> {
         }
     }
 
-    // The two rules `docs/11-writing.md` names as the most-broken, held mechanically.
+    // The two rules `docs/12-writing.md` names as the most-broken, held mechanically.
     checked += quoted_signature(&root, &files, &mut problems)?;
     checked += undocumented_steps(&root, &files, &mut problems)?;
 
@@ -1412,7 +1412,7 @@ fn internal_units_all(out: &str) -> Vec<i64> {
 /// That is not hypothetical. This directory held a `stockfish-new` from the previous pin
 /// benching 3,184,328 beside a current `stockfish` benching 2,508,687, and because the stale
 /// name sorted first, `nnue-check`, `tb` and the golden audit all adjudicated against the
-/// wrong commit while passing. `docs/09-tooling-ci.md` had recorded the trap one commit
+/// wrong commit while passing. `docs/10-tooling-ci.md` had recorded the trap one commit
 /// earlier and it still bit, because the stale binary was under a name nobody was looking at.
 pub(crate) fn find_oracle() -> Option<std::path::PathBuf> {
     let src = workspace_root().parent()?.join("Stockfish/src");
