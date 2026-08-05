@@ -171,8 +171,10 @@ fn build_magics(
         // Precompute the occupancy/attack pairs this square must satisfy.
         let occupancies: Vec<u64> = subsets(mask).collect();
         debug_assert_eq!(occupancies.len(), size);
-        let references: Vec<Bitboard> =
-            occupancies.iter().map(|&o| sliding_attacks(dirs, sq, Bitboard(o))).collect();
+        let references: Vec<Bitboard> = occupancies
+            .iter()
+            .map(|&o| sliding_attacks(dirs, sq, Bitboard::from_bits(o)))
+            .collect();
 
         let mut rng = Prng::new(MAGIC_SEEDS[sq.rank()]);
         let shift = 64 - bits;
@@ -529,8 +531,12 @@ mod tests {
             ] {
                 let mask = relevant_mask(dirs, sq).bits();
                 for occ in subsets(mask) {
-                    let expected = sliding_attacks(dirs, sq, Bitboard(occ));
-                    assert_eq!(lookup(sq, Bitboard(occ)), expected, "square {sq}, occ {occ:#x}");
+                    let expected = sliding_attacks(dirs, sq, Bitboard::from_bits(occ));
+                    assert_eq!(
+                        lookup(sq, Bitboard::from_bits(occ)),
+                        expected,
+                        "square {sq}, occ {occ:#x}"
+                    );
                 }
             }
         }
