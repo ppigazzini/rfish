@@ -29,9 +29,9 @@ use super::bitboard::{
 };
 use super::threats::{self, DirtyPawnPairs, DirtyThreat};
 use super::types::{
-    COLOR_NB, CastlingRights, Color, Direction, File, GamePly, Key, Move, MoveKey, MoveType,
-    PIECE_NB, PIECE_TYPE_NB, Piece, PieceType, Ply, PosKey, Rank, SQUARE_NB, Square, SquareOrNone,
-    TtKey, VALUE_ZERO, Value, piece_value,
+    COLOR_NB, CastlingRights, Color, Direction, File, GamePly, Key, MinorKey, Move, MoveKey,
+    MoveType, NonPawnKey, PIECE_NB, PIECE_TYPE_NB, PawnKey, Piece, PieceType, Ply, PosKey, Rank,
+    SQUARE_NB, Square, SquareOrNone, TtKey, VALUE_ZERO, Value, piece_value,
 };
 use super::zobrist;
 
@@ -64,9 +64,9 @@ pub struct StateInfo {
     pub material_key: Key,
     /// Pawns ONLY, seeded with [`zobrist::no_pawns`] so an empty pawn structure still has
     /// a distinct key.
-    pub pawn_key: Key,
+    pub pawn_key: PawnKey,
     /// Knights and bishops only, kings EXCLUDED.
-    pub minor_piece_key: Key,
+    pub minor_piece_key: MinorKey,
     /// Every non-pawn of that colour, kings INCLUDED.
     pub non_pawn_key: [Key; COLOR_NB],
     /// Sum of each colour's non-pawn, non-king piece values.
@@ -104,8 +104,8 @@ impl StateInfo {
     fn empty() -> StateInfo {
         StateInfo {
             material_key: 0,
-            pawn_key: 0,
-            minor_piece_key: 0,
+            pawn_key: PawnKey::new(0),
+            minor_piece_key: MinorKey::new(0),
             non_pawn_key: [0; COLOR_NB],
             non_pawn_material: [VALUE_ZERO; COLOR_NB],
             rule50: 0,
@@ -444,6 +444,18 @@ impl Position {
     #[must_use]
     pub fn raw_key(&self) -> PosKey {
         self.st().key
+    }
+
+    /// `side`'s non-pawn key, with the side attached.
+    ///
+    /// Built here rather than stored: the array position already names the side, so keeping a
+    /// `Color` beside each word would be sixteen bytes of duplication in a `StateInfo` that
+    /// is copied on every `do_move`. Measured at +0.27% avx2 and +0.11% sse41 when it was
+    /// stored in the struct.
+    #[inline(always)]
+    #[must_use]
+    pub fn non_pawn_key(&self, side: Color) -> NonPawnKey {
+        NonPawnKey::new(self.st().non_pawn_key[side.index()], side)
     }
 
     /// The pieces giving check to the side to move.
@@ -957,7 +969,7 @@ impl Position {
     /// incrementally, and [`Position::assert_state_consistent`] checks the two agree.
     fn set_state(&mut self) {
         let mut key = PosKey::ZERO;
-        let mut pawn_key: Key = zobrist::no_pawns();
+        let mut pawn_key = PawnKey::new(zobrist::no_pawns());
         let mut minor_key: Key = 0;
         let mut non_pawn_key = [0 as Key; COLOR_NB];
         let mut material_key: Key = 0;
@@ -1007,7 +1019,7 @@ impl Position {
         let st = self.st_mut();
         st.key = key;
         st.pawn_key = pawn_key;
-        st.minor_piece_key = minor_key;
+        st.minor_piece_key = MinorKey::new(minor_key);
         st.non_pawn_key = non_pawn_key;
         st.material_key = material_key;
         st.non_pawn_material = non_pawn_material;

@@ -503,10 +503,10 @@ impl SearchWorker {
         let us = self.pos.side_to_move();
         let st = self.pos.st();
         let h = &self.histories;
-        let pcv = i32::from(h.correction.entry(st.pawn_key, us).pawn);
-        let micv = i32::from(h.correction.entry(st.minor_piece_key, us).minor);
-        let wnpcv = i32::from(h.correction.entry(st.non_pawn_key[0], us).non_pawn_white);
-        let bnpcv = i32::from(h.correction.entry(st.non_pawn_key[1], us).non_pawn_black);
+        let pcv = h.correction.pawn(st.pawn_key, us);
+        let micv = h.correction.minor(st.minor_piece_key, us);
+        let wnpcv = h.correction.non_pawn(self.pos.non_pawn_key(Color::White), us);
+        let bnpcv = h.correction.non_pawn(self.pos.non_pawn_key(Color::Black), us);
 
         let m = self.stack[si.back(1).index()].current_move;
         let cntcv = if m.is_ok() {
@@ -544,24 +544,24 @@ impl SearchWorker {
         const NON_PAWN_WEIGHT: i32 = 186;
 
         let us = self.pos.side_to_move();
-        let (pawn_key, minor_key, np) =
-            (self.pos.st().pawn_key, self.pos.st().minor_piece_key, self.pos.st().non_pawn_key);
+        let (pawn_key, minor_key, np) = (
+            self.pos.st().pawn_key,
+            self.pos.st().minor_piece_key,
+            [self.pos.non_pawn_key(Color::White), self.pos.non_pawn_key(Color::Black)],
+        );
 
         let h = &mut self.histories;
+        super::history::update_correction_entry(h.correction.pawn_mut(pawn_key, us), bonus);
         super::history::update_correction_entry(
-            &mut h.correction.entry_mut(pawn_key, us).pawn,
-            bonus,
-        );
-        super::history::update_correction_entry(
-            &mut h.correction.entry_mut(minor_key, us).minor,
+            h.correction.minor_mut(minor_key, us),
             bonus * 150 / 128,
         );
         super::history::update_correction_entry(
-            &mut h.correction.entry_mut(np[0], us).non_pawn_white,
+            h.correction.non_pawn_mut(np[0], us),
             bonus * NON_PAWN_WEIGHT / 128,
         );
         super::history::update_correction_entry(
-            &mut h.correction.entry_mut(np[1], us).non_pawn_black,
+            h.correction.non_pawn_mut(np[1], us),
             bonus * NON_PAWN_WEIGHT / 128,
         );
 
