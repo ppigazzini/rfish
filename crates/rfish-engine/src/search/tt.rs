@@ -32,7 +32,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::board::types::{
-    Bound, Key, Move, VALUE_MATE, VALUE_NONE, VALUE_TB, VALUE_TB_LOSS_IN_MAX_PLY,
+    Bound, Key, Move, Ply, VALUE_MATE, VALUE_NONE, VALUE_TB, VALUE_TB_LOSS_IN_MAX_PLY,
     VALUE_TB_WIN_IN_MAX_PLY, Value, is_loss, is_mate, is_mated, is_valid, is_win,
 };
 
@@ -407,11 +407,11 @@ fn empty_data() -> TTData {
 /// again.
 #[inline]
 #[must_use]
-pub fn value_to_tt(v: Value, ply: i32) -> Value {
+pub fn value_to_tt(v: Value, ply: Ply) -> Value {
     if is_win(v) {
-        v + ply
+        v + ply.get()
     } else if is_loss(v) {
-        v - ply
+        v - ply.get()
     } else {
         v
     }
@@ -426,7 +426,7 @@ pub fn value_to_tt(v: Value, ply: i32) -> Value {
 /// are measured from different origins.
 #[inline]
 #[must_use]
-pub fn value_from_tt(v: Value, ply: i32, rule50: i32) -> Value {
+pub fn value_from_tt(v: Value, ply: Ply, rule50: i32) -> Value {
     if !is_valid(v) {
         return VALUE_NONE;
     }
@@ -437,7 +437,7 @@ pub fn value_from_tt(v: Value, ply: i32, rule50: i32) -> Value {
         if VALUE_TB - v > 100 - rule50 {
             return VALUE_TB_WIN_IN_MAX_PLY - 1;
         }
-        return v - ply;
+        return v - ply.get();
     }
     if is_loss(v) {
         if is_mated(v) && VALUE_MATE + v > 100 - rule50 {
@@ -446,7 +446,7 @@ pub fn value_from_tt(v: Value, ply: i32, rule50: i32) -> Value {
         if VALUE_TB + v > 100 - rule50 {
             return VALUE_TB_LOSS_IN_MAX_PLY + 1;
         }
-        return v + ply;
+        return v + ply.get();
     }
     v
 }
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn mate_scores_survive_the_ply_round_trip() {
-        for ply in [0, 1, 20, 100] {
+        for ply in [0, 1, 20, 100].map(Ply::new) {
             let mate = VALUE_MATE - 10;
             assert_eq!(value_from_tt(value_to_tt(mate, ply), ply, 0), mate);
             let mated = -VALUE_MATE + 10;

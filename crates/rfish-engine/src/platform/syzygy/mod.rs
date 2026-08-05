@@ -32,7 +32,7 @@ pub use probe::{ProbeState, Wdl};
 use crate::board::movegen::generate_legal;
 use crate::board::position::Position;
 use crate::board::types::{
-    MAX_PLY, Move, MoveType, PAWN_VALUE, PieceType, VALUE_DRAW, VALUE_MATE, Value,
+    MAX_PLY, Move, MoveType, PAWN_VALUE, PieceType, Ply, VALUE_DRAW, VALUE_MATE, Value,
 };
 use table::{TbTable, TbType};
 
@@ -309,7 +309,7 @@ impl TableRegistry {
                 // A zeroing move starts a fresh count, so the distance is the verdict's own
                 // -101/-1/0/1/101 rather than anything stored in a table.
                 self.probe_wdl(&work).map(|w| dtz_before_zeroing(w.negate()))
-            } else if (rule50 && work.is_draw(1)) || work.is_repetition(1) {
+            } else if (rule50 && work.is_draw(Ply::new(1))) || work.is_repetition(Ply::new(1)) {
                 // One ply from the root, so this is a true repetition inside the game's own
                 // history rather than a search artefact: the move draws.
                 Ok(0)

@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
-use crate::board::types::{Color, MAX_PLY, Move, VALUE_DRAW, VALUE_INFINITE, VALUE_NONE, Value};
+use crate::board::types::{
+    Color, GamePly, MAX_PLY, Move, VALUE_DRAW, VALUE_INFINITE, VALUE_NONE, Value,
+};
 use crate::search::history::{ContKey, CorrKey};
 
 /// What the caller asked the search to do.
@@ -39,7 +41,7 @@ pub struct Limits {
     /// against the move rather than being invisible.
     pub start: Option<Instant>,
     /// Plies already played, for the time manager's move-number heuristics.
-    pub ply: i32,
+    pub ply: GamePly,
     /// The depth of a `go perft`, or ZERO for "this `go` is not a perft".
     ///
     /// A plain signed `i32` and not an `Option`, because upstream's field is `int` and its

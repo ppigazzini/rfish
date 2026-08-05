@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use rfish_engine::board::movegen::{move_to_uci, parse_uci_move, perft_divide};
 use rfish_engine::board::position::{Position, START_FEN};
-use rfish_engine::board::types::Color;
+use rfish_engine::board::types::{Color, Ply};
 use rfish_engine::eval::nnue;
 use rfish_engine::platform::numa::{self, NumaConfig};
 use rfish_engine::platform::syzygy::TableRegistry;
@@ -829,7 +829,7 @@ impl Engine {
         }
         let _ = writeln!(out, "{rule}\n");
 
-        let raw = net.evaluate(&self.pos, 0, &mut scratch);
+        let raw = net.evaluate(&self.pos, Ply::ROOT, &mut scratch);
         let v = raw.psqt + raw.positional;
         let _ = writeln!(out, "NNUE evaluation          {v:+} (side to move, internal units)");
         let white = if self.pos.side_to_move() == Color::White { v } else { -v };
@@ -839,7 +839,7 @@ impl Engine {
             0.01 * f64::from(score::to_cp(white, &self.pos))
         );
 
-        let full = rfish_engine::eval::evaluate(&self.pos, Some(net), 0, &mut scratch, 0);
+        let full = rfish_engine::eval::evaluate(&self.pos, Some(net), Ply::ROOT, &mut scratch, 0);
         let white = if self.pos.side_to_move() == Color::White { full } else { -full };
         let _ = writeln!(
             out,

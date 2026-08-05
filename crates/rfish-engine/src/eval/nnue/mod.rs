@@ -36,7 +36,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use crate::board::position::Position;
-use crate::board::types::Value;
+use crate::board::types::{Ply, Value};
 
 pub use common::NetError;
 use common::{
@@ -282,9 +282,9 @@ impl Network {
     /// get different heads. Both scores come back separately, because the search blends
     /// them by their disagreement.
     #[must_use]
-    pub fn evaluate(&self, pos: &Position, ply: usize, scratch: &mut EvalScratch) -> NetworkOutput {
+    pub fn evaluate(&self, pos: &Position, ply: Ply, scratch: &mut EvalScratch) -> NetworkOutput {
         let bucket = (pos.piece_total() as usize - 1) / 4;
-        let psqt = self.transformer.transform(pos, bucket, ply, scratch);
+        let psqt = self.transformer.transform(pos, bucket, ply.index(), scratch);
         let positional = self.stacks[bucket].propagate(scratch.transformed());
         NetworkOutput {
             psqt: (i64::from(psqt) / OUTPUT_SCALE) as Value,
