@@ -1408,3 +1408,33 @@ does not, and at the narrower tier every iteration takes twice the registers and
 believing it where the body is not.** A change that improves avx2 and regresses sse41 is not
 always code layout — here it was a real transformation, correctly applied, that the wide tier
 could afford and the narrow one could not.
+
+### 18.17 An aligned ALLOCATOR is not an aligned type
+
+`Aligned<T>` starts every NNUE weight table on a cache line, which is what upstream's
+`alignas(CacheLineSize)` does. It is not enough, because the guarantee lives where the
+allocator can state it and the instruction needs it where the TYPE states it.
+
+The transformer's fold reaches a weight row through an `as_chunks` view, so the row is
+`[i16; TILE]` — alignment two, the element's. A legacy-SSE instruction folds a memory operand
+only where sixteen-byte alignment is provable, so at sse41 the row loop emitted `movdqu` then
+`psubw` where one `psubw` with a memory operand does the same work: **sixteen instructions per
+(row, tile) instead of eight**. Storing the table as `Simd<i16, LANE>` puts the alignment in
+the type. **−57.8M at sse41, −2.56%.**
+
+Three things decide whether this is worth reaching for:
+
+- **avx2 and above are unaffected.** A VEX-encoded `vpsubw` takes an unaligned memory operand;
+  the disassembly showed the row already folded there. This is a narrow-tier lever.
+- **Operands under sixteen bytes are not alignment-checked.** The i8 threat rows load through
+  `pmovsxbw`, a 64-bit operand, and were already folded at both tiers. Only the i16 half paid.
+- **Explicit vectors buy the alignment and cost the autovectoriser its choice of width.** That
+  is the trap, and it is much larger than the win: `Simd<i16, 8>` is sixteen bytes, which is all
+  the alignment needs, and it made the avx2 fold run on `xmm` where it had run on `ymm` —
+  1,505,457,814 to **1,834,100,765, +328.6M, +21.8%**. LLVM does not widen adjacent explicit
+  vectors back up. Name the width per tier, as [§18.15](#1815-a-register-resident-width-is-a-tier-constant-not-a-kernel-constant)
+  does — but for a different reason: that one is a swept optimum, this one follows from the ISA.
+
+**The general shape: a property the compiler cannot see is not a property you have.** Alignment,
+length and range are all like this. The fix is always to move the fact into a type, and the cost
+is always whatever freedom the type takes away.
