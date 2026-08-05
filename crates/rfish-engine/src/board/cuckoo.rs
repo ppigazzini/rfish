@@ -141,6 +141,7 @@ pub fn lookup(key: Key) -> Option<Move> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::types::{File, Rank};
 
     /// The count is a fact about chess, not a golden: every unordered pair of squares one
     /// non-pawn piece can travel between on an empty board.
@@ -169,7 +170,8 @@ mod tests {
     /// A knight's key delta must resolve back to the knight move that produced it.
     #[test]
     fn a_known_move_round_trips() {
-        let (s1, s2) = (Square::make(1, 0), Square::make(2, 2));
+        let (s1, s2) =
+            (Square::make(File::new(1), Rank::new(0)), Square::make(File::new(2), Rank::new(2)));
         let key =
             zobrist::psq(Piece::W_KNIGHT, s1) ^ zobrist::psq(Piece::W_KNIGHT, s2) ^ zobrist::side();
         let m = lookup(key).expect("b1-c3 is a reversible knight move");

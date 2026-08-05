@@ -10,7 +10,7 @@
 use core::fmt;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not};
 
-use super::types::{Color, Direction, FILE_NB, RANK_NB, SQUARE_NB, Square};
+use super::types::{Color, Direction, FILE_NB, File, RANK_NB, Rank, SQUARE_NB, Square};
 
 /// A set of squares.
 ///
@@ -309,7 +309,7 @@ impl fmt::Debug for Bitboard {
         writeln!(f, "+---+---+---+---+---+---+---+---+")?;
         for rank in (0..8).rev() {
             for file in 0..8 {
-                let occupied = self.contains(Square::make(file, rank));
+                let occupied = self.contains(Square::make(File::new(file), Rank::new(rank)));
                 write!(f, "| {} ", if occupied { 'X' } else { ' ' })?;
             }
             writeln!(f, "| {}", rank + 1)?;
@@ -353,21 +353,21 @@ pub const RANK_BB: [Bitboard; RANK_NB] =
 #[inline(always)]
 #[must_use]
 pub const fn file_bb(sq: Square) -> Bitboard {
-    FILE_BB[sq.file()]
+    FILE_BB[sq.file().index()]
 }
 
 /// The rank `sq` stands on.
 #[inline(always)]
 #[must_use]
 pub const fn rank_bb(sq: Square) -> Bitboard {
-    RANK_BB[sq.rank()]
+    RANK_BB[sq.rank().index()]
 }
 
 /// The rank `r` counted from `c`'s own back rank.
 #[inline(always)]
 #[must_use]
-pub const fn relative_rank_bb(c: Color, r: usize) -> Bitboard {
-    RANK_BB[r ^ ((c as usize) * 7)]
+pub const fn relative_rank_bb(c: Color, r: Rank) -> Bitboard {
+    RANK_BB[r.index() ^ ((c as usize) * 7)]
 }
 
 // ---------------------------------------------------------------------------
@@ -494,9 +494,9 @@ mod tests {
     fn step_attack_counts_match_the_geometry() {
         // A knight on a corner reaches 2 squares, in the centre 8; a king 3 and 8.
         assert_eq!(KNIGHT_ATTACKS[Square::A1.index()].count(), 2);
-        assert_eq!(KNIGHT_ATTACKS[Square::make(3, 3).index()].count(), 8);
+        assert_eq!(KNIGHT_ATTACKS[Square::make(File::new(3), Rank::new(3)).index()].count(), 8);
         assert_eq!(KING_ATTACKS[Square::A1.index()].count(), 3);
-        assert_eq!(KING_ATTACKS[Square::make(3, 3).index()].count(), 8);
+        assert_eq!(KING_ATTACKS[Square::make(File::new(3), Rank::new(3)).index()].count(), 8);
         // 336 is the number of (square, knight-move) pairs on a chessboard.
         let total: u32 = KNIGHT_ATTACKS.iter().map(|b| b.count()).sum();
         assert_eq!(total, 336);

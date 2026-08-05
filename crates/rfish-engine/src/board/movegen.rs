@@ -19,7 +19,7 @@ use super::attacks::{between_bb, sliders};
 use super::bitboard::{Bitboard, KING_ATTACKS, pawn_attacks_from, relative_rank_bb};
 use super::position::Position;
 use super::types::{
-    CastlingRights, Color, Direction, MAX_MOVES, Move, MoveType, PieceType, Square,
+    CastlingRights, Color, Direction, File, MAX_MOVES, Move, MoveType, PieceType, Rank, Square,
 };
 
 /// A fixed-capacity move buffer.
@@ -292,8 +292,8 @@ fn generate_pawn_moves<S: MoveSink>(
     let up_right = if us == Color::White { Direction::NorthEast } else { Direction::SouthWest };
     let up_left = if us == Color::White { Direction::NorthWest } else { Direction::SouthEast };
 
-    let seventh = relative_rank_bb(us, 6);
-    let third = relative_rank_bb(us, 2);
+    let seventh = relative_rank_bb(us, Rank::R7);
+    let third = relative_rank_bb(us, Rank::R3);
     let pawns = pos.pieces_of(us, PieceType::Pawn);
     let on_seventh = pawns & seventh;
     let not_on_seventh = pawns & !seventh;
@@ -510,7 +510,7 @@ pub fn parse_uci_move(pos: &Position, uci: &str) -> Option<Move> {
         // A castling move renders as king-takes-rook; also accept the king's destination.
         if m.move_type() == MoveType::Castling && !pos.is_chess960() {
             let king_side = m.to() > m.from();
-            let king_to = Square::make(if king_side { 6 } else { 2 }, m.from().rank());
+            let king_to = Square::make(if king_side { File::G } else { File::C }, m.from().rank());
             if format!("{}{}", m.from(), king_to) == uci {
                 return Some(m);
             }
@@ -532,7 +532,7 @@ pub fn move_to_uci(pos: &Position, m: Move) -> String {
     // because g1 may already hold a piece and the move would be ambiguous.
     if m.move_type() == MoveType::Castling && !pos.is_chess960() {
         let king_side = m.to() > m.from();
-        let king_to = Square::make(if king_side { 6 } else { 2 }, m.from().rank());
+        let king_to = Square::make(if king_side { File::G } else { File::C }, m.from().rank());
         return format!("{}{}", m.from(), king_to);
     }
     format!("{m:?}")

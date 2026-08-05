@@ -12,7 +12,7 @@
 //!
 //! Golden: `Stockfish/src/position.cpp: Position::init`.
 
-use super::types::{CastlingRights, FILE_NB, Key, PIECE_NB, Piece, SQUARE_NB, Square};
+use super::types::{CastlingRights, FILE_NB, File, Key, PIECE_NB, Piece, SQUARE_NB, Square};
 
 /// xorshift64*, seeded with upstream's 1070372.
 ///
@@ -133,8 +133,8 @@ pub fn psq(pc: Piece, sq: Square) -> Key {
 /// The key for an en-passant target on `file`.
 #[inline(always)]
 #[must_use]
-pub fn en_passant(file: usize) -> Key {
-    TABLES.en_passant[file]
+pub fn en_passant(file: File) -> Key {
+    TABLES.en_passant[file.index()]
 }
 
 /// The key for a castling-rights set.
@@ -161,6 +161,7 @@ pub fn no_pawns() -> Key {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::types::Rank;
     use crate::board::types::{Color, PieceType};
 
     /// The exact values upstream's generator produces for the first and last draws. These
@@ -182,11 +183,11 @@ mod tests {
     #[test]
     fn promotion_ranks_are_zeroed_for_pawns() {
         for f in 0..8 {
-            assert_eq!(psq(Piece::W_PAWN, Square::make(f, 7)), 0);
-            assert_eq!(psq(Piece::B_PAWN, Square::make(f, 0)), 0);
+            assert_eq!(psq(Piece::W_PAWN, Square::make(File::new(f), Rank::new(7))), 0);
+            assert_eq!(psq(Piece::B_PAWN, Square::make(File::new(f), Rank::new(0))), 0);
             // Every other pawn square must be a live key.
-            assert_ne!(psq(Piece::W_PAWN, Square::make(f, 1)), 0);
-            assert_ne!(psq(Piece::B_PAWN, Square::make(f, 6)), 0);
+            assert_ne!(psq(Piece::W_PAWN, Square::make(File::new(f), Rank::new(1))), 0);
+            assert_ne!(psq(Piece::B_PAWN, Square::make(File::new(f), Rank::new(6))), 0);
         }
     }
 
@@ -210,7 +211,7 @@ mod tests {
                 }
             }
         }
-        keys.extend((0..8).map(en_passant));
+        keys.extend((0..8).map(|f| en_passant(File::new(f))));
         keys.extend((0..16).map(|i| castling(CastlingRights::from_raw(i as u8))));
         keys.push(side());
         keys.push(no_pawns());

@@ -8,7 +8,7 @@
 //! Golden: `Stockfish/src/syzygy/tbprobe.cpp` — `do_probe_table`, `map_score`.
 
 use crate::board::position::Position;
-use crate::board::types::{Color, Piece, PieceType, Square};
+use crate::board::types::{Color, File, Piece, PieceType, Rank, Square};
 
 use super::pairs::{decompress, flag};
 use super::table::{Loaded, TbTable, TbType};
@@ -108,7 +108,7 @@ pub fn do_probe_table(
             }
         }
         squares.swap(0, best);
-        tb_file = edge_distance(squares[0].file());
+        tb_file = edge_distance(squares[0].file().index());
     }
 
     // A DTZ table stores only one side to move. When it is the other one, the caller has to
@@ -146,7 +146,7 @@ pub fn do_probe_table(
     }
 
     // Fold the horizontal symmetry: the leading piece goes into the left half.
-    if squares[0].file() > 3 {
+    if squares[0].file() > File::D {
         for sq in squares.iter_mut().take(size) {
             *sq = sq.flip_file();
         }
@@ -163,7 +163,7 @@ pub fn do_probe_table(
     } else {
         // Without pawns there is a vertical symmetry too: the leading piece goes below the
         // fifth rank.
-        if squares[0].rank() > 3 {
+        if squares[0].rank() > Rank::R4 {
             for sq in squares.iter_mut().take(size) {
                 *sq = sq.flip_rank();
             }
@@ -196,21 +196,21 @@ pub fn do_probe_table(
             idx = if off_a1h8(squares[0]) != 0 {
                 ((t.map_a1d1d4[s0] as usize * 63 + (s1 - adjust1)) * 62 + s2 - adjust2) as u64
             } else if off_a1h8(squares[1]) != 0 {
-                ((6 * 63 + squares[0].rank() * 28 + t.map_b1h1h7[s1] as usize) * 62 + s2 - adjust2)
-                    as u64
+                ((6 * 63 + squares[0].rank().index() * 28 + t.map_b1h1h7[s1] as usize) * 62 + s2
+                    - adjust2) as u64
             } else if off_a1h8(squares[2]) != 0 {
                 (6 * 63 * 62
                     + 4 * 28 * 62
-                    + squares[0].rank() * 7 * 28
-                    + (squares[1].rank() - adjust1) * 28
+                    + squares[0].rank().index() * 7 * 28
+                    + (squares[1].rank().index() - adjust1) * 28
                     + t.map_b1h1h7[s2] as usize) as u64
             } else {
                 (6 * 63 * 62
                     + 4 * 28 * 62
                     + 4 * 7 * 28
-                    + squares[0].rank() * 7 * 6
-                    + (squares[1].rank() - adjust1) * 6
-                    + (squares[2].rank() - adjust2)) as u64
+                    + squares[0].rank().index() * 7 * 6
+                    + (squares[1].rank().index() - adjust1) * 6
+                    + (squares[2].rank().index() - adjust2)) as u64
             };
         } else {
             // Nothing distinguishable beyond the kings: number the king pair alone.

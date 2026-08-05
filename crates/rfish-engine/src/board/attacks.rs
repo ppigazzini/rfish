@@ -176,7 +176,7 @@ fn build_magics(
             .map(|&o| sliding_attacks(dirs, sq, Bitboard::from_bits(o)))
             .collect();
 
-        let mut rng = Prng::new(MAGIC_SEEDS[sq.rank()]);
+        let mut rng = Prng::new(MAGIC_SEEDS[sq.rank().index()]);
         let shift = 64 - bits;
 
         // Both scratch views are EXACTLY `size` long, taken once per square. The search
@@ -517,6 +517,7 @@ pub fn aligned(a: Square, b: Square, c: Square) -> bool {
 mod tests {
     use super::*;
     use crate::board::bitboard::{FILE_A, RANK_1};
+    use crate::board::types::{File, Rank};
 
     /// The magic lookup is an index into precomputed answers, so the property that
     /// matters is that it agrees with the ray walk on every occupancy the walk can see.
@@ -567,14 +568,17 @@ mod tests {
     #[test]
     fn between_includes_the_destination_and_excludes_the_origin() {
         let a1 = Square::A1;
-        let d1 = Square::make(3, 0);
+        let d1 = Square::make(File::new(3), Rank::new(0));
         let b = between_bb(a1, d1);
         assert!(!b.contains(a1));
         assert!(b.contains(d1));
-        assert!(b.contains(Square::make(1, 0)) && b.contains(Square::make(2, 0)));
+        assert!(
+            b.contains(Square::make(File::new(1), Rank::new(0)))
+                && b.contains(Square::make(File::new(2), Rank::new(0)))
+        );
         // Off-ray squares still yield the destination alone, which is what makes the
         // knight-check case fall out without a special path.
-        let knight_sq = Square::make(1, 2);
+        let knight_sq = Square::make(File::new(1), Rank::new(2));
         assert_eq!(between_bb(a1, knight_sq), Bitboard::from_square(knight_sq));
     }
 
@@ -582,14 +586,14 @@ mod tests {
     fn line_spans_the_whole_ray_and_is_symmetric() {
         assert_eq!(line_bb(Square::A1, Square::H1), RANK_1);
         assert_eq!(line_bb(Square::A1, Square::A8), FILE_A);
-        assert!(line_bb(Square::A1, Square::make(1, 2)).is_empty());
+        assert!(line_bb(Square::A1, Square::make(File::new(1), Rank::new(2))).is_empty());
         for a in Square::all() {
             for b in Square::all() {
                 assert_eq!(line_bb(a, b), line_bb(b, a));
             }
         }
-        assert!(aligned(Square::A1, Square::make(3, 0), Square::H1));
-        assert!(!aligned(Square::A1, Square::make(3, 0), Square::A8));
+        assert!(aligned(Square::A1, Square::make(File::new(3), Rank::new(0)), Square::H1));
+        assert!(!aligned(Square::A1, Square::make(File::new(3), Rank::new(0)), Square::A8));
     }
 
     #[test]
@@ -608,10 +612,11 @@ mod tests {
 #[cfg(test)]
 mod ray_pass_tests {
     use super::*;
+    use crate::board::types::{File, Rank};
 
     fn sq(name: &str) -> Square {
         let b = name.as_bytes();
-        Square::make((b[0] - b'a') as usize, (b[1] - b'1') as usize)
+        Square::make(File::new((b[0] - b'a') as usize), Rank::new((b[1] - b'1') as usize))
     }
 
     fn set(names: &[&str]) -> Bitboard {
