@@ -34,7 +34,7 @@ use core::simd::Simd;
 
 use crate::board::position::Position;
 use crate::board::threats::{DirtyPawnPairs, DirtyThreat};
-use crate::board::types::{COLOR_NB, Color, Key, MAX_PLY, Piece, Ply, SQUARE_NB, Square};
+use crate::board::types::{COLOR_NB, Color, Key, MAX_PLY, Piece, Ply, PosKey, SQUARE_NB, Square};
 
 use super::common::{Aligned, FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
 use super::features::{
@@ -128,7 +128,7 @@ struct Side {
     /// A ply slot is only a legal base for a roll-forward when this still matches the key
     /// the search reached that ply with — the search may have left and returned, and the
     /// slot would then hold a cousin.
-    computed_for: Key,
+    computed_for: PosKey,
 }
 
 impl Side {
@@ -171,7 +171,7 @@ struct PlySlot {
     /// This ply's accumulator, per perspective.
     side: [Side; COLOR_NB],
     /// The position key the search reached this ply with, written by `do_move`.
-    reached: Key,
+    reached: PosKey,
     /// The threat records of the move that reached this ply from the one below.
     dts: Vec<DirtyThreat>,
     /// The pawn placement that move changed.
@@ -220,7 +220,7 @@ const PLY_SLOTS: usize = MAX_PLY + 10;
 #[derive(Debug)]
 pub struct EvalScratch {
     /// The position the live slots hold, or [`EMPTY_KEY`] when they hold nothing.
-    key: Key,
+    key: PosKey,
     /// One accumulator per ply, upstream's `AccumulatorStack`.
     ///
     /// A single slot cannot serve a delta: after a subtree returns it holds a COUSIN, and no
@@ -327,7 +327,7 @@ const HYBRID_HOP_CAP: usize = 3;
 const MARK_WORDS: usize = THREAT_AND_PP_DIMENSIONS.div_ceil(64);
 
 /// The key of a slot no evaluation has filled yet. No real position hashes to it.
-const EMPTY_KEY: Key = Key::MAX;
+const EMPTY_KEY: PosKey = PosKey::new(Key::MAX);
 
 impl Default for EvalScratch {
     fn default() -> EvalScratch {
@@ -423,7 +423,7 @@ impl EvalScratch {
     /// Called from the search's own `do_move`. The records are consumed by
     /// [`FeatureTransformer::transform`] at that ply and at any ply below it that walks back
     /// through this one.
-    pub fn record(&mut self, ply: Ply, pos: &Position, key: Key, dpp: DirtyPawnPairs) {
+    pub fn record(&mut self, ply: Ply, pos: &Position, key: PosKey, dpp: DirtyPawnPairs) {
         let slot = &mut self.plies[ply.index()];
         slot.reached = key;
         slot.dpp = dpp;
@@ -446,7 +446,7 @@ impl EvalScratch {
     /// A null move needs none — it moves no piece, so no threat and no pawn pair changes —
     /// but anything else that advances a ply without recording must say so, or the roll
     /// forward would skip a move.
-    pub fn record_null(&mut self, ply: Ply, pos: &Position, key: Key) {
+    pub fn record_null(&mut self, ply: Ply, pos: &Position, key: PosKey) {
         let slot = &mut self.plies[ply.index()];
         slot.reached = key;
         slot.dts.clear();

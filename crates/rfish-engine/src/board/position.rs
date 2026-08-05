@@ -29,9 +29,9 @@ use super::bitboard::{
 };
 use super::threats::{self, DirtyPawnPairs, DirtyThreat};
 use super::types::{
-    COLOR_NB, CastlingRights, Color, Direction, File, GamePly, Key, Move, MoveType, PIECE_NB,
-    PIECE_TYPE_NB, Piece, PieceType, Ply, Rank, SQUARE_NB, Square, SquareOrNone, VALUE_ZERO, Value,
-    piece_value,
+    COLOR_NB, CastlingRights, Color, Direction, File, GamePly, Key, Move, MoveKey, MoveType,
+    PIECE_NB, PIECE_TYPE_NB, Piece, PieceType, Ply, PosKey, Rank, SQUARE_NB, Square, SquareOrNone,
+    TtKey, VALUE_ZERO, Value, piece_value,
 };
 use super::zobrist;
 
@@ -82,7 +82,7 @@ pub struct StateInfo {
 
     // ---- recomputed, never copied ----
     /// The position key.
-    pub key: Key,
+    pub key: PosKey,
     /// Pieces of the side NOT to move that give check.
     pub checkers: Bitboard,
     /// Own pieces whose move could expose their own king, per colour.
@@ -112,7 +112,7 @@ impl StateInfo {
             plies_from_null: 0,
             ep_square: SquareOrNone::NONE,
             castling_rights: CastlingRights::NONE,
-            key: 0,
+            key: PosKey::ZERO,
             checkers: Bitboard::EMPTY,
             blockers: [Bitboard::EMPTY; COLOR_NB],
             pinners: [Bitboard::EMPTY; COLOR_NB],
@@ -432,8 +432,8 @@ impl Position {
     /// longer force.
     #[inline(always)]
     #[must_use]
-    pub fn key(&self) -> Key {
-        Position::adjust_key50(self.st().key, self.st().rule50)
+    pub fn key(&self) -> TtKey {
+        self.st().key.for_tt(self.st().rule50)
     }
 
     /// The raw position key, before the halfmove clock is mixed in.
@@ -442,7 +442,7 @@ impl Position {
     /// repeating, and the clock differs by construction between the two occurrences.
     #[inline(always)]
     #[must_use]
-    pub fn raw_key(&self) -> Key {
+    pub fn raw_key(&self) -> PosKey {
         self.st().key
     }
 
@@ -557,18 +557,6 @@ impl Position {
     #[must_use]
     pub fn captured_piece(&self) -> Piece {
         self.st().captured_piece
-    }
-
-    /// Hash the halfmove clock into `k` past move 14, so a position reached with a
-    /// different rule50 count cannot reuse a transposition entry the rule invalidates.
-    #[inline(always)]
-    #[must_use]
-    pub fn adjust_key50(k: Key, rule50: i32) -> Key {
-        if rule50 < 14 {
-            return k;
-        }
-        let seed = ((rule50 - 14) / 8) as Key;
-        k ^ seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407)
     }
 
     // -- placement ---------------------------------------------------------
@@ -968,7 +956,7 @@ impl Position {
     /// Called once after a FEN is parsed. `do_move` maintains the same fields
     /// incrementally, and [`Position::assert_state_consistent`] checks the two agree.
     fn set_state(&mut self) {
-        let mut key: Key = 0;
+        let mut key = PosKey::ZERO;
         let mut pawn_key: Key = zobrist::no_pawns();
         let mut minor_key: Key = 0;
         let mut non_pawn_key = [0 as Key; COLOR_NB];
@@ -1172,7 +1160,7 @@ impl Position {
         let original_key = st.key;
         // `stp` walks back; it starts one ply behind, exactly as upstream's `st->previous`.
         let mut stp = top - 1;
-        let mut other = original_key ^ self.prev[stp].key ^ zobrist::side();
+        let mut other = (original_key ^ self.prev[stp].key) ^ zobrist::side();
 
         let mut i = 3;
         while i <= end {
@@ -1181,10 +1169,10 @@ impl Position {
                 break;
             }
             stp -= 1;
-            other ^= self.prev[stp].key ^ self.prev[stp - 1].key ^ zobrist::side();
+            other ^= (self.prev[stp].key ^ self.prev[stp - 1].key) ^ zobrist::side();
             stp -= 1;
 
-            if other != 0 {
+            if other != MoveKey::NONE {
                 i += 2;
                 continue;
             }
@@ -2105,7 +2093,7 @@ impl fmt::Display for Position {
         }
         writeln!(f, "   a   b   c   d   e   f   g   h\n")?;
         writeln!(f, "Fen: {}", self.fen())?;
-        writeln!(f, "Key: {:016X}", self.key())?;
+        writeln!(f, "Key: {:016X}", self.key().get())?;
         // Upstream ends the block with the checking pieces, each followed by a space, and
         // prints the label even when the list is empty. `cargo xtask golden-audit` is what
         // found this missing: rfish's own golden had recorded the output WITHOUT the line

@@ -32,7 +32,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::board::types::{
-    Bound, Key, Move, Ply, VALUE_MATE, VALUE_NONE, VALUE_TB, VALUE_TB_LOSS_IN_MAX_PLY,
+    Bound, Move, Ply, TtKey, VALUE_MATE, VALUE_NONE, VALUE_TB, VALUE_TB_LOSS_IN_MAX_PLY,
     VALUE_TB_WIN_IN_MAX_PLY, Value, is_loss, is_mate, is_mated, is_valid, is_win,
 };
 
@@ -182,8 +182,8 @@ impl TranspositionTable {
     /// Upstream's multiply-shift: the high 64 bits of `key * clusterCount` in 128-bit
     /// arithmetic, which spreads the key over the whole table without a modulo.
     #[inline(always)]
-    fn cluster_of(&self, key: Key) -> usize {
-        ((u128::from(key) * self.clusters.len() as u128) >> 64) as usize
+    fn cluster_of(&self, key: TtKey) -> usize {
+        ((u128::from(key.get()) * self.clusters.len() as u128) >> 64) as usize
     }
 
     /// Look `key` up.
@@ -194,9 +194,9 @@ impl TranspositionTable {
     #[must_use]
     // Always: zfish inlines its probe and save into the node body.
     #[inline(always)]
-    pub fn probe(&self, key: Key) -> TTProbe {
+    pub fn probe(&self, key: TtKey) -> TTProbe {
         let cluster = self.cluster_of(key);
-        let key16 = key as u16;
+        let key16 = key.get() as u16;
         let c = &self.clusters[cluster];
         let meta = c.meta.load(Ordering::Relaxed);
 
@@ -453,6 +453,12 @@ pub fn value_from_tt(v: Value, ply: Ply, rule50: i32) -> Value {
 
 #[cfg(test)]
 mod tests {
+    /// A table key from a bare word, for the tests only. Goes through the real conversion
+    /// so the tests exercise the one route from a position key to a table key.
+    fn tt_key(k: u64) -> TtKey {
+        crate::board::types::PosKey::new(k).for_tt(0)
+    }
+
     use super::*;
     use crate::board::types::VALUE_ZERO;
     use crate::board::types::{Square, VALUE_MATE};
@@ -471,11 +477,11 @@ mod tests {
         let tt = TranspositionTable::new(1);
         let key = 0x0123_4567_89AB_CDEF;
         let mv = Move::new(Square::A1, Square::H8);
-        let p = tt.probe(key);
+        let p = tt.probe(tt_key(key));
         assert!(!p.hit);
         tt.store(p, mv, Value::new(123), Value::new(-45), 7, Bound::Exact, true);
 
-        let q = tt.probe(key);
+        let q = tt.probe(tt_key(key));
         assert!(q.hit);
         assert_eq!(q.data.mv, mv);
         assert_eq!(q.data.value, 123);
@@ -492,7 +498,7 @@ mod tests {
         // slots, which is exactly what the packed metadata word has to keep separate.
         let base = 0xDEAD_BEEF_0000_0000u64;
         for i in 0..3u64 {
-            let p = tt.probe(base | i);
+            let p = tt.probe(tt_key(base | i));
             tt.store(
                 p,
                 Move::from_raw(100 + i as u16),
@@ -504,7 +510,7 @@ mod tests {
             );
         }
         for i in 0..3u64 {
-            let q = tt.probe(base | i);
+            let q = tt.probe(tt_key(base | i));
             assert!(q.hit, "entry {i} was evicted by its neighbours");
             assert_eq!(q.data.mv.raw(), 100 + i as u16);
             assert_eq!(q.data.depth, i as i32);
@@ -516,10 +522,18 @@ mod tests {
         let tt = TranspositionTable::new(1);
         let key = 42;
         let mv = Move::new(Square::A1, Square::H1);
-        tt.store(tt.probe(key), mv, Value::new(10), VALUE_ZERO, 5, Bound::Lower, false);
+        tt.store(tt.probe(tt_key(key)), mv, Value::new(10), VALUE_ZERO, 5, Bound::Lower, false);
         // A deeper search with no best move must keep the old one for ordering.
-        tt.store(tt.probe(key), Move::NONE, Value::new(20), VALUE_ZERO, 9, Bound::Upper, false);
-        let q = tt.probe(key);
+        tt.store(
+            tt.probe(tt_key(key)),
+            Move::NONE,
+            Value::new(20),
+            VALUE_ZERO,
+            9,
+            Bound::Upper,
+            false,
+        );
+        let q = tt.probe(tt_key(key));
         assert!(q.hit);
         assert_eq!(q.data.mv, mv);
         assert_eq!(q.data.depth, 9);
@@ -541,7 +555,7 @@ mod tests {
     fn clear_forgets_everything() {
         let tt = TranspositionTable::new(1);
         tt.store(
-            tt.probe(7),
+            tt.probe(tt_key(7)),
             Move::from_raw(9),
             Value::new(1),
             Value::new(1),
@@ -549,9 +563,9 @@ mod tests {
             Bound::Exact,
             false,
         );
-        assert!(tt.probe(7).hit);
+        assert!(tt.probe(tt_key(7)).hit);
         tt.clear();
-        assert!(!tt.probe(7).hit);
+        assert!(!tt.probe(tt_key(7)).hit);
         assert_eq!(tt.hashfull(0), 0);
     }
 
@@ -566,7 +580,7 @@ mod tests {
                 s.spawn(move || {
                     for i in 0..10_000u64 {
                         let key = t * 1_000_003 + i;
-                        let p = tt.probe(key);
+                        let p = tt.probe(tt_key(key));
                         tt.store(
                             p,
                             Move::from_raw(i as u16 | 1),
