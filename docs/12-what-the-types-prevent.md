@@ -67,9 +67,10 @@ verdict, and `TbFile` narrows which space the index lives in, not which entry.
 
 **A depth used as anything.** There is no `Depth` type, deliberately. A depth-scaled product
 feeds at least six different codomains — a bonus, two kinds of score margin, a move count, a
-history threshold and a reduction denominator — and a `Mul` impl has one output type. See
-`__DEV`'s typing notes for the measurement; the short version is that a newtype needing six
-output types is a newtype that needs none.
+history threshold and a reduction denominator — and a `Mul` impl has one output type. Any
+single choice leaves the other five needing an unwrap, and the choice that serves all six is
+`Mul<i32> for Depth -> i32`, which turns any depth into any integer by multiplying by one.
+A newtype that needs six output types is a newtype that needs none.
 
 **The four bug classes that cost this port the most.** None of them is a typing problem, and
 all four are invisible to perft:
