@@ -76,6 +76,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "docs-lint" => gates::docs_lint(),
         "unsafe-lint" => gates::unsafe_lint(),
         "nnue-check" => gates::nnue_check(),
+        "net-roundtrip" => gates::net_roundtrip(),
         "tb" => gates::tb(),
         "net" => net::fetch(args),
         "tb-fetch" => net::fetch_tb(),
@@ -140,6 +141,8 @@ cargo xtask <step> — the rfish build driver
                           so a host below the top tier skips unless --host-tiers accepts a
                           run that builds those tiers and benches the rest
     nnue-check            the network's output equals upstream's, position by position
+    net-roundtrip         the net survives `export_net` byte for byte, so the format
+                          reader and writer agree -- an ORDER stated twice, welded
     tb                    Syzygy discovery, and that an empty path changes nothing
     async-check           stop, ponderhit and quit on a RUNNING search. INVARIANTS, not
                           values: no golden can reach this path, because an interrupted

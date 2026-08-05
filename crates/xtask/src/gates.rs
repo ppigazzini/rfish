@@ -1394,6 +1394,85 @@ pub(crate) fn nnue_check() -> Result<Outcome, String> {
     Ok(Outcome::check(failures.is_empty(), format!("{} evaluation mismatches", failures.len())))
 }
 
+/// The net survives `export_net` byte for byte, so the reader and the writer agree.
+///
+/// **This is the gate for a layout stated twice.** `FeatureTransformer::read` and
+/// `FeatureTransformer::write` are two independent statements of one order — eight operations
+/// each, the same split points and the same choice of LEB128 against raw `i8`, mirrored by
+/// hand forty lines apart — and `AffineLayer` and `Network::save` repeat the shape. Nothing in
+/// the source relates either pair. Edit one side alone and the writer emits a file the reader
+/// misreads, which fails in the worst available way: the net still loads, every other gate
+/// still runs, and only the bench signature notices, and only to say that something moved.
+///
+/// rfish reads a net as a SEQUENTIAL STREAM — `NetReader` is `read_exact` over an
+/// `impl Read`, with no mapped image and no computed region offsets — so it cannot have the
+/// defect the sibling ports fixed, where the parse writes each region at one derivation of the
+/// blob layout and the accessors read it back at another (`../mcfish` `ef3c0170`, `../zfish`
+/// `0f66e726`, both closed with asserts tying the two spellings together). The hazard survives
+/// the difference: an ORDER stated twice drifts exactly as offsets do. What changes is the
+/// instrument. There are no two constants to assert equal, so the weld is the round trip
+/// itself, which is stronger — it checks every group, every split point and every hash at once
+/// rather than the derivations someone thought to pair up.
+///
+/// `docs/07-shell.md` has claimed the trip is byte-identical since the format was ported, and
+/// no command produced that claim. A page that states a fact no gate computes is the shape
+/// this tree keeps finding; this makes it a command.
+///
+/// A missing net is a SKIP, as it is for `nnue-check`: a contributor without the download
+/// still gets every other gate.
+pub(crate) fn net_roundtrip() -> Result<Outcome, String> {
+    let engine = build_engine(GATE_PROFILE)?;
+    let name = default_net_name();
+    let net = resources_dir().join(&name);
+    if !net.is_file() {
+        return Ok(Outcome::Skipped(format!("{} is absent; run `cargo xtask net`", net.display())));
+    }
+
+    // Written OUTSIDE `resources/`, so a half-written file can never be mistaken for the net
+    // the engine loads on the next run.
+    let out = workspace_root().join("target/net-roundtrip.nnue");
+    let _ = std::fs::remove_file(&out);
+    let script = [format!("export_net {}", out.display())];
+    let refs: Vec<&str> = script.iter().map(String::as_str).collect();
+    let said = drive(&engine, &refs)?;
+    if !said.contains("Network saved") {
+        return Ok(Outcome::Fail(format!(
+            "`export_net` wrote nothing: {}",
+            said.lines().find(|l| l.contains("info string")).unwrap_or("no answer at all")
+        )));
+    }
+
+    let original = std::fs::read(&net).map_err(|e| format!("{}: {e}", net.display()))?;
+    let written = std::fs::read(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let _ = std::fs::remove_file(&out);
+
+    // Report WHERE, not just that: the first differing byte names the region, and a length
+    // that matches while the bytes do not is a different bug from a short write.
+    if original.len() != written.len() {
+        return Ok(Outcome::Fail(format!(
+            "{name} came back {} bytes, not {}",
+            written.len(),
+            original.len()
+        )));
+    }
+    if let Some(at) = original.iter().zip(&written).position(|(a, b)| a != b) {
+        return Ok(Outcome::Fail(format!(
+            "{name} differs at byte {at} of {}: {:#04x} was written as {:#04x}",
+            original.len(),
+            original[at],
+            written[at]
+        )));
+    }
+
+    // A zero-length net compares equal to itself. Refuse the empty subject rather than
+    // reporting the pass it would otherwise earn.
+    if let Some(refusal) = compared_something(original.len(), "bytes", &net.to_string_lossy()) {
+        return Ok(refusal);
+    }
+    println!("net-roundtrip: {name} survived export_net byte for byte ({} bytes)", original.len());
+    Ok(Outcome::Pass)
+}
+
 /// Every raw network output an `eval` printed, in upstream's internal units, in order.
 fn internal_units_all(out: &str) -> Vec<i64> {
     out.lines()
@@ -1543,6 +1622,7 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         ("golden", || golden(false)),
         ("golden-audit", || golden_audit(&[])),
         ("nnue-check", nnue_check),
+        ("net-roundtrip", net_roundtrip),
         ("tb", tb),
         ("signature", || signature(false)),
     ];

@@ -53,6 +53,17 @@ every hash. The hashes are recomputed from the saving build's own constants rath
 copied from the file that was loaded, so a saved net asserts the architecture the binary
 actually implements.
 
+`cargo xtask net-roundtrip` is what makes that a fact rather than a sentence, and it runs in
+`parity`. It had to be built: the claim above shipped with the format and **nothing drove the
+writer at all** — `export_net` appeared in no fixture, no test and no gate, so every `write`
+in the NNUE zone was an output path no instrument read. That matters more than it sounds,
+because the writer is not on the eval path: swap two of `FeatureTransformer::write`'s eight
+operations and `cargo xtask signature` still matches the anchor and `cargo xtask nnue-check`
+still matches upstream on every position — measured, not argued — while `export_net` emits a
+net this build cannot read back. **A gate that reads only what the engine CONSUMES cannot see
+a writer drift away from its reader.** That mutant is now a permanent row in
+`negative-control`.
+
 ## `bench.rs` — the benchmark
 
 The total node count `bench` prints is the engine's **signature**. Four facts decide it,

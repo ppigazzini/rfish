@@ -466,6 +466,19 @@ const MUTANTS: &[Mutant] = &[
         replace: "\"quit\" if false => shared.request_stop(),",
         gate: "async-check",
     },
+    Mutant {
+        // Aimed at the one OUTPUT PATH nothing else drives. This swaps two of the writer's
+        // eight operations and touches the reader not at all, so the engine evaluates and
+        // searches exactly as before: measured, `signature` and `nnue-check` BOTH stay green
+        // over this mutant while `export_net` emits a net this build cannot read back. A
+        // gate that only reads what the engine CONSUMES cannot see a format writer drift
+        // away from its reader.
+        label: "export_net writes the pp weights before the threat psqt block",
+        file: "crates/rfish-engine/src/eval/nnue/transformer.rs",
+        find: "        w.leb128(threat_psqt)?;\n        w.i8s(&pp_w[..pp_dims * L1])?;",
+        replace: "        w.i8s(&pp_w[..pp_dims * L1])?;\n        w.leb128(threat_psqt)?;",
+        gate: "net-roundtrip",
+    },
 ];
 
 /// Seconds a mutated gate gets before the run is called a rig fault.
