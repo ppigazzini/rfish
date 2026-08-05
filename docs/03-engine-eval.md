@@ -329,21 +329,35 @@ profile:
 
 | avx2, non-PGO, one tree | search instructions | vs rfish |
 |---|---|---|
-| ../mcfish, `MCFISH_SIMD_VECTOR` (its shipped path) | 1,186,193,283 | 0.78 |
-| **rfish, at HEAD** | **1,523,668,306** | **1.00** |
-| ../mcfish, `-DMCFISH_SIMD_SCALAR` | 4,906,184,642 | 3.22 |
+| ../mcfish, `MCFISH_SIMD_VECTOR` (its shipped path) | 1,186,194,103 | 0.79 |
+| **rfish, at HEAD** | **1,505,454,296** | **1.00** |
+| ../mcfish, its NNUE dot forced to the portable body | 4,755,614,984 | 3.16 |
+| ../mcfish, `-DMCFISH_SIMD_SCALAR` | 4,906,184,642 | 3.26 |
 
-**rfish is 1.28x ../mcfish, where this page's PGO table records 1.90x.** The gap closed
+**rfish is 1.27x ../mcfish, where this page's PGO table records 1.90x.** The gap closed
 because the accumulator sections below are what moved, not because the instrument changed.
 
-**The third row does NOT isolate what an intrinsic is worth, and must not be quoted as if it
-did.** `MCFISH_SIMD_SCALAR` turns off ../mcfish's WHOLE vector vocabulary — the
-`vector_size` accumulator row ops as well as the dot's `immintrin.h` bodies — so 4.14x is the
-price of having no vectors at all, not the price of the four-way byte dot. Isolating that
-needs a build with `MCFISH_SIMD_VECTOR` on and only the dot forced to its portable branch,
-which is not a configuration ../mcfish ships. Until someone builds it, the honest statement is
-that the kernels are worth 4.14x there and that rfish's own affine layer sits ~163M above
-upstream's; the split between "portable vectors" and "the instruction" is NOT measured.
+**The split this page called unmeasured is now measured, and it is nearly the whole of the
+difference.** The build it asked for — every vector op left in place, only `nnue_dot_step`
+and `nnue_affine1_dot` forced to their portable branch — is the third row, and it is
+**3,569.4M dearer than the shipped one**, four times ../mcfish's whole search. So:
+
+- **the dot intrinsics are worth 3,569.4M there**, and they are `_mm256_maddubs_epi16` /
+  `_mm512_dpbusd_epi32`, which is the instruction no safe Rust reaches;
+- **the nnz movemask intrinsics are worth 516 instructions** — nothing. rfish's
+  `simd_ne(…).to_bitmask()` is already at parity with `_mm256_movemask_ps` there. Disabling
+  the movemask paths as well moves the count from 4,755,614,984 to 4,755,614,468;
+- so **rfish is 3.16x cheaper than a ../mcfish with no NNUE intrinsics**, and the port's
+  standing against the SHIPPED one is what the first two rows say.
+
+Do not read the third row as "what portable vectors cost": ../mcfish's fallback dot is a
+scalar lane loop kept so `simd-scalar` can pin bit-identity, not an optimised portable kernel.
+It bounds the intrinsic's value from below and says nothing about the best a portable dot
+could do — which rfish's own `propagate_sparse` is a much better witness for.
+
+Reproduce by adding a `0 &&` to the six `nnue_dot_step` / contiguous-dot guards in
+`../mcfish/src/engine/eval/nnue/simd.h` and rebuilding; every build benches the same 163,081
+nodes, so the trees compare directly.
 
 Re-take the PGO row before quoting it; the instrument is `cargo xtask perf` and it rebuilds
 both sides.
@@ -718,6 +732,85 @@ of them. Walking back is what took it to 10,512.
 
 **12.60%**, bit-exact throughout, and against ../mcfish's own non-PGO build on the identical
 tree the ratio is **1.28x** where this page's PGO table records 1.90x.
+
+### The tier was the blind spot, and it was worth 160M at sse41
+
+The campaign above is an avx2 record, and every constant in it was swept at avx2. One of them
+is REGISTER-RESIDENT, and that makes its optimum a property of the register file rather than
+of the kernel: [`TILE`] is the number of accumulator entries the fold carries across its row
+loop, and 128 `i16` is eight `ymm` at avx2 and **sixteen `xmm` at sse41, which is the whole
+file**. Disassembled, `transform` at sse41 spilled 58 vector stores and reloaded 45 against 10
+and 7 at avx2, and the fold's row loop round-tripped one lane through the stack on EVERY
+applied row.
+
+Re-swept at HEAD, search instructions on `bench 16 1 8`, startup subtracted:
+
+| TILE | 32 | 64 | 128 | 256 |
+|---|---|---|---|---|
+| sse41 | 2,594M | **2,261M** | 2,421M | — |
+| avx2 | — | 1,688M | **1,505M** | 1,589M |
+
+**64 is worth 160.4M at sse41 — 6.6% — where the previous sweep had measured it LOSING**, and
+it costs 183M at avx2. The spills go with it: 58 stores and 45 reloads become 16 and **zero**.
+../mcfish tiers the same constant the same way and calls it `ROW_TILE_WIDTH`, 64 / 128 / 256.
+
+Two things made the old verdict stale, and only the second is about the code. The sweep that
+set it predates [`FeatureTransformer::fold_hybrid`], which reads THREE source tiles where
+[`FeatureTransformer::fold_into`] reads one — so the register context changed under it. And it
+was taken at one tier and generalised to the other, which is the mistake this repository warns
+about for `--arch` numbers and had not applied to its own constants.
+
+**The avx512 rung is not taken.** Callgrind implements no AVX-512, so the deterministic
+instrument stops at avx2 and nothing here can settle 256 there; it is ../mcfish's value and the
+analogue by register count, and it stays unclaimed rather than guessed.
+
+**A constant is a candidate for tiering exactly when it decides how much state is live across
+a loop.** Sweep those at every tier that can be measured, not at the one the campaign is
+written in.
+
+### The pairwise product was walking three runtime-length slices
+
+`Side::acc` is a `Vec<i16>` and `EvalScratch::transformed` an `Aligned<u8>`, so neither carries
+its length past the borrow that splits them, and the pairwise product at the tail of
+[`FeatureTransformer::transform`] walked all three through zipped iterators. The body was
+already good — twenty instructions per thirty-two outputs — but LLVM wrapped it in a
+runtime-trip loop, an eight-wide fixup loop and a scalar tail, emitted twice per evaluation.
+`L1` is a constant and both halves are exactly half of it; one length test apiece says so.
+
+**5.85M at avx2 and 2.41M at sse41**, bit-exact. Both tiers move the same way, which is what
+separates removed work from moved code layout.
+
+**The shape is `docs/08-idiomatic-rust.md` section 17.1, and the pattern sweep had reported it
+as having zero hits in this tree** — its grep looked for a `base..base + N` range slice and
+could not see `.iter().zip()` over `split_at` halves. A sweep is only as wide as its grep.
+
+### Falsified this round, with numbers
+
+**Stating the affine layers' widths in their types costs 76.1M at sse41 and saves 6.4M at
+avx2.** [`AffineLayer::propagate`], [`AffineLayer::propagate_sparse`] and
+[`AffineLayer::propagate_one`] all reach a weight slice whose length comes from the file at run
+time, for loops whose length the caller knows. Const-generic input widths plus one `try_into`
+per layer make every trip count constant — and LLVM then FULLY UNROLLS loops it had kept
+rolled, which at sse41 costs twice the registers and twice the code per iteration. Measured by
+reverting one layer at a time: `propagate_one` +37.1M, `propagate_sparse` +31.7M, `propagate`
++7.3M, all at sse41. The typed signatures alone, without the constant-length views, are flat on
+both tiers.
+
+**This is the same lever as the pairwise product above, with the opposite sign**, and the
+difference is what sits inside the loop: the pairwise body is two vector ops wide and unrolls
+for free, an affine step is a whole widened weight row. Make the bound a constant where the
+BODY is small; measure at the narrow tier before believing it where the body is not.
+
+**Pairing two inputs per affine step is refuted on codegen, without a bench run.** The layer's
+gap to upstream is that four `vpmaddwd` cover one input where `vpmaddubsw` covers four — but
+`vpmaddwd` itself computes `a[2i]*b[2i] + a[2i+1]*b[2i+1]`, so interleaving the weight rows by
+input PAIRS would fill the half of it that currently carries zeros, with no saturation question
+and no byte-domain packing. LLVM has a combine for exactly that IR shape. It does not fire from
+portable-simd's swizzles: compiled at haswell, the paired kernel is **52 instructions for two
+inputs against 21 for one** — 26 per input against 21 — and keeps eight `vpshufb` while issuing
+the same per-input `vpmovsxbd` and `vpmaddwd` count. Same wall as the four-way deinterleave this
+page already priced at 651M. The probe is four lines of `simd_swizzle!` and one `objdump`; run
+that before wiring a layout change through the loader.
 
 Every row is a defect rather than a tuning gain: three of them are the same addressing shape
 in three different kernels, two are loops LLVM would not vectorise because their output width

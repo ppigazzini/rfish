@@ -1352,3 +1352,59 @@ is the defect class `../mcfish` measured at 1.382 of upstream's branch misses; r
 clock has a noise floor near ±4% ([§18.13](#1813-software-prefetch-is-out-of-reach-and-a-discarded-load-is-not-a-substitute)).
 It needs hardware counters on a quiet machine, and until someone has them the honest statement
 is that the cost is unknown rather than zero.
+
+### 18.15 A register-resident width is a TIER constant, not a kernel constant
+
+The feature transformer's fold carries `TILE` accumulator entries across its row loop, so the
+value that fits is decided by the REGISTER FILE and not by the arithmetic. 128 `i16` is eight
+`ymm` at avx2 and **sixteen `xmm` at sse41 — the whole file**. Disassembled at sse41,
+`transform` spilled 58 vector stores and reloaded 45 against 10 and 7 at avx2, and the row loop
+round-tripped one lane through `0x20(%rsp)` on every applied row.
+
+| TILE | 32 | 64 | 128 | 256 |
+|---|---:|---:|---:|---:|
+| sse41 | 2,594M | **2,261M** | 2,421M | — |
+| avx2 | — | 1,688M | **1,505M** | 1,589M |
+
+**64 is worth 160.4M at sse41, where the previous sweep had measured it losing**, and it costs
+183M at avx2. Spills go 58/45 to 16/**zero**. `../mcfish` tiers the same constant the same way
+(`ROW_TILE_WIDTH`, 64 / 128 / 256), which is a strong prior — [§18.14](#1814-upstreams-structure-is-a-strong-prior-not-a-proof)
+— and here the measurement agreed with it.
+
+Two things had made the old verdict stale. The sweep predates a third consumer of the same
+tile that holds THREE source rows where the original holds one, so the register context moved
+under it. And it was taken at one tier and generalised to the other — which is the mistake this
+repository warns about for every `--arch` number and had never applied to its own constants.
+
+**A constant is a candidate for tiering exactly when it decides how much state is live across a
+loop.** Sweep those at every tier an instrument can reach, and say so where it cannot: callgrind
+implements no AVX-512, so the third rung here is left at its avx2 value rather than guessed.
+
+### 18.16 A constant trip count is a WIN where the body is small and a LOSS where it is not
+
+[§18.1](#181-make-the-bound-a-constant-the-index-cannot-reach) says to make the bound a constant
+the index cannot reach. It is right, and it is not unconditional — because what LLVM does with a
+constant trip count is UNROLL, and an unrolled iteration costs registers and code in proportion
+to its body.
+
+Both halves were measured in one session, on the same tree, on both tiers.
+
+**The win.** The pairwise product at the tail of the transformer walked three runtime-length
+slices through zipped iterators, so a body that was already twenty instructions per thirty-two
+outputs was wrapped in a runtime-trip loop, an eight-wide fixup loop and a scalar tail, twice per
+evaluation. One `try_into` per walk states the length in the type: **−5.85M avx2, −2.41M sse41.**
+
+**The loss.** The three affine layers reach a weight slice whose length comes from the file at
+run time, for loops whose length the caller knows. The same fix — const-generic input widths and
+one `try_into` each — is **−6.4M at avx2 and +76.1M at sse41**. Measured a layer at a time, at
+sse41: the 128→1 dot +37.1M, the sparse 1024→32 +31.7M, the dense 64→32 +7.3M. The typed
+signatures without the constant-length views are flat on both tiers, so the widths are not what
+cost it; the unrolling is.
+
+The difference is the body. Two vector ops per iteration unroll for free; a widened weight row
+does not, and at the narrower tier every iteration takes twice the registers and twice the code.
+
+**Rule: make the bound a constant where the body is small, and MEASURE AT THE NARROW TIER before
+believing it where the body is not.** A change that improves avx2 and regresses sse41 is not
+always code layout — here it was a real transformation, correctly applied, that the wide tier
+could afford and the narrow one could not.
