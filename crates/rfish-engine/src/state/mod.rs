@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::board::types::{
-    Color, GamePly, MAX_PLY, Move, VALUE_DRAW, VALUE_INFINITE, VALUE_NONE, Value,
+    Color, GamePly, MAX_PLY, Move, Ply, VALUE_DRAW, VALUE_INFINITE, VALUE_NONE, Value,
 };
 use crate::search::history::{ContKey, CorrKey};
 
@@ -579,6 +579,69 @@ impl Default for StackEntry {
 pub const STACK_BASE: usize = 8;
 const _: () = assert!(STACK_BASE >= 7, "updating continuations from ss-1 reaches seven back");
 const _: () = assert!(STACK_SIZE > MAX_PLY + STACK_BASE, "the stack must reach MAX_PLY");
+
+/// A slot in the search stack.
+///
+/// **rfish's own addressing, not upstream's.** `AGENTS.md` records that where upstream walks
+/// a `Stack*` pointer this port carries an index, because a pointer does not survive borrow
+/// checking while `&mut self` is live. That makes it the one piece of addressing no upstream
+/// diff can check, and it travelled as a bare `usize` through nine signatures with
+/// `stack[si - 1]`, `[si - 2]` and `[si - 4]` read around it.
+///
+/// The lookback is [`StackIx::back`] rather than `-`, so a walk back is a named operation and
+/// not arithmetic on an integer that happens to be a slot number.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(transparent)]
+pub struct StackIx(usize);
+
+impl StackIx {
+    /// The slot a node at `ply` occupies.
+    #[inline(always)]
+    #[must_use]
+    pub const fn from_ply(ply: Ply) -> StackIx {
+        StackIx(STACK_BASE + ply.index())
+    }
+
+    /// One of the sentinel slots BELOW the root, which the lookback reads before any move
+    /// has been played. A different operation from [`StackIx::back`]: those slots hold no
+    /// node, and `i` counts down from the base rather than back from a node.
+    #[inline(always)]
+    #[must_use]
+    pub const fn pre_root(i: usize) -> StackIx {
+        debug_assert!(i <= STACK_BASE, "below the bottom of the stack");
+        StackIx(STACK_BASE - i)
+    }
+
+    /// Index the stack.
+    #[inline(always)]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+
+    /// The slot the child node occupies.
+    #[inline(always)]
+    #[must_use]
+    pub const fn next(self) -> StackIx {
+        StackIx(self.0 + 1)
+    }
+
+    /// The slot `n` plies back up the line.
+    #[inline(always)]
+    #[must_use]
+    pub const fn back(self, n: usize) -> StackIx {
+        debug_assert!(self.0 >= n, "the lookback left the stack");
+        StackIx(self.0 - n)
+    }
+
+    /// The ply this slot holds.
+    #[inline(always)]
+    #[must_use]
+    pub const fn ply(self) -> Ply {
+        debug_assert!(self.0 >= STACK_BASE, "a sentinel slot holds no ply");
+        Ply::new((self.0 - STACK_BASE) as i32)
+    }
+}
 
 /// Which side's clock a colour reads.
 #[inline(always)]
