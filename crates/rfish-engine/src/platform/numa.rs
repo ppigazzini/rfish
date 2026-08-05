@@ -32,10 +32,62 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A processor number, in the system's own numbering.
-pub type CpuIndex = usize;
+///
+/// A newtype rather than an alias: `add_cpu_to_node(n, c)` took two adjacent `usize`s, and
+/// two names for one type prevent exactly nothing.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct CpuIndex(usize);
+
+impl CpuIndex {
+    /// Build from a processor number read out of `/sys` or a policy string.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(i: usize) -> CpuIndex {
+        CpuIndex(i)
+    }
+
+    /// The number, for printing and for the affinity arithmetic.
+    #[inline(always)]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
+impl core::fmt::Display for CpuIndex {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.0, f)
+    }
+}
+
 /// A node number in THIS config, which need not be the system's node number: the L3
 /// policies subdivide a system node, and an explicit policy invents its own.
-pub type NumaIndex = usize;
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct NumaIndex(usize);
+
+impl NumaIndex {
+    /// Build from a node number.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(i: usize) -> NumaIndex {
+        NumaIndex(i)
+    }
+
+    /// The number, for printing and for indexing the node list.
+    #[inline(always)]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
+impl core::fmt::Display for NumaIndex {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.0, f)
+    }
+}
 
 /// How `from_system` should partition the processors it finds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -136,7 +188,8 @@ pub fn startup_process_affinity() -> Option<BTreeSet<CpuIndex>> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|l| l.starts_with("Cpus_allowed_list:"))?;
     let list = line.split_once(':')?.1.trim();
-    let set: BTreeSet<CpuIndex> = indices_from_shortened_string(list).into_iter().collect();
+    let set: BTreeSet<CpuIndex> =
+        indices_from_shortened_string(list).into_iter().map(CpuIndex::new).collect();
     if set.is_empty() { None } else { Some(set) }
 }
 
@@ -168,7 +221,7 @@ impl Default for NumaConfig {
         let mut cfg = NumaConfig::empty();
         let n = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         for c in 0..n {
-            cfg.add_cpu_to_node(0, c);
+            cfg.add_cpu_to_node(NumaIndex::new(0), CpuIndex::new(c));
         }
         cfg
     }
@@ -187,10 +240,10 @@ impl NumaConfig {
         if self.is_cpu_assigned(c) {
             return false;
         }
-        while self.nodes.len() <= n {
+        while self.nodes.len() <= n.index() {
             self.nodes.push(BTreeSet::new());
         }
-        self.nodes[n].insert(c);
+        self.nodes[n.index()].insert(c);
         self.node_by_cpu.insert(c, n);
         true
     }
@@ -210,7 +263,7 @@ impl NumaConfig {
         self.node_by_cpu.clear();
         for (n, cpus) in self.nodes.iter().enumerate() {
             for &c in cpus {
-                self.node_by_cpu.insert(c, n);
+                self.node_by_cpu.insert(c, NumaIndex::new(n));
             }
         }
     }
@@ -257,9 +310,9 @@ impl NumaConfig {
                     fallback = true;
                     break;
                 };
-                for c in indices_from_shortened_string(&cpus) {
+                for c in indices_from_shortened_string(&cpus).into_iter().map(CpuIndex::new) {
                     if is_allowed(c) {
-                        cfg.add_cpu_to_node(n, c);
+                        cfg.add_cpu_to_node(NumaIndex::new(n), c);
                     }
                 }
             }
@@ -268,9 +321,9 @@ impl NumaConfig {
         if fallback {
             cfg = NumaConfig::empty();
             let total = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-            for c in 0..total {
+            for c in (0..total).map(CpuIndex::new) {
                 if is_allowed(c) {
-                    cfg.add_cpu_to_node(0, c);
+                    cfg.add_cpu_to_node(NumaIndex::new(0), c);
                 }
             }
         }
@@ -296,12 +349,13 @@ impl NumaConfig {
             if seen.contains(&cpu) {
                 continue;
             }
-            let path = format!("/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list");
+            let path =
+                format!("/sys/devices/system/cpu/cpu{}/cache/index3/shared_cpu_list", cpu.index());
             let Some(siblings) = read_sys_string(&path).filter(|s| !s.is_empty()) else {
                 continue;
             };
             let mut domain = L3Domain { system_node, cpus: BTreeSet::new() };
-            for c in indices_from_shortened_string(&siblings) {
+            for c in indices_from_shortened_string(&siblings).into_iter().map(CpuIndex::new) {
                 if is_allowed(c) {
                     domain.cpus.insert(c);
                 }
@@ -346,7 +400,7 @@ impl NumaConfig {
             }
             for d in ds {
                 for c in d {
-                    cfg.add_cpu_to_node(n, c);
+                    cfg.add_cpu_to_node(NumaIndex::new(n), c);
                 }
                 n += 1;
             }
@@ -374,7 +428,7 @@ impl NumaConfig {
                 return None;
             }
             for idx in indices {
-                if !cfg.add_cpu_to_node(n, idx) {
+                if !cfg.add_cpu_to_node(NumaIndex::new(n), CpuIndex::new(idx)) {
                     return None;
                 }
             }
@@ -402,7 +456,7 @@ impl NumaConfig {
     /// How many processors node `n` holds.
     #[must_use]
     pub fn num_cpus_in_numa_node(&self, n: NumaIndex) -> usize {
-        self.nodes.get(n).map_or(0, BTreeSet::len)
+        self.nodes.get(n.index()).map_or(0, BTreeSet::len)
     }
 
     /// How many processors this config covers.
@@ -429,7 +483,7 @@ impl NumaConfig {
             let mut first_set = true;
             let mut start = 0usize;
             for j in 0..list.len() {
-                let at_end = j + 1 == list.len() || list[j + 1] != list[j] + 1;
+                let at_end = j + 1 == list.len() || list[j + 1].index() != list[j].index() + 1;
                 if !at_end {
                     continue;
                 }
@@ -487,7 +541,7 @@ impl NumaConfig {
     #[must_use]
     pub fn distribute_threads_among_numa_nodes(&self, num_threads: usize) -> Vec<NumaIndex> {
         if self.nodes.len() <= 1 {
-            return vec![0; num_threads];
+            return vec![NumaIndex::new(0); num_threads];
         }
 
         let mut occupation = vec![0usize; self.nodes.len()];
@@ -504,7 +558,7 @@ impl NumaConfig {
                 }
             }
             occupation[best] += 1;
-            out.push(best);
+            out.push(NumaIndex::new(best));
         }
         out
     }
@@ -547,7 +601,7 @@ mod tests {
         let cfg = NumaConfig::from_string("0-3:4-7").expect("valid spec");
         assert_eq!(cfg.num_numa_nodes(), 2);
         assert_eq!(cfg.num_cpus(), 8);
-        assert_eq!(cfg.num_cpus_in_numa_node(0), 4);
+        assert_eq!(cfg.num_cpus_in_numa_node(NumaIndex::new(0)), 4);
         assert_eq!(cfg.to_string_spec(), "0-3:4-7");
         // An explicit policy is custom by definition, so it always replicates.
         assert!(cfg.requires_memory_replication());
@@ -614,8 +668,8 @@ mod tests {
         let cfg = NumaConfig::from_string("0-7:8-11").expect("valid spec");
         let d = cfg.distribute_threads_among_numa_nodes(12);
         assert_eq!(d.len(), 12);
-        let on0 = d.iter().filter(|&&n| n == 0).count();
-        let on1 = d.iter().filter(|&&n| n == 1).count();
+        let on0 = d.iter().filter(|&&n| n == NumaIndex::new(0)).count();
+        let on1 = d.iter().filter(|&&n| n == NumaIndex::new(1)).count();
         // Eight processors against four, so twice as many threads land on the first node.
         assert_eq!((on0, on1), (8, 4));
     }
@@ -623,7 +677,7 @@ mod tests {
     #[test]
     fn one_node_puts_every_thread_on_node_zero() {
         let cfg = NumaConfig::from_string("0-3").expect("valid spec");
-        assert_eq!(cfg.distribute_threads_among_numa_nodes(5), vec![0; 5]);
+        assert_eq!(cfg.distribute_threads_among_numa_nodes(5), vec![NumaIndex::new(0); 5]);
     }
 
     /// The live system must produce a usable config on any host the tests run on,
@@ -635,7 +689,7 @@ mod tests {
             assert!(cfg.num_numa_nodes() >= 1, "{policy:?} produced no nodes");
             assert!(cfg.num_cpus() >= 1, "{policy:?} produced no processors");
             // Every node the config exposes holds at least one processor.
-            for n in 0..cfg.num_numa_nodes() {
+            for n in (0..cfg.num_numa_nodes()).map(NumaIndex::new) {
                 assert!(cfg.num_cpus_in_numa_node(n) >= 1, "{policy:?} node {n} is empty");
             }
             // And the spec string it reports parses back to the same partition.
