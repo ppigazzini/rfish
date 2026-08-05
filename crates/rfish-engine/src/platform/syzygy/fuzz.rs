@@ -70,6 +70,14 @@ const SEEDS: [(&str, &str); 3] = [
 /// generally coherent enough to answer. `../zfish`, which builds its images from fuzzer bytes,
 /// sees the two rates two orders of magnitude apart. Both floors are kept — they are different
 /// properties, and a 5-man set or a material miss separates them.
+///
+/// The gap between them is also where a bound on the ANSWER shows up, which is the one thing
+/// this sweep can say that a panic count cannot. Before [`Wdl::from_stored`] refused a score no
+/// WDL file can hold, every parsed round also answered — the two counts were equal, because a
+/// decoded byte of 255 was laundered into a `Draw` rather than declined. They now differ by the
+/// rounds whose decoded value is not a verdict. **A sweep whose two counts are exactly equal is
+/// worth suspecting**: it means nothing downstream of the parse ever declines, and a stage that
+/// never declines is usually one that cannot.
 #[derive(Default)]
 struct Reach {
     /// The mutated bytes cleared every check `parse` makes, so the decoder is reachable.

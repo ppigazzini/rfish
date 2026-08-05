@@ -198,7 +198,10 @@ impl TableRegistry {
         let value = if no_more_moves {
             best
         } else {
-            Wdl::from_i32(self.probe_table(pos, TbType::Wdl, Wdl::Draw)?)
+            // A corrupt file is answered rather than believed: the score comes out of bytes
+            // the engine did not write, and `from_stored` is where its domain is enforced.
+            Wdl::from_stored(self.probe_table(pos, TbType::Wdl, Wdl::Draw)?)
+                .ok_or(ProbeState::Fail)?
         };
 
         if best >= value {
@@ -517,6 +520,86 @@ mod tests {
             let pos = Position::from_fen(fen, false).expect("valid");
             let got = r.probe_wdl(&pos).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
             assert_eq!(got, *want, "{fen}");
+        }
+    }
+
+    /// Both directions of the WDL score's domain, driven through the engine's own probe.
+    ///
+    /// `KBvK` is the shortest route to a value the FILE chose: it is drawn everywhere, so it
+    /// is stored on the single-value path, where [`pairs::decompress`] returns `min_sym_len`
+    /// — a raw header byte — verbatim. Rewriting that byte is therefore a one-byte edit that
+    /// makes the decoder return whatever is asked of it, with no payload, no remap and no
+    /// dependence on which tables were fetched.
+    ///
+    /// The five a WDL file can hold must still probe to their verdict, and the ones no
+    /// writer can emit must be refused. Before [`Wdl::from_stored`] was fallible the second
+    /// half read as a `Draw` and the root ranking scored it as one.
+    #[test]
+    fn a_wdl_score_the_file_invented_is_refused_on_the_probe_path() {
+        /// Where each sub-table's stored value sits. The layout is asserted below rather
+        /// than assumed: two sub-tables — the file is split, since `KBvK`'s two colourings
+        /// are distinct material — each a flags byte with `flag::SINGLE_VALUE` set followed
+        /// by its value. A drawn table stores 2, which `map_score` shifts to 0. A parse
+        /// change that moves either byte fails here rather than leaving the test rewriting
+        /// something harmless.
+        const STORED: [usize; 2] = [11, 13];
+
+        let Some(dir) = table_dir() else { return };
+        let src = std::path::Path::new(&dir);
+        let original = std::fs::read(src.join("KBvK.rtbw")).expect("the fetched KBvK table");
+        assert_eq!(
+            &original[10..=13],
+            &[pairs::flag::SINGLE_VALUE, 2, pairs::flag::SINGLE_VALUE, 2],
+            "KBvK is no longer two single-value sub-tables storing a draw"
+        );
+
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("workspace root")
+            .join("target/tb-invented-wdl-score");
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+        std::fs::copy(src.join("KBvK.rtbz"), scratch.join("KBvK.rtbz")).expect("dtz side");
+
+        // A lone bishop, so the material is KBvK and no capture stands between the probe
+        // and the table.
+        let pos = Position::from_fen("4k3/8/8/8/8/8/8/2B1K3 w - - 0 1", false).expect("valid");
+
+        let accepted = [
+            (0u8, Wdl::Loss),
+            (1, Wdl::BlessedLoss),
+            (2, Wdl::Draw),
+            (3, Wdl::CursedWin),
+            (4, Wdl::Win),
+        ];
+        for (stored, want) in accepted {
+            let mut bytes = original.clone();
+            for at in STORED {
+                bytes[at] = stored;
+            }
+            std::fs::write(scratch.join("KBvK.rtbw"), &bytes).expect("write");
+            let r = TableRegistry::discover(&scratch.to_string_lossy());
+            assert_eq!(
+                r.probe_wdl(&pos),
+                Ok(want),
+                "a stored {stored} is one of the five a WDL file holds"
+            );
+        }
+
+        // 255 is the byte the single-value path passes through untouched, and the one that
+        // reached the sibling ports' five-entry maps as an index of 253.
+        for invented in [5u8, 6, 127, 200, 255] {
+            let mut bytes = original.clone();
+            for at in STORED {
+                bytes[at] = invented;
+            }
+            std::fs::write(scratch.join("KBvK.rtbw"), &bytes).expect("write");
+            let r = TableRegistry::discover(&scratch.to_string_lossy());
+            assert_eq!(
+                r.probe_wdl(&pos),
+                Err(ProbeState::Fail),
+                "a stored {invented} is not a verdict, and must not be answered as one"
+            );
         }
     }
 

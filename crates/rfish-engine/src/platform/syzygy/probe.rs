@@ -26,22 +26,50 @@ pub enum Wdl {
 }
 
 impl Wdl {
-    /// Reconstruct from the stored value.
+    /// Reconstruct from a value the FILE decided, refusing one no file can hold.
+    ///
+    /// **This is where a WDL score is born, and the only way to make one from a number.**
+    /// The value reaches here straight out of [`decompress`], which returns a btree leaf on
+    /// the compressed path and `min_sym_len` — a raw header byte — verbatim on the
+    /// single-value one. Nothing between the file and this call re-derives it, so a stored
+    /// byte of 255 arrives as a score of 253. A WDL file holds five outcomes and no more, so
+    /// anything else is a corrupt table rather than a verdict, and the answer is `None`:
+    /// the caller reports the probe as failed, which is what it already does for a table
+    /// that is not there.
+    ///
+    /// Fallible rather than total on purpose. A catch-all arm here would be the worst of the
+    /// available answers — it launders an invented byte into a confident `Draw`, which the
+    /// root ranking then scores and ranks as a real tablebase verdict. Both sibling ports
+    /// close the same hole with a range check at the probe (`../mcfish` `f08ee9ef`,
+    /// `../zfish` `741f8ffc`), because C and Zig cannot stop a caller writing the check's
+    /// absence. Here the type can: `Wdl` has no other constructor, so every future consumer
+    /// is downstream of this one decision whether it knows the format or not.
     #[must_use]
-    pub const fn from_i32(v: i32) -> Wdl {
+    pub const fn from_stored(v: i32) -> Option<Wdl> {
         match v {
-            -2 => Wdl::Loss,
-            -1 => Wdl::BlessedLoss,
-            1 => Wdl::CursedWin,
-            2 => Wdl::Win,
-            _ => Wdl::Draw,
+            -2 => Some(Wdl::Loss),
+            -1 => Some(Wdl::BlessedLoss),
+            0 => Some(Wdl::Draw),
+            1 => Some(Wdl::CursedWin),
+            2 => Some(Wdl::Win),
+            _ => None,
         }
     }
 
     /// The verdict from the other side's point of view.
+    ///
+    /// Written out rather than routed through [`Wdl::from_stored`]: negating a verdict is
+    /// total over the five, and borrowing the fallible constructor for it would need an
+    /// `unwrap` on a case that cannot arise.
     #[must_use]
     pub const fn negate(self) -> Wdl {
-        Wdl::from_i32(-(self as i32))
+        match self {
+            Wdl::Loss => Wdl::Win,
+            Wdl::BlessedLoss => Wdl::CursedWin,
+            Wdl::Draw => Wdl::Draw,
+            Wdl::CursedWin => Wdl::BlessedLoss,
+            Wdl::Win => Wdl::Loss,
+        }
     }
 }
 
@@ -260,6 +288,9 @@ fn map_score(entry: &TbTable, loaded: &Loaded, file: TbFile, value: i32, wdl: Wd
     const WDL_MAP: [usize; 5] = [1, 3, 0, 2, 0];
 
     if entry.kind == TbType::Wdl {
+        // Shifted, not checked: the domain belongs to [`Wdl::from_stored`], which every
+        // caller of a WDL probe goes through. A second range test here would be a bound
+        // stated twice and enforced once.
         return value - 2;
     }
 
@@ -318,9 +349,24 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_stored_value_reads_as_a_draw() {
-        assert_eq!(Wdl::from_i32(0), Wdl::Draw);
-        assert_eq!(Wdl::from_i32(99), Wdl::Draw);
-        assert_eq!(Wdl::from_i32(2), Wdl::Win);
+    fn every_outcome_a_wdl_file_can_hold_reconstructs() {
+        for (stored, want) in [
+            (-2, Wdl::Loss),
+            (-1, Wdl::BlessedLoss),
+            (0, Wdl::Draw),
+            (1, Wdl::CursedWin),
+            (2, Wdl::Win),
+        ] {
+            assert_eq!(Wdl::from_stored(stored), Some(want));
+        }
+    }
+
+    #[test]
+    fn a_stored_value_no_file_can_hold_is_refused() {
+        // 253 is the live shape rather than an arbitrary large number: the single-value
+        // path returns `min_sym_len` verbatim, so a header byte of 255 shifts to this.
+        for invented in [-3, 3, 5, 6, 127, 253, i32::MAX, i32::MIN] {
+            assert_eq!(Wdl::from_stored(invented), None, "stored {invented} was accepted");
+        }
     }
 }
