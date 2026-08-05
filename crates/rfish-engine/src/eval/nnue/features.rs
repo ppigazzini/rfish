@@ -39,6 +39,66 @@ use crate::board::types::{
 /// Distinct (piece, square) slots: ten coloured piece kinds plus a colourless king.
 const PS_NB: usize = 11 * SQUARE_NB;
 
+/// An index into the KING-PIECE weight table.
+///
+/// Distinct from [`TpIndex`] because the two address different tables and were both `u32`.
+/// `fold_into(src, dst, ka, tp)` takes the two index slices as ADJACENT same-typed
+/// parameters, so swapping them compiled and folded king-piece weights against threat
+/// indices — in the hottest kernel in the engine, where this module's own doc says an index
+/// computed one off "reads a different column of weights, and the evaluation is wrong in a
+/// way no assertion catches".
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[repr(transparent)]
+pub struct KaIndex(u32);
+
+impl KaIndex {
+    /// Index the king-piece weight table.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// An index into the SHARED threat and pawn-pair weight table.
+///
+/// The two feature sets are concatenated into one table, the pawn-pair block starting at the
+/// threat set's dimension count. That used to be a coincidence asserted by a test; it is now
+/// a property of the constructors, since [`TpIndex::pawn_pair`] is the only way to make one
+/// in the upper block and it adds the base itself.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[repr(transparent)]
+pub struct TpIndex(u32);
+
+impl TpIndex {
+    /// A threat feature, in the lower block.
+    ///
+    /// **Total, deliberately.** `threat_index` returns an out-of-range value for a
+    /// combination that names no feature, and the CALLER drops those rather than branching
+    /// per piece kind — upstream's shape, and the reason there is no `Option` here. An
+    /// assertion would fire on a value the design produces on purpose.
+    #[inline(always)]
+    #[must_use]
+    pub const fn threat(i: u32) -> TpIndex {
+        TpIndex(i)
+    }
+
+    /// A pawn-pair feature, in the upper block. The base is added here and nowhere else.
+    #[inline(always)]
+    #[must_use]
+    pub const fn pawn_pair(i: u32) -> TpIndex {
+        debug_assert!(i < PP_DIMENSIONS, "not a pawn-pair feature");
+        TpIndex(PP_INDEX_BASE + i)
+    }
+
+    /// Index the shared weight table.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
 /// Feature count for the king-piece set.
 pub const HALFKA_DIMENSIONS: usize = SQUARE_NB * PS_NB / 2;
 
@@ -190,11 +250,13 @@ const HALFKA_ORIENT: [u8; SQUARE_NB] = {
 /// The feature index for `pc` on `s`, seen by `perspective` whose king is on `ksq`.
 #[inline]
 #[must_use]
-pub fn halfka_index(perspective: Color, s: Square, pc: Piece, ksq: Square) -> u32 {
+pub fn halfka_index(perspective: Color, s: Square, pc: Piece, ksq: Square) -> KaIndex {
     let flip = 56 * perspective as u8;
-    u32::from(s.raw() ^ HALFKA_ORIENT[ksq.index()] ^ flip)
-        + u32::from(PIECE_SQUARE_INDEX[perspective.index()][pc.index()])
-        + KING_BUCKETS[(ksq.raw() ^ flip) as usize]
+    KaIndex(
+        u32::from(s.raw() ^ HALFKA_ORIENT[ksq.index()] ^ flip)
+            + u32::from(PIECE_SQUARE_INDEX[perspective.index()][pc.index()])
+            + KING_BUCKETS[(ksq.raw() ^ flip) as usize],
+    )
 }
 
 /// The king-piece features that differ between two board states, as adds and subtracts.
@@ -216,8 +278,8 @@ pub fn halfka_delta(
     now: &[Piece; SQUARE_NB],
     perspective: Color,
     ksq: Square,
-    adds: &mut Vec<u32>,
-    subs: &mut Vec<u32>,
+    adds: &mut Vec<KaIndex>,
+    subs: &mut Vec<KaIndex>,
 ) {
     // The WHOLE board in one comparison, not eight. A move changes two to four squares of
     // the sixty-four, so a word-at-a-time scan still walks eight words to find them and
@@ -232,7 +294,7 @@ pub fn halfka_delta(
     let bucket = KING_BUCKETS[(ksq.raw() ^ flip) as usize];
     let piece_index = &PIECE_SQUARE_INDEX[perspective.index()];
     let index = |sq: Square, pc: Piece| {
-        u32::from(sq.raw() ^ orient) + u32::from(piece_index[pc.index()]) + bucket
+        KaIndex(u32::from(sq.raw() ^ orient) + u32::from(piece_index[pc.index()]) + bucket)
     };
 
     let was_v = Simd::<u8, SQUARE_NB>::from_array(was.map(Piece::raw));
@@ -254,7 +316,7 @@ pub fn halfka_delta(
 }
 
 /// Every active king-piece feature, for one perspective.
-pub fn halfka_active(pos: &Position, perspective: Color, out: &mut Vec<u32>) {
+pub fn halfka_active(pos: &Position, perspective: Color, out: &mut Vec<KaIndex>) {
     let ksq = pos.king_square(perspective);
     for sq in pos.occupied() {
         out.push(halfka_index(perspective, sq, pos.piece_on(sq), ksq));
@@ -471,11 +533,19 @@ pub fn threat_index(
     to: Square,
     attacked: Piece,
     ksq: Square,
-) -> u32 {
+) -> TpIndex {
     let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
     // Swapping the colour bit turns "White's threat" into "our threat" for either side.
     let swap = 8 * perspective as u8;
-    threat_index_oriented(&THREATS, orientation, swap, attacker, from, to, attacked)
+    TpIndex::threat(threat_index_oriented(
+        &THREATS,
+        orientation,
+        swap,
+        attacker,
+        from,
+        to,
+        attacked,
+    ))
 }
 
 /// [`threat_index`] with the table borrow, the orientation and the colour swap already
@@ -505,7 +575,7 @@ fn threat_index_oriented(
 }
 
 /// Every active threat feature, for one perspective.
-pub fn threat_active(pos: &Position, wanted: [bool; COLOR_NB], out: &mut [Vec<u32>; COLOR_NB]) {
+pub fn threat_active(pos: &Position, wanted: [bool; COLOR_NB], out: &mut [Vec<TpIndex>; COLOR_NB]) {
     let ksq = [pos.king_square(Color::White), pos.king_square(Color::Black)];
     let occupied = pos.occupied();
     let pawn_targets = pos.pieces(PieceType::Knight) | pos.pieces(PieceType::Rook);
@@ -549,7 +619,7 @@ pub fn threat_active(pos: &Position, wanted: [bool; COLOR_NB], out: &mut [Vec<u3
                     $attacked,
                 );
                 if index < THREAT_DIMENSIONS {
-                    out[i].push(index);
+                    out[i].push(TpIndex::threat(index));
                 }
             }
         }};
@@ -668,9 +738,13 @@ pub fn pawn_pair_index(
     to: Square,
     paired_color: Color,
     ksq: Square,
-) -> u32 {
+) -> TpIndex {
     let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
-    pp_index_oriented(orientation, perspective as usize, color, from, to, paired_color)
+    // The base is added by `TpIndex::pawn_pair`, not here: one place, once.
+    TpIndex::pawn_pair(
+        pp_index_oriented(orientation, perspective as usize, color, from, to, paired_color)
+            - PP_INDEX_BASE,
+    )
 }
 
 /// [`pawn_pair_index`] with the orientation and the perspective's colour bit already
@@ -699,7 +773,11 @@ fn pp_index_oriented(
 }
 
 /// Every active pawn-pair feature, for one perspective.
-pub fn pawn_pair_active(pos: &Position, wanted: [bool; COLOR_NB], out: &mut [Vec<u32>; COLOR_NB]) {
+pub fn pawn_pair_active(
+    pos: &Position,
+    wanted: [bool; COLOR_NB],
+    out: &mut [Vec<TpIndex>; COLOR_NB],
+) {
     let white = pos.pieces_of(Color::White, PieceType::Pawn);
     let black = pos.pieces_of(Color::Black, PieceType::Pawn);
     for p in Color::ALL {
@@ -722,7 +800,7 @@ fn pawn_pairs_of(
     black: Bitboard,
     perspective: Color,
     ksq: Square,
-    out: &mut Vec<u32>,
+    out: &mut Vec<TpIndex>,
 ) {
     let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
     let pb = perspective as usize;
@@ -734,10 +812,16 @@ fn pawn_pairs_of(
         let from = bb.pop_lsb();
         let band = PAWN_PAIR_BB[from.index()];
         for to in band & bb {
-            out.push(pp_index_oriented(orientation, pb, Color::White, from, to, Color::White));
+            out.push(TpIndex::pawn_pair(
+                pp_index_oriented(orientation, pb, Color::White, from, to, Color::White)
+                    - PP_INDEX_BASE,
+            ));
         }
         for to in band & black {
-            out.push(pp_index_oriented(orientation, pb, Color::White, from, to, Color::Black));
+            out.push(TpIndex::pawn_pair(
+                pp_index_oriented(orientation, pb, Color::White, from, to, Color::Black)
+                    - PP_INDEX_BASE,
+            ));
         }
     }
 
@@ -746,7 +830,10 @@ fn pawn_pairs_of(
         let from = bb.pop_lsb();
         let band = PAWN_PAIR_BB[from.index()];
         for to in band & bb {
-            out.push(pp_index_oriented(orientation, pb, Color::Black, from, to, Color::Black));
+            out.push(TpIndex::pawn_pair(
+                pp_index_oriented(orientation, pb, Color::Black, from, to, Color::Black)
+                    - PP_INDEX_BASE,
+            ));
         }
     }
 }
@@ -766,8 +853,8 @@ pub fn threat_delta(
     dts: &[DirtyThreat],
     perspective: Color,
     ksq: Square,
-    adds: &mut Vec<u32>,
-    subs: &mut Vec<u32>,
+    adds: &mut Vec<TpIndex>,
+    subs: &mut Vec<TpIndex>,
 ) {
     let t = &*THREATS;
     let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
@@ -785,6 +872,7 @@ pub fn threat_delta(
         if index >= THREAT_DIMENSIONS {
             continue;
         }
+        let index = TpIndex::threat(index);
         if dt.is_add() { adds.push(index) } else { subs.push(index) }
     }
 }
@@ -800,8 +888,8 @@ pub fn pawn_pair_delta(
     dpp: &DirtyPawnPairs,
     perspective: Color,
     ksq: Square,
-    adds: &mut Vec<u32>,
-    subs: &mut Vec<u32>,
+    adds: &mut Vec<TpIndex>,
+    subs: &mut Vec<TpIndex>,
 ) {
     if dpp.is_unchanged() {
         return;
@@ -833,7 +921,7 @@ fn pawn_pairs_touching(
     changed: Bitboard,
     perspective: Color,
     ksq: Square,
-    out: &mut Vec<u32>,
+    out: &mut Vec<TpIndex>,
 ) {
     let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
     let perspective_bit = perspective as usize;
@@ -846,23 +934,15 @@ fn pawn_pairs_touching(
         let band = PAWN_PAIR_BB[from.index()] & (unchanged | bb);
         let color = if black.contains(from) { Color::Black } else { Color::White };
         for to in band & white {
-            out.push(pp_index_oriented(
-                orientation,
-                perspective_bit,
-                color,
-                from,
-                to,
-                Color::White,
+            out.push(TpIndex::pawn_pair(
+                pp_index_oriented(orientation, perspective_bit, color, from, to, Color::White)
+                    - PP_INDEX_BASE,
             ));
         }
         for to in band & black {
-            out.push(pp_index_oriented(
-                orientation,
-                perspective_bit,
-                color,
-                from,
-                to,
-                Color::Black,
+            out.push(TpIndex::pawn_pair(
+                pp_index_oriented(orientation, perspective_bit, color, from, to, Color::Black)
+                    - PP_INDEX_BASE,
             ));
         }
     }
@@ -902,13 +982,13 @@ mod tests {
             "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1",
         ];
 
-        fn full(pos: &Position) -> [Vec<u32>; COLOR_NB] {
+        fn full(pos: &Position) -> [Vec<TpIndex>; COLOR_NB] {
             let mut out = [Vec::new(), Vec::new()];
             threat_active(pos, [true, true], &mut out);
             pawn_pair_active(pos, [true, true], &mut out);
             out
         }
-        fn counts(v: &[u32]) -> HashMap<u32, i32> {
+        fn counts(v: &[TpIndex]) -> HashMap<TpIndex, i32> {
             let mut m = HashMap::new();
             for &f in v {
                 *m.entry(f).or_insert(0) += 1;
@@ -928,8 +1008,8 @@ mod tests {
                 let dpp = child.do_move_recording(m, gives_check, Some(&mut dts));
 
                 let ksq = [child.king_square(Color::White), child.king_square(Color::Black)];
-                let mut adds: [Vec<u32>; COLOR_NB] = [Vec::new(), Vec::new()];
-                let mut subs: [Vec<u32>; COLOR_NB] = [Vec::new(), Vec::new()];
+                let mut adds: [Vec<TpIndex>; COLOR_NB] = [Vec::new(), Vec::new()];
+                let mut subs: [Vec<TpIndex>; COLOR_NB] = [Vec::new(), Vec::new()];
                 for p in Color::ALL {
                     let i = p.index();
                     threat_delta(&dts, p, ksq[i], &mut adds[i], &mut subs[i]);
@@ -985,7 +1065,7 @@ mod tests {
                 for pc in [Piece::W_PAWN, Piece::B_QUEEN, Piece::W_KING, Piece::B_KING] {
                     for p in Color::ALL {
                         let i = halfka_index(p, sq, pc, ksq);
-                        assert!(i < HALFKA_DIMENSIONS as u32, "{i} out of range");
+                        assert!(i.get() < HALFKA_DIMENSIONS as u32, "{i:?} out of range");
                     }
                 }
             }
@@ -1021,12 +1101,12 @@ mod tests {
             pawn_pair_active(&pos, [true, true], &mut w);
             for p in Color::ALL {
                 for &i in &v[p.index()] {
-                    assert!(i < THREAT_DIMENSIONS, "{fen}: threat index {i} out of range");
+                    assert!(i.get() < THREAT_DIMENSIONS, "{fen}: threat index {i:?} out of range");
                 }
                 for &i in &w[p.index()] {
                     assert!(
-                        (PP_INDEX_BASE..PP_INDEX_BASE + PP_DIMENSIONS).contains(&i),
-                        "{fen}: pawn-pair index {i} out of range"
+                        (PP_INDEX_BASE..PP_INDEX_BASE + PP_DIMENSIONS).contains(&i.get()),
+                        "{fen}: pawn-pair index {i:?} out of range"
                     );
                 }
             }
