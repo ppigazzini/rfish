@@ -19,6 +19,7 @@
 //! two instruments over them; the instruments disagree often, and both readings belong in a
 //! report. See `docs/10-tooling-ci.md` for which instrument settles which question.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1455,6 +1456,173 @@ fn split_compressed(rest: &str) -> (&str, Option<&str>) {
         }
         None => (rest, Some(rest)),
     }
+}
+
+/// The counter rows `docs/03-engine-eval.md` publishes, in its own order.
+///
+/// Callgrind's event names, paired with the label the page uses. The page's rule is that a
+/// number it publishes has to come from a COMMAND rather than from a step someone remembers
+/// taking, and this table was the one thing on it still being hand-run: `perf` disables both
+/// simulators, so nothing here was reachable from `cargo xtask`.
+const COUNTER_ROWS: [(&str, &str); 9] = [
+    ("Ir", "instructions"),
+    ("Dr", "data reads"),
+    ("Dw", "data writes"),
+    ("D1mr", "D1 read misses"),
+    ("I1mr", "L1 icache misses"),
+    ("Bc", "conditional branches"),
+    ("Bcm", "conditional mispredicts"),
+    ("Bi", "indirect branches"),
+    ("Bim", "indirect mispredicts"),
+];
+
+/// `cargo xtask counters [--tier T] [--spine]` — the cache and branch table against upstream.
+///
+/// The same pairing discipline `perf` uses, for the same reason: clang + PGO on both sides,
+/// the oracle verified at the pin, node counts required equal, and startup subtracted from
+/// every event by measurement rather than assumed small. The simulators are DETERMINISTIC, so
+/// unlike the paired clock this table is worth reading on a loaded box.
+pub(crate) fn counters(args: &[&str]) -> Result<Outcome, String> {
+    let tier = tier_of(args)?;
+    let spine = has_flag(args, "--spine");
+
+    if !tier.callgrind_safe {
+        return Ok(Outcome::Skipped(format!(
+            "tier {} is AVX-512; callgrind implements none of it and SIGILLs on the first \
+             instruction it does not know. Measure counters at avx2.",
+            tier.name
+        )));
+    }
+    if !have("valgrind") {
+        return Ok(Outcome::Skipped("valgrind is not installed".into()));
+    }
+
+    let suffix = if spine { format!("{}-spine", tier.name) } else { tier.name.to_string() };
+    let ours = workspace_root().join("target/pgo-use").join(&suffix).join("release/stockfish");
+    let theirs = oracle_dir(tier, spine).join("src/stockfish");
+    for (what, p, how) in [("PGO build", &ours, "pgo"), ("oracle", &theirs, "oracle")] {
+        if !p.is_file() {
+            return Ok(Outcome::Skipped(format!(
+                "no {what} at {}; run `cargo xtask {how} --tier {}{}`",
+                p.display(),
+                tier.name,
+                if spine { " --spine" } else { "" }
+            )));
+        }
+    }
+    let their_dir = theirs.parent().map(Path::to_path_buf).unwrap_or_default();
+    verify_oracle(&oracle_dir(tier, spine), tier)?;
+    if !spine {
+        same_net(&ours, &resources_dir(), &theirs, &their_dir)?;
+    }
+
+    println!("tier {} ({} vs ARCH={})", tier.name, tier.rustc, tier.upstream);
+    println!(
+        "\ncounters (cachegrind events, bench {}, startup subtracted, {} axis)",
+        DIFF_BENCH.join(" "),
+        if spine { "SPINE" } else { "NNUE" }
+    );
+
+    let (our_ev, our_nodes) = counter_events(&ours, &resources_dir())?;
+    let (their_ev, their_nodes) = counter_events(&theirs, &their_dir)?;
+    if our_nodes != their_nodes {
+        return Err(format!(
+            "node counts differ (rfish {our_nodes}, upstream {their_nodes}); different trees are \
+             different workloads and every ratio below would be meaningless"
+        ));
+    }
+
+    println!("  {:<24} {:>16} {:>16} {:>8}", "", "rfish", "upstream", "ratio");
+    for (ev, label) in COUNTER_ROWS {
+        let (Some(&a), Some(&b)) = (our_ev.get(ev), their_ev.get(ev)) else {
+            println!("  {label:<24} {:>16}", "absent");
+            continue;
+        };
+        if b == 0 {
+            println!("  {label:<24} {a:>16} {b:>16} {:>8}", "n/a");
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let ratio = a as f64 / b as f64;
+        println!("  {label:<24} {a:>16} {b:>16} {ratio:>8.3}");
+    }
+    println!("\n  over {our_nodes} nodes on both sides");
+    Ok(Outcome::Pass)
+}
+
+/// Every simulated event for one binary, startup subtracted, with the bench's node count.
+fn counter_events(bin: &Path, cwd: &Path) -> Result<(HashMap<String, u64>, u64), String> {
+    let out = std::env::temp_dir().join(format!("rfish-cgd-{}.out", scratch_key(bin)));
+    let mut cmd = Command::new("valgrind");
+    cmd.current_dir(cwd)
+        .args(["--tool=callgrind", "--cache-sim=yes", "--branch-sim=yes"])
+        .arg(format!("--callgrind-out-file={}", out.display()))
+        .arg(bin)
+        .arg("bench")
+        .args(DIFF_BENCH);
+    let bench_out = capture_both(&mut cmd)?;
+    let nodes = node_total(&bench_out)?;
+    let bench = callgrind_events(&out)?;
+    let start = counter_startup(bin, cwd)?;
+
+    let mut net = HashMap::new();
+    for (k, v) in bench {
+        let s = start.get(&k).copied().unwrap_or(0);
+        net.insert(k, v.saturating_sub(s));
+    }
+    Ok((net, nodes))
+}
+
+/// The same events over a `quit`-only run: the net parse, the magic tables, the zero-fill.
+fn counter_startup(bin: &Path, cwd: &Path) -> Result<HashMap<String, u64>, String> {
+    let out = std::env::temp_dir().join(format!("rfish-cgd-quit-{}.out", scratch_key(bin)));
+    let mut child = Command::new("valgrind")
+        .current_dir(cwd)
+        .args(["--tool=callgrind", "--cache-sim=yes", "--branch-sim=yes"])
+        .arg(format!("--callgrind-out-file={}", out.display()))
+        .arg(bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("valgrind: {e}"))?;
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().ok_or("valgrind child has no stdin")?;
+        writeln!(stdin, "quit").map_err(|e| format!("writing quit: {e}"))?;
+    }
+    let status = child.wait().map_err(|e| format!("waiting for valgrind: {e}"))?;
+    if !status.success() {
+        return Err(format!("the startup profile exited with {status}"));
+    }
+    callgrind_events(&out)
+}
+
+/// Zip a profile's `events:` names against its `summary:` counts.
+///
+/// Positional, so the two lines must be read together: the event ORDER is a property of the
+/// run's simulator flags, and reading the summary against a remembered order is how a cache
+/// row silently becomes a branch row.
+fn callgrind_events(path: &Path) -> Result<HashMap<String, u64>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let names = text
+        .lines()
+        .find_map(|l| l.strip_prefix("events:"))
+        .ok_or_else(|| format!("{}: no events line", path.display()))?;
+    let counts = text
+        .lines()
+        .find_map(|l| l.strip_prefix("summary:"))
+        .ok_or_else(|| format!("{}: no summary line", path.display()))?;
+    let mut map = HashMap::new();
+    for (name, count) in names.split_whitespace().zip(counts.split_whitespace()) {
+        let v: u64 =
+            count.parse().map_err(|e| format!("{}: {name} does not parse: {e}", path.display()))?;
+        map.insert(name.to_string(), v);
+    }
+    if map.is_empty() {
+        return Err(format!("{}: events and summary did not zip", path.display()));
+    }
+    Ok(map)
 }
 
 #[cfg(test)]

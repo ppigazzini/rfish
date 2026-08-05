@@ -27,6 +27,7 @@ const EXCUSED: &[(&str, &str)] = &[
     ),
     ("pgo", "a build mode for measurement; the shipped build is what `signature` asserts"),
     ("perf", "a MEASUREMENT, not a gate: it reports a ratio and has no verdict to assert"),
+    ("counters", "the same MEASUREMENT on the cache and branch axes; also no verdict"),
     (
         "perf-budget",
         "LOCAL -- the golden is per-machine (gitignored), because a retired-instruction \

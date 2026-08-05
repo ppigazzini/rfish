@@ -82,6 +82,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "pgo" => perf::pgo(args),
         "oracle" => perf::oracle(args),
         "perf" => perf::perf(args),
+        "counters" => perf::counters(args),
         "perf-budget" => perf::perf_budget(args, false),
         "perf-budget-update" => perf::perf_budget(args, true),
         "upstream-nodes" => perf::upstream_nodes(args),
@@ -156,6 +157,11 @@ cargo xtask <step> — the rfish build driver
                                        tiers: sse41, avx2 (default), avx512, vnni512,
                                        avx512icl; `native` SELECTS one of them rather than
                                        compiling host-specific code
+    counters [--tier T] [--spine]      the cache and branch table against upstream: reads,
+                                       writes, D1 and icache misses, conditional and
+                                       indirect branches and their mispredicts. Simulated,
+                                       so DETERMINISTIC -- unlike the paired clock this one
+                                       is worth reading on a loaded box
     perf-budget [--tier T] [--rounds N]
                                        hold this tier's absolute instruction count to
                                        tools/instr_budget.golden -- the cost regression
