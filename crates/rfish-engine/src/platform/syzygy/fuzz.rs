@@ -56,16 +56,37 @@ const SEEDS: [(&str, &str); 3] = [
     ("KPvK", "8/8/8/4k3/8/8/4P3/K7 w - - 0 1"),
 ];
 
-/// Mutate one table and probe it, returning whether the parse was reached at all.
+/// How far one round got.
+///
+/// Three outcomes, counted apart because a single count cannot gate them. Most rounds die at
+/// the magic number or a length check, which proves those checks work and says nothing about
+/// the decoder — so a floor met entirely by such rounds reads like a clean sweep of a surface
+/// the sweep never entered. Verified by mutation rather than by argument: with `TbTable::read`
+/// returning `None`, the round count is unmoved and the parse count goes to zero, which is the
+/// regression the split exists to catch.
+///
+/// `parsed` and `answered` track each other closely here, because the harness mutates a REAL
+/// table rather than synthesising one from arbitrary bytes: a file coherent enough to parse is
+/// generally coherent enough to answer. `../zfish`, which builds its images from fuzzer bytes,
+/// sees the two rates two orders of magnitude apart. Both floors are kept — they are different
+/// properties, and a 5-man set or a material miss separates them.
+#[derive(Default)]
+struct Reach {
+    /// The mutated bytes cleared every check `parse` makes, so the decoder is reachable.
+    parsed: bool,
+    /// A probe returned a verdict, so the decoder ran the whole way and produced one.
+    answered: bool,
+}
+
+/// Mutate one table, probe it, and report how far the round got.
 ///
 /// A rejected file is a PASS: refusing a corrupt table is the correct answer, and the
-/// property under test is only that the refusal is a refusal rather than a panic.
-fn one_round(rng: &mut Rng, dir: &std::path::Path, source: &std::path::Path) -> bool {
-    let Ok(mut bytes) = std::fs::read(source) else {
-        return false;
-    };
+/// property under test is only that the refusal is a refusal rather than a panic. Which is
+/// exactly why the refusals must be counted separately from the answers — see [`Reach`].
+fn one_round(rng: &mut Rng, dir: &std::path::Path, source: &std::path::Path) -> Option<Reach> {
+    let mut bytes = std::fs::read(source).ok()?;
     if bytes.len() < 16 {
-        return false;
+        return None;
     }
     let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("KQvK").to_string();
     let ext = source.extension().and_then(|s| s.to_str()).unwrap_or("rtbw").to_string();
@@ -85,26 +106,40 @@ fn one_round(rng: &mut Rng, dir: &std::path::Path, source: &std::path::Path) -> 
     }
 
     let target = dir.join(format!("{stem}.{ext}"));
-    if std::fs::write(&target, &bytes).is_err() {
-        return false;
-    }
+    std::fs::write(&target, &bytes).ok()?;
 
     // Through the engine's own entry points, from discovery onwards.
     let registry = TableRegistry::discover(&dir.to_string_lossy());
     let fen = SEEDS.iter().find(|(s, _)| *s == stem).map_or(SEEDS[0].1, |(_, f)| f);
-    let Ok(pos) = Position::from_fen(fen, false) else {
-        return false;
-    };
+    let pos = Position::from_fen(fen, false).ok()?;
     // Both probes: WDL and DTZ read different tables and different decoder paths.
-    let _ = registry.probe_wdl(&pos);
-    let _ = registry.probe_dtz(&pos);
-    let _ = registry.root_probe_wdl(&pos, true);
-    true
+    let answered = registry.probe_wdl(&pos).is_ok()
+        | registry.probe_dtz(&pos).is_ok()
+        | registry.root_probe_wdl(&pos, true).is_some();
+
+    // Ask the registry what the round reached, rather than inferring it from the probes: a
+    // probe reports one `Fail` whether the parse refused the file or the decoder ran and
+    // declined to answer, and those are the two rates that must not be added together. The
+    // probes above have already forced the load, so this reads the cached verdict.
+    let parsed =
+        registry.tables.iter().any(|(wdl, _)| wdl.as_ref().is_some_and(|t| t.loaded().is_some()));
+    Some(Reach { parsed, answered })
 }
 
-/// Mutate and probe for `seconds`, returning how many rounds reached a probe.
+/// What a whole sweep reached, in the three quantities [`Reach`] separates.
+#[derive(Default, Debug)]
+pub struct Sweep {
+    /// Rounds that wrote a mutated table and probed it.
+    pub rounds: u64,
+    /// Of those, rounds whose bytes the parse accepted, so the decoder was reachable.
+    pub parsed: u64,
+    /// Of those, rounds where a probe returned a verdict.
+    pub answered: u64,
+}
+
+/// Mutate and probe for `seconds`, reporting how far the rounds got.
 #[must_use]
-pub fn run_for(seed: u64, seconds: u64, source_dir: &std::path::Path) -> u64 {
+pub fn run_for(seed: u64, seconds: u64, source_dir: &std::path::Path) -> Sweep {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
     let scratch = workspace_root().join("target/fuzz-tb");
     let _ = std::fs::create_dir_all(&scratch);
@@ -119,23 +154,25 @@ pub fn run_for(seed: u64, seconds: u64, source_dir: &std::path::Path) -> u64 {
         }
     }
     if sources.is_empty() {
-        return 0;
+        return Sweep::default();
     }
 
     let mut rng = Rng(seed | 1);
-    let mut rounds = 0u64;
+    let mut sweep = Sweep::default();
     while std::time::Instant::now() < deadline {
         let source = &sources[(rng.next() as usize) % sources.len()];
         // Each round gets its own directory: discovery caches what it found, and a stale
         // registry would probe the previous round's bytes.
-        let dir = scratch.join(format!("r{rounds}"));
+        let dir = scratch.join(format!("r{}", sweep.rounds));
         let _ = std::fs::create_dir_all(&dir);
-        if one_round(&mut rng, &dir, source) {
-            rounds += 1;
+        if let Some(reach) = one_round(&mut rng, &dir, source) {
+            sweep.rounds += 1;
+            sweep.parsed += u64::from(reach.parsed);
+            sweep.answered += u64::from(reach.answered);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
-    rounds
+    sweep
 }
 
 #[cfg(test)]
@@ -170,8 +207,16 @@ mod tests {
             return;
         }
         println!("fuzz tb: seed {seed}, {seconds}s -- replay with RFISH_FUZZ_SEED={seed}");
-        let rounds = run_for(seed, seconds, &dir);
-        println!("fuzz tb: {rounds} mutated tables probed, no panics");
-        assert!(rounds > 0, "the budget expired before a single table was probed");
+        let s = run_for(seed, seconds, &dir);
+        println!(
+            "fuzz tb: {} mutated tables probed, {} parsed, {} answered -- no panics",
+            s.rounds, s.parsed, s.answered
+        );
+        // Three floors, not one. A sweep that only reaches the magic check proves the magic
+        // check works; asserting a single count lets that stand in for a decoder the round
+        // never entered, and the rates here differ by two orders of magnitude.
+        assert!(s.rounds > 0, "the budget expired before a single table was probed");
+        assert!(s.parsed > 0, "every mutated table was refused: the decoder was never entered");
+        assert!(s.answered > 0, "no probe answered: the decoder ran but reached no verdict");
     }
 }
