@@ -303,11 +303,12 @@ mod tests {
     use super::*;
     use crate::board::types::Color;
     use crate::board::types::{File, Rank};
+    use crate::eval::nnue::features::TpIndex;
     use crate::eval::nnue::features::{THREAT_DIMENSIONS, threat_active, threat_index};
 
     /// The threat feature indices active in `pos`, one sorted list per perspective.
-    fn active(pos: &Position) -> [Vec<u32>; 2] {
-        let mut out = [Vec::new(), Vec::new()];
+    fn active(pos: &Position) -> [Vec<TpIndex>; 2] {
+        let mut out: [Vec<TpIndex>; 2] = [Vec::new(), Vec::new()];
         threat_active(pos, [true, true], &mut out);
         for v in &mut out {
             v.sort_unstable();
@@ -393,16 +394,15 @@ mod tests {
                     for d in &delta {
                         let idx =
                             threat_index(p, d.attacker(), d.from(), d.to(), d.attacked(), ksq[i]);
-                        if idx >= THREAT_DIMENSIONS {
+                        if idx.get() >= THREAT_DIMENSIONS {
                             continue;
                         }
                         if d.is_add() {
                             got.push(idx);
                         } else {
-                            let at = got
-                                .iter()
-                                .position(|&x| x == idx)
-                                .unwrap_or_else(|| panic!("{fen}: {s:?} removes an absent {idx}"));
+                            let at = got.iter().position(|&x| x == idx).unwrap_or_else(|| {
+                                panic!("{fen}: {s:?} removes an absent {idx:?}")
+                            });
                             got.remove(at);
                         }
                     }
@@ -466,16 +466,15 @@ mod tests {
                     for d in &delta {
                         let idx =
                             threat_index(p, d.attacker(), d.from(), d.to(), d.attacked(), ksq);
-                        if idx >= THREAT_DIMENSIONS {
+                        if idx.get() >= THREAT_DIMENSIONS {
                             continue;
                         }
                         if d.is_add() {
                             got.push(idx);
                         } else {
-                            let at = got
-                                .iter()
-                                .position(|&x| x == idx)
-                                .unwrap_or_else(|| panic!("{fen}: {m:?} removes an absent {idx}"));
+                            let at = got.iter().position(|&x| x == idx).unwrap_or_else(|| {
+                                panic!("{fen}: {m:?} removes an absent {idx:?}")
+                            });
                             got.remove(at);
                         }
                     }

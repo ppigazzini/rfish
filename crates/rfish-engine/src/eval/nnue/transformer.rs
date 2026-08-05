@@ -38,8 +38,8 @@ use crate::board::types::{COLOR_NB, Color, Key, MAX_PLY, Piece, Ply, SQUARE_NB, 
 
 use super::common::{Aligned, FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
 use super::features::{
-    HALFKA_DIMENSIONS, THREAT_AND_PP_DIMENSIONS, halfka_delta, pawn_pair_active, pawn_pair_delta,
-    threat_active, threat_delta, threat_mirror,
+    HALFKA_DIMENSIONS, KaIndex, THREAT_AND_PP_DIMENSIONS, TpIndex, halfka_delta, pawn_pair_active,
+    pawn_pair_delta, threat_active, threat_delta, threat_mirror,
 };
 
 /// The transformer's weights.
@@ -156,7 +156,7 @@ struct CacheSlot {
     ///
     /// **Unordered on purpose.** The diff is a membership test against a bitmap rather than
     /// a merge walk, so nothing downstream reads an order and sorting would buy nothing.
-    threats: Vec<u32>,
+    threats: Vec<TpIndex>,
 }
 
 impl CacheSlot {
@@ -263,20 +263,20 @@ pub struct EvalScratch {
     ///
     /// Written ONLY on the refresh path. The delta path never builds a set, which is the
     /// whole of what this architecture buys — see [`FeatureTransformer::transform`].
-    next_threats: [Vec<u32>; COLOR_NB],
+    next_threats: [Vec<TpIndex>; COLOR_NB],
     /// The king-piece features one diff or one delta adds and removes, per perspective.
-    adds: [Vec<u32>; COLOR_NB],
-    subs: [Vec<u32>; COLOR_NB],
+    adds: [Vec<KaIndex>; COLOR_NB],
+    subs: [Vec<KaIndex>; COLOR_NB],
     /// A SECOND king-piece pair, because [`FeatureTransformer::hybrid`] holds two board
     /// diffs live at once: one bringing the new king square's cache to this position and one
     /// bringing the old king square's cache to the parent's.
-    adds2: [Vec<u32>; COLOR_NB],
-    subs2: [Vec<u32>; COLOR_NB],
+    adds2: [Vec<KaIndex>; COLOR_NB],
+    subs2: [Vec<KaIndex>; COLOR_NB],
     /// The same for the threat and pawn-pair features, collected SEPARATELY so that both
     /// kinds can be folded in one sweep of the accumulator: they read different weight
     /// tables, so they cannot share a list, but they can share the pass.
-    tp_adds: [Vec<u32>; COLOR_NB],
-    tp_subs: [Vec<u32>; COLOR_NB],
+    tp_adds: [Vec<TpIndex>; COLOR_NB],
+    tp_subs: [Vec<TpIndex>; COLOR_NB],
     /// The transformed features this evaluation produced, reused across evaluations.
     ///
     /// Held here rather than allocated in `Network::evaluate` because that is the per-node
@@ -630,10 +630,10 @@ impl FeatureTransformer {
     /// head is `i32`, and both are associative and commutative under the additions applied
     /// here, so collecting first changes nothing about the value.
     fn collect_diff(
-        old: &[u32],
-        new: &[u32],
-        adds: &mut Vec<u32>,
-        subs: &mut Vec<u32>,
+        old: &[TpIndex],
+        new: &[TpIndex],
+        adds: &mut Vec<TpIndex>,
+        subs: &mut Vec<TpIndex>,
         mark: &mut [u64],
     ) {
         adds.clear();
@@ -641,16 +641,18 @@ impl FeatureTransformer {
 
         // Every index is bounded by the feature space it is drawn from, so the bitmap needs
         // no bounds arithmetic beyond the word split.
-        debug_assert!(old.iter().chain(new).all(|&f| (f as usize) < THREAT_AND_PP_DIMENSIONS));
+        debug_assert!(
+            old.iter().chain(new).all(|&f| (f.get() as usize) < THREAT_AND_PP_DIMENSIONS)
+        );
 
         for &f in old {
-            let (w, b) = (f as usize / 64, 1u64 << (f % 64));
+            let (w, b) = (f.get() as usize / 64, 1u64 << (f.get() % 64));
             mark[w] |= b;
         }
         // A hit means both sets hold it and the accumulator already has it; clearing the bit
         // as it is read leaves exactly the old-only features standing for the pass below.
         for &f in new {
-            let (w, b) = (f as usize / 64, 1u64 << (f % 64));
+            let (w, b) = (f.get() as usize / 64, 1u64 << (f.get() % 64));
             if mark[w] & b == 0 {
                 adds.push(f);
             } else {
@@ -658,7 +660,7 @@ impl FeatureTransformer {
             }
         }
         for &f in old {
-            let (w, b) = (f as usize / 64, 1u64 << (f % 64));
+            let (w, b) = (f.get() as usize / 64, 1u64 << (f.get() % 64));
             if mark[w] & b != 0 {
                 subs.push(f);
                 mark[w] &= !b;
@@ -676,7 +678,13 @@ impl FeatureTransformer {
     /// - the accumulator is swept ONCE rather than twice. Each kind reads its own weight
     ///   table, so the lists cannot merge, but the tile they land in can be held across both;
     /// - the tile stays in registers for the whole of it, which is the reason [`TILE`] exists.
-    fn fold_into(&self, src: &[i16], dst: &mut [i16], ka: (&[u32], &[u32]), tp: (&[u32], &[u32])) {
+    fn fold_into(
+        &self,
+        src: &[i16],
+        dst: &mut [i16],
+        ka: (&[KaIndex], &[KaIndex]),
+        tp: (&[TpIndex], &[TpIndex]),
+    ) {
         // Both weight tables viewed as TILE-wide ROWS, once for the whole call. `base` was
         // `index * L1 + off` and the row was taken with a range slice, so every one of the
         // four inner loops paid a range bounds test and then walked a `zip` iterator: 94.5M
@@ -692,7 +700,7 @@ impl FeatureTransformer {
             let mut tile = src_rows[t];
             let lanes = tile.as_chunks_mut::<LANE>().0;
             for &index in ka.1 {
-                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..KA_LANES {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
@@ -701,19 +709,19 @@ impl FeatureTransformer {
                 }
             }
             for &index in ka.0 {
-                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..KA_LANES {
                     lanes[j] = (Simd::from_array(lanes[j]) + w[j]).to_array();
                 }
             }
             for &index in tp.1 {
-                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &tp_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..TILE {
                     tile[j] = tile[j].wrapping_sub(i16::from(w[j]));
                 }
             }
             for &index in tp.0 {
-                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &tp_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..TILE {
                     tile[j] = tile[j].wrapping_add(i16::from(w[j]));
                 }
@@ -736,8 +744,8 @@ impl FeatureTransformer {
         &self,
         acc: &mut [i16],
         mirror: &mut [i16],
-        ka: (&[u32], &[u32]),
-        tp: (&[u32], &[u32]),
+        ka: (&[KaIndex], &[KaIndex]),
+        tp: (&[TpIndex], &[TpIndex]),
     ) {
         // Both weight tables as TILE-wide ROWS, exactly as [`FeatureTransformer::fold_into`]
         // takes them: `index * ROWS_PER_FEATURE + t` indexes a `[_; TILE]` array, where a
@@ -753,7 +761,7 @@ impl FeatureTransformer {
             let mut tile = *chunk;
             let lanes = tile.as_chunks_mut::<LANE>().0;
             for &index in ka.1 {
-                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..KA_LANES {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
@@ -762,19 +770,19 @@ impl FeatureTransformer {
                 }
             }
             for &index in ka.0 {
-                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..KA_LANES {
                     lanes[j] = (Simd::from_array(lanes[j]) + w[j]).to_array();
                 }
             }
             for &index in tp.1 {
-                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &tp_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..TILE {
                     tile[j] = tile[j].wrapping_sub(i16::from(w[j]));
                 }
             }
             for &index in tp.0 {
-                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &tp_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..TILE {
                     tile[j] = tile[j].wrapping_add(i16::from(w[j]));
                 }
@@ -792,14 +800,14 @@ impl FeatureTransformer {
     /// entries to two different boards before combining them, and neither is a copy from
     /// somewhere else. Same tile shape and same indexed rows as the folds above, with no
     /// source to read and no threat table to touch.
-    fn fold_ka_inplace(&self, acc: &mut [i16], ka: (&[u32], &[u32])) {
+    fn fold_ka_inplace(&self, acc: &mut [i16], ka: (&[KaIndex], &[KaIndex])) {
         const ROWS_PER_FEATURE: usize = L1 / TILE;
         let ka_rows = <[Simd<i16, LANE>]>::as_chunks::<KA_LANES>(&self.weights).0;
         for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
             let mut tile = *chunk;
             let lanes = tile.as_chunks_mut::<LANE>().0;
             for &index in ka.1 {
-                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..KA_LANES {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
@@ -808,7 +816,7 @@ impl FeatureTransformer {
                 }
             }
             for &index in ka.0 {
-                let w = &ka_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..KA_LANES {
                     lanes[j] = (Simd::from_array(lanes[j]) + w[j]).to_array();
                 }
@@ -833,7 +841,7 @@ impl FeatureTransformer {
         parent: &[i16],
         b: &[i16],
         dst: &mut [i16],
-        tp: (&[u32], &[u32]),
+        tp: (&[TpIndex], &[TpIndex]),
     ) {
         const ROWS_PER_FEATURE: usize = L1 / TILE;
         let tp_rows = <[i8]>::as_chunks::<TILE>(&self.threat_and_pp_weights).0;
@@ -847,13 +855,13 @@ impl FeatureTransformer {
                 tile[j] = av[j].wrapping_add(pv[j]).wrapping_sub(bv[j]);
             }
             for &index in tp.1 {
-                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &tp_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..TILE {
                     tile[j] = tile[j].wrapping_sub(i16::from(w[j]));
                 }
             }
             for &index in tp.0 {
-                let w = &tp_rows[index as usize * ROWS_PER_FEATURE + t];
+                let w = &tp_rows[index.get() as usize * ROWS_PER_FEATURE + t];
                 for j in 0..TILE {
                     tile[j] = tile[j].wrapping_add(i16::from(w[j]));
                 }
@@ -869,8 +877,8 @@ impl FeatureTransformer {
     fn fold_psqt(
         &self,
         psqt: &mut [i32; PSQT_BUCKETS],
-        ka: (&[u32], &[u32]),
-        tp: (&[u32], &[u32]),
+        ka: (&[KaIndex], &[KaIndex]),
+        tp: (&[TpIndex], &[TpIndex]),
     ) {
         // The same shape as `fold_into`: both tables viewed as PSQT_BUCKETS-wide rows once,
         // so a feature's row is `weights[index]` rather than a range slice, and the eight
@@ -895,13 +903,26 @@ impl FeatureTransformer {
         let ka_rows = <[i32]>::as_chunks::<PSQT_BUCKETS>(&self.psqt_weights).0;
         let tp_rows = <[i32]>::as_chunks::<PSQT_BUCKETS>(&self.threat_and_pp_psqt_weights).0;
         let mut acc = Simd::<i32, PSQT_BUCKETS>::from_array(*psqt);
-        for (rows, (adds, subs)) in [(ka_rows, ka), (tp_rows, tp)] {
-            for &index in subs {
-                acc -= Simd::from_array(rows[index as usize]);
-            }
-            for &index in adds {
-                acc += Simd::from_array(rows[index as usize]);
-            }
+        // Written out per table rather than looped over `[(ka_rows, ka), (tp_rows, tp)]`.
+        // That loop paired a row table with an index slice at RUNTIME, which only
+        // typechecked while both index spaces were `u32` -- so the shape that made the fold
+        // compact is the same shape that let the two be swapped. A generic body restores the
+        // compactness and ALSO restores the swap, which is why this is written out.
+        //
+        // The order is unchanged and `i32` wrapping addition is associative, so the result
+        // is too. It is not free: avx2 +3.66M, sse41 -8.08M, net -4.4M, and that movement is
+        // the restructure rather than the types -- the newtypes alone measured zero.
+        for &index in ka.1 {
+            acc -= Simd::from_array(ka_rows[index.get() as usize]);
+        }
+        for &index in ka.0 {
+            acc += Simd::from_array(ka_rows[index.get() as usize]);
+        }
+        for &index in tp.1 {
+            acc -= Simd::from_array(tp_rows[index.get() as usize]);
+        }
+        for &index in tp.0 {
+            acc += Simd::from_array(tp_rows[index.get() as usize]);
         }
         *psqt = acc.to_array();
     }
@@ -911,7 +932,11 @@ impl FeatureTransformer {
     /// Deliberately NOT sorted: [`FeatureTransformer::diff_apply`] tests membership rather
     /// than merging, so an order would cost a comparison sort per evaluation and buy
     /// nothing. Upstream sorts nothing here either.
-    fn active_sets(pos: &Position, wanted: [bool; COLOR_NB], threats: &mut [Vec<u32>; COLOR_NB]) {
+    fn active_sets(
+        pos: &Position,
+        wanted: [bool; COLOR_NB],
+        threats: &mut [Vec<TpIndex>; COLOR_NB],
+    ) {
         for (t, w) in threats.iter_mut().zip(wanted) {
             if w {
                 t.clear();
@@ -1263,7 +1288,7 @@ impl FeatureTransformer {
         let (plies, adds, subs) = (&scratch.plies, &mut scratch.adds[i], &mut scratch.subs[i]);
         let _ = plies;
         halfka_delta(&base_board, pos.board(), p, ksq, adds, subs);
-        let old: &[u32] = if seeded { &scratch.cache[i][ksq.index()].threats } else { &[] };
+        let old: &[TpIndex] = if seeded { &scratch.cache[i][ksq.index()].threats } else { &[] };
         Self::collect_diff(
             old,
             &scratch.next_threats[i],
