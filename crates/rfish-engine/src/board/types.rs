@@ -3,7 +3,32 @@
 //! Every type here is a newtype over a fixed-width integer with a named total range.
 //! The width is load-bearing: [`Piece`] packs into `Position::board[64]` and [`Square`]
 //! indexes every attack table, so widening a type without widening its `*_NB` bound
-//! turns a bounds check into a silently wider table.
+//! turns a bounds check into a silently wider table. The `const` block at the foot of this
+//! file asserts every such relationship.
+//!
+//! # One constructor rule, in two tiers
+//!
+//! A constructor here is one of exactly two kinds, and which one it is decides what it does
+//! with an argument outside the range:
+//!
+//! - **Checked construction** — the argument is a quantity the CALLER computed, so it can be
+//!   computed wrong: [`Square::new`], [`Square::make`], [`Color::from_index`],
+//!   [`PieceType::from_index`]. These panic, and the panic means a corrupt board rather than
+//!   bad input.
+//! - **Raw reconstruction** — the argument is an encoding THIS module produced, read back out
+//!   of a packed record: [`Move::from_raw`], [`Piece::from_raw`],
+//!   [`CastlingRights::from_raw`], [`Bound::from_raw`]. Total where every bit pattern is a
+//!   valid encoding, `debug_assert`-ed where it is not.
+//!
+//! **Neither tier MASKS.** A mask under a name that reads lossless turns a corrupt byte from
+//! a transposition entry or a table file into a plausible piece, which is a wrong answer
+//! rather than a detected fault — and every caller of these already narrows the value before
+//! the call, so the mask was buying nothing at either end.
+//!
+//! [`PieceType::from_low3`] is the third shape and not an exception to the rule: it is a
+//! total function over the three bits it names, table-backed so it has no panic arm to
+//! branch on, and it exists because routing `piece_type()` through the partial
+//! [`PieceType::from_index`] cost 11.8M instructions on a bench.
 //!
 //! Golden: `Stockfish/src/types.h`.
 
@@ -226,10 +251,16 @@ impl Piece {
     }
 
     /// Reconstruct from the raw encoding, as read back out of a packed record.
+    ///
+    /// Raw reconstruction, per the rule at the top of this file: `v` must already be a piece
+    /// encoding. `DirtyThreat` masks its nibble out of a `u32` and the Syzygy header reads
+    /// one out of a byte, so both arrive narrowed; masking again here would only convert a
+    /// value that ISN'T a piece encoding into one that looks like one.
     #[inline(always)]
     #[must_use]
     pub const fn from_raw(v: u8) -> Piece {
-        Piece(v & 0xF)
+        debug_assert!((v as usize) < PIECE_NB, "not a piece encoding");
+        Piece(v)
     }
 
     /// The raw `colour << 3 | type` byte, for the packed NNUE records.
@@ -540,10 +571,14 @@ impl CastlingRights {
     }
 
     /// Reconstruct from the raw nibble.
+    ///
+    /// Raw reconstruction: `v` must already be a rights nibble. The one caller draws Zobrist
+    /// keys over `0..16`, so it is one by construction.
     #[inline(always)]
     #[must_use]
     pub const fn from_raw(v: u8) -> CastlingRights {
-        CastlingRights(v & 0xF)
+        debug_assert!(v <= CastlingRights::ANY.0, "not a castling-rights nibble");
+        CastlingRights(v)
     }
 
     /// True when every bit of `other` is present.
@@ -632,6 +667,13 @@ impl Move {
     }
 
     /// Reconstruct from the raw 16-bit encoding, as stored in the transposition table.
+    ///
+    /// Raw reconstruction, and TOTAL: the encoding uses all sixteen bits — two for the type,
+    /// two for the promotion piece and six for each square — so every `u16` names a move.
+    /// That is what a `from_raw` should look like when it can, and it needs no assertion.
+    ///
+    /// Total is not the same as legal. A word out of a corrupt table decodes to some move,
+    /// and the search checks it against the position before playing it.
     #[inline(always)]
     #[must_use]
     pub const fn from_raw(v: u16) -> Move {
@@ -881,9 +923,17 @@ pub enum Bound {
 
 impl Bound {
     /// Reconstruct from the two bits stored in a TT entry.
+    ///
+    /// Raw reconstruction. NOT table-backed, unlike [`PieceType::from_low3`], and the
+    /// difference is the whole reason that one is: this mapping is the IDENTITY — the
+    /// discriminants are 0..=3 and the arms are in that order — so the match compiles to the
+    /// mask alone, and a lookup table would put a load where there is currently no memory
+    /// access at all. `from_low3` is table-backed because 7 maps to `None`, which no mask
+    /// produces.
     #[inline(always)]
     #[must_use]
     pub const fn from_raw(v: u8) -> Bound {
+        debug_assert!(v < 4, "not a two-bit bound");
         match v & 3 {
             0 => Bound::None,
             1 => Bound::Upper,
@@ -1015,6 +1065,36 @@ mod tests {
         assert!(!Move::NONE.is_ok());
         assert!(!Move::NULL.is_ok());
         assert_eq!(format!("{m:?}"), "a8h8q");
+    }
+
+    /// The raw reconstructors used to mask, so a corrupt byte became a plausible value with
+    /// no diagnostic anywhere. Each now refuses one in an unoptimised build. These run under
+    /// the `gate` profile, which has `overflow-checks` and `debug_assertions` on.
+    #[test]
+    #[should_panic(expected = "not a piece encoding")]
+    fn piece_from_raw_refuses_a_non_encoding() {
+        let _ = Piece::from_raw(0x1F);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a castling-rights nibble")]
+    fn castling_from_raw_refuses_a_non_nibble() {
+        let _ = CastlingRights::from_raw(0x10);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a two-bit bound")]
+    fn bound_from_raw_refuses_more_than_two_bits() {
+        let _ = Bound::from_raw(4);
+    }
+
+    /// `Move::from_raw` is the one raw reconstructor that is honestly total: the encoding
+    /// fills all sixteen bits, so it must accept every word rather than assert.
+    #[test]
+    fn move_from_raw_is_total() {
+        for v in 0..=u16::MAX {
+            assert_eq!(Move::from_raw(v).raw(), v);
+        }
     }
 
     #[test]
