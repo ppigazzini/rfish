@@ -1377,8 +1377,168 @@ impl GamePly {
     }
 }
 
-/// A Zobrist hash key.
+/// One Zobrist word: a single table entry, or a partial hash on its way to being one.
+///
+/// The DERIVED keys are the newtypes below. This alias is the raw material they are built
+/// from, and it stays an alias because a Zobrist word has no structure of its own — every one
+/// is as good as every other, which is exactly what makes it safe to XOR them.
 pub type Key = u64;
+
+/// The RAW position key: the board, the side to move, castling and en passant.
+///
+/// What the NNUE accumulator caches against and what the repetition walk compares, because a
+/// repetition is about the BOARD repeating. **Not what the transposition table is keyed by** —
+/// see [`PosKey::for_tt`], which is the one place the halfmove clock is mixed in.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct PosKey(Key);
+
+impl PosKey {
+    /// An empty hash accumulator, before any Zobrist word has been folded in.
+    ///
+    /// **Not a "no position" sentinel.** The NNUE cache uses `Key::MAX` for that, because a
+    /// real position can hash to zero and a slot holding one must not read as empty.
+    pub const ZERO: PosKey = PosKey(0);
+
+    /// Build from an accumulated Zobrist word.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(k: Key) -> PosKey {
+        PosKey(k)
+    }
+
+    /// The word, for a hash-table index or a `Debug` print.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> Key {
+        self.0
+    }
+
+    /// Mix the halfmove clock in past move 14, giving the key the transposition table uses.
+    ///
+    /// **This is the only route from a [`PosKey`] to a [`TtKey`], and that is the point.**
+    /// Two positions identical on the board but reached with different rule50 counts must not
+    /// share a table entry: without the mixing, a search near the draw boundary reads back a
+    /// score proved when there was still plenty of clock and believes a win it can no longer
+    /// force. The two keys were one type, and probing with the unmixed one compiled.
+    #[inline(always)]
+    #[must_use]
+    pub const fn for_tt(self, rule50: i32) -> TtKey {
+        if rule50 < 14 {
+            return TtKey(self.0);
+        }
+        let seed = ((rule50 - 14) / 8) as Key;
+        TtKey(
+            self.0
+                ^ seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407),
+        )
+    }
+}
+
+/// The key the transposition table is indexed and verified by: a [`PosKey`] with the halfmove
+/// clock mixed in past move 14. Built only by [`PosKey::for_tt`].
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct TtKey(Key);
+
+impl TtKey {
+    /// The word, for the cluster index and the stored verification bits.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> Key {
+        self.0
+    }
+}
+
+/// The difference between two position keys: what a MOVE changes about the hash.
+///
+/// The same shape as [`Value`]'s margin and [`Ply`]'s distance — a difference of two points is
+/// a displacement, not a point. The cuckoo table is keyed by one of these, and feeding it a
+/// position key would look up a move that no position reached.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct MoveKey(Key);
+
+impl MoveKey {
+    /// The identity: no move at all, which is what a completed repetition cycle XORs to.
+    pub const NONE: MoveKey = MoveKey(0);
+
+    /// Build from an accumulated Zobrist word.
+    ///
+    /// The cuckoo table's own entries are built this way — `psq(pc, from) ^ psq(pc, to) ^
+    /// side()` is what a reversible move changes about the hash, which is a move key by
+    /// construction rather than a position key that happens to be a difference.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(k: Key) -> MoveKey {
+        MoveKey(k)
+    }
+
+    /// The word, for the cuckoo table's two hash functions.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> Key {
+        self.0
+    }
+}
+
+/// Fold one Zobrist word into a position key: the `do_move` update.
+impl core::ops::BitXor<Key> for PosKey {
+    type Output = PosKey;
+    #[inline(always)]
+    fn bitxor(self, w: Key) -> PosKey {
+        PosKey(self.0 ^ w)
+    }
+}
+
+impl core::ops::BitXorAssign<Key> for PosKey {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, w: Key) {
+        self.0 ^= w;
+    }
+}
+
+/// The difference of two position keys is a MOVE key, never a position key.
+impl core::ops::BitXor<PosKey> for PosKey {
+    type Output = MoveKey;
+    #[inline(always)]
+    fn bitxor(self, other: PosKey) -> MoveKey {
+        MoveKey(self.0 ^ other.0)
+    }
+}
+
+/// Move keys compose, because differences compose.
+impl core::ops::BitXor<MoveKey> for MoveKey {
+    type Output = MoveKey;
+    #[inline(always)]
+    fn bitxor(self, other: MoveKey) -> MoveKey {
+        MoveKey(self.0 ^ other.0)
+    }
+}
+
+impl core::ops::BitXorAssign<MoveKey> for MoveKey {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, other: MoveKey) {
+        self.0 ^= other.0;
+    }
+}
+
+impl core::ops::BitXor<Key> for MoveKey {
+    type Output = MoveKey;
+    #[inline(always)]
+    fn bitxor(self, w: Key) -> MoveKey {
+        MoveKey(self.0 ^ w)
+    }
+}
+
+impl core::ops::BitXorAssign<Key> for MoveKey {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, w: Key) {
+        self.0 ^= w;
+    }
+}
 
 /// Node kinds, as the search's generic parameter.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

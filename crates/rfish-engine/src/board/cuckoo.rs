@@ -20,7 +20,7 @@ use std::sync::LazyLock;
 
 use super::attacks::piece_attacks;
 use super::bitboard::Bitboard;
-use super::types::{Key, Move, Piece, PieceType, SQUARE_NB, Square};
+use super::types::{Move, MoveKey, Piece, PieceType, SQUARE_NB, Square};
 use super::zobrist;
 
 /// Slots in each table. A power of two, so the hash is a mask.
@@ -49,15 +49,15 @@ const PIECES: [Piece; 12] = [
 
 /// The first hash: the low bits of the key.
 #[inline(always)]
-fn h1(key: Key) -> usize {
-    (key & 0x1fff) as usize
+fn h1(key: MoveKey) -> usize {
+    (key.get() & 0x1fff) as usize
 }
 
 /// The second hash: bits 16 upward. Disjoint from [`h1`]'s bits, so a collision under one
 /// is uncorrelated with a collision under the other.
 #[inline(always)]
-fn h2(key: Key) -> usize {
-    ((key >> 16) & 0x1fff) as usize
+fn h2(key: MoveKey) -> usize {
+    ((key.get() >> 16) & 0x1fff) as usize
 }
 
 /// The two parallel tables: a key and the move that produces it.
@@ -65,7 +65,7 @@ fn h2(key: Key) -> usize {
 /// Boxed slices rather than arrays: 64 KiB each is more than belongs in a stack frame on
 /// the way to the heap.
 struct Tables {
-    key: Box<[Key]>,
+    key: Box<[MoveKey]>,
     mv: Box<[Move]>,
 }
 
@@ -76,7 +76,7 @@ struct Tables {
 /// key delta is concerned, so recording both directions would double the table for nothing.
 fn build() -> Tables {
     let mut t = Tables {
-        key: vec![0; SIZE].into_boxed_slice(),
+        key: vec![MoveKey::NONE; SIZE].into_boxed_slice(),
         mv: vec![Move::NONE; SIZE].into_boxed_slice(),
     };
     let mut count = 0usize;
@@ -94,7 +94,8 @@ fn build() -> Tables {
                     continue;
                 }
                 let mut mv = Move::new(s1, s2);
-                let mut key = zobrist::psq(pc, s1) ^ zobrist::psq(pc, s2) ^ zobrist::side();
+                let mut key =
+                    MoveKey::new(zobrist::psq(pc, s1) ^ zobrist::psq(pc, s2) ^ zobrist::side());
                 let mut i = h1(key);
                 loop {
                     core::mem::swap(&mut t.key[i], &mut key);
@@ -125,7 +126,7 @@ static TABLES: LazyLock<Tables> = LazyLock::new(build);
 /// most key deltas correspond to no single reversible move at all.
 #[inline]
 #[must_use]
-pub fn lookup(key: Key) -> Option<Move> {
+pub fn lookup(key: MoveKey) -> Option<Move> {
     let t = &*TABLES;
     let i = h1(key);
     if t.key[i] == key {
@@ -172,8 +173,9 @@ mod tests {
     fn a_known_move_round_trips() {
         let (s1, s2) =
             (Square::make(File::new(1), Rank::new(0)), Square::make(File::new(2), Rank::new(2)));
-        let key =
-            zobrist::psq(Piece::W_KNIGHT, s1) ^ zobrist::psq(Piece::W_KNIGHT, s2) ^ zobrist::side();
+        let key = MoveKey::new(
+            zobrist::psq(Piece::W_KNIGHT, s1) ^ zobrist::psq(Piece::W_KNIGHT, s2) ^ zobrist::side(),
+        );
         let m = lookup(key).expect("b1-c3 is a reversible knight move");
         assert_eq!((m.from(), m.to()), (s1, s2));
     }
