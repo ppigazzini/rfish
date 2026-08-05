@@ -381,11 +381,11 @@ impl TableRegistry {
     pub fn root_probe_wdl(&self, pos: &Position, rule50: bool) -> Option<Vec<RankedRootMove>> {
         const WDL_TO_RANK: [i32; 5] = [-MAX_DTZ, -MAX_DTZ + 101, 0, MAX_DTZ - 101, MAX_DTZ];
         const WDL_TO_VALUE: [Value; 5] = [
-            -VALUE_MATE + MAX_PLY as i32 + 1,
-            VALUE_DRAW - 2,
+            VALUE_MATE.negate().offset(MAX_PLY as i32 + 1),
+            VALUE_DRAW.offset(-2),
             VALUE_DRAW,
-            VALUE_DRAW + 2,
-            VALUE_MATE - MAX_PLY as i32 - 1,
+            VALUE_DRAW.offset(2),
+            VALUE_MATE.offset(-(MAX_PLY as i32) - 1),
         ];
 
         let mut work = pos.clone();

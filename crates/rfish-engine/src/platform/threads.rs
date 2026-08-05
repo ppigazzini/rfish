@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use crate::board::position::Position;
-use crate::board::types::Move;
+use crate::board::types::{Move, VALUE_ZERO};
 use crate::eval::nnue::Network;
 use crate::search::timeman::TimeManagement;
 use crate::search::tt::TranspositionTable;
@@ -238,12 +238,12 @@ fn elect(results: impl Iterator<Item = SearchResult>) -> SearchResult {
         return SearchResult {
             best_move: Move::NONE,
             ponder_move: None,
-            score: 0,
+            score: VALUE_ZERO,
             depth: 0,
             nodes: 0,
         };
     };
-    let min_score = all.iter().map(|r| r.score).min().unwrap_or(0);
+    let min_score = all.iter().map(|r| r.score).min().unwrap_or(VALUE_ZERO);
 
     let mut tally: Vec<(Move, i64)> = Vec::new();
     for r in &all {
@@ -285,6 +285,7 @@ mod tests {
     use super::*;
     use crate::board::movegen::generate_legal;
     use crate::board::position::START_FEN;
+    use crate::board::types::Value;
     use std::time::Instant;
 
     fn opts(multi_pv: usize) -> SearchOptions {
@@ -358,7 +359,7 @@ mod tests {
     /// The vote must never invent a move: it can only choose among what the threads found.
     #[test]
     fn the_vote_chooses_among_the_candidates_and_prefers_agreement() {
-        let mk = |m: u16, score: i32, depth: i32| SearchResult {
+        let mk = |m: u16, score: Value, depth: i32| SearchResult {
             best_move: Move::from_raw(m),
             ponder_move: None,
             score,
@@ -367,15 +368,21 @@ mod tests {
         };
         // Two threads agree on move 20 at a modest score; one prefers 30 slightly higher.
         // Agreement plus depth carries it.
-        let winner = elect([mk(20, 10, 12), mk(30, 12, 12), mk(20, 10, 12)].into_iter());
+        let winner = elect(
+            [mk(20, Value::new(10), 12), mk(30, Value::new(12), 12), mk(20, Value::new(10), 12)]
+                .into_iter(),
+        );
         assert_eq!(winner.best_move, Move::from_raw(20));
 
         // A single deep, decisive thread beats two shallow dissenters.
-        let winner = elect([mk(40, 900, 20), mk(50, 0, 3), mk(60, 0, 3)].into_iter());
+        let winner = elect(
+            [mk(40, Value::new(900), 20), mk(50, Value::new(0), 3), mk(60, Value::new(0), 3)]
+                .into_iter(),
+        );
         assert_eq!(winner.best_move, Move::from_raw(40));
 
         // One candidate: the vote is the identity.
-        assert_eq!(elect([mk(7, 5, 9)].into_iter()).best_move, Move::from_raw(7));
+        assert_eq!(elect([mk(7, Value::new(5), 9)].into_iter()).best_move, Move::from_raw(7));
         // No candidate: no move, rather than a panic.
         assert!(elect(std::iter::empty()).best_move.is_none());
     }

@@ -19,7 +19,7 @@
 use crate::board::movegen::{GenType, MoveSink, generate_into};
 use crate::board::position::Position;
 use crate::board::types::{
-    File, MAX_MOVES, Move, MoveType, Piece, PieceType, Ply, Square, Value, piece_value,
+    File, MAX_MOVES, Move, MoveType, Piece, PieceType, Ply, Square, VALUE_ZERO, Value, piece_value,
 };
 
 use super::history::{ContKey, Histories, PawnHistory, PawnRow};
@@ -272,7 +272,7 @@ impl MovePicker {
         MovePicker {
             continuations,
             tt_move: if usable { tt_move } else { Move::NONE },
-            threshold: 0,
+            threshold: VALUE_ZERO,
             stage,
             depth,
             ply,
@@ -398,7 +398,7 @@ impl MovePicker {
                             self.cur += 1;
                             continue;
                         }
-                        if pos.see_ge(sm.mv, -sm.score / 18) {
+                        if pos.see_ge(sm.mv, Value::new(-sm.score / 18)) {
                             self.cur += 1;
                             return sm.mv;
                         }
@@ -520,7 +520,8 @@ impl MovePicker {
             // destination holds. Upstream scores it as a zero-value victim, and so does
             // this: correcting it to a pawn would be an improvement, and improvements move
             // the node count.
-            sm.score = h.captures.get(pc, to, captured.piece_type()) + 7 * piece_value(captured);
+            sm.score =
+                h.captures.get(pc, to, captured.piece_type()) + 7 * piece_value(captured).get();
         }
     }
 
@@ -570,13 +571,13 @@ impl MovePicker {
 
             // A quiet move that gives check is worth trying early: it is forcing, so the
             // subtree under it is small. Only when it does not simply hang the piece.
-            if pos.check_squares(pt).contains(to) && pos.see_ge(mv, -75) {
+            if pos.check_squares(pt).contains(to) && pos.see_ge(mv, Value::new(-75)) {
                 score += 16384;
             }
 
             let lesser = threat_by_lesser[pt.index()];
             let v = 20 * (i32::from(lesser.contains(from)) - i32::from(lesser.contains(to)));
-            score += piece_value(Piece::new(us, pt)) * v;
+            score += piece_value(Piece::new(us, pt)).get() * v;
 
             if let Some(row) = low_ply {
                 score += 8 * i32::from(row[mv.raw() as usize]) / (1 + self.ply.get());
@@ -597,7 +598,7 @@ impl MovePicker {
             if pos.is_capture_stage(sm.mv) {
                 // Captures come first among evasions, ordered by what they win. The large
                 // offset keeps every capture above every quiet evasion.
-                sm.score = piece_value(pos.piece_on(to)) + (1 << 28);
+                sm.score = piece_value(pos.piece_on(to)).get() + (1 << 28);
             } else {
                 sm.score = i32::from(main_row[sm.mv.raw() as usize])
                     + i32::from(cont0[pc.index()][to.index()]);
@@ -759,7 +760,7 @@ mod tests {
     fn probcut_yields_only_captures_above_the_threshold() {
         let h = Histories::default();
         let pos = Position::from_fen("4k3/8/8/3q4/4P3/8/8/R3K3 w - - 0 1", false).expect("valid");
-        let mut mp = MovePicker::new_probcut(&pos, Move::NONE, 0);
+        let mut mp = MovePicker::new_probcut(&pos, Move::NONE, VALUE_ZERO);
         let mut buf = MoveBuf::new();
         loop {
             let m = mp.next_move(&pos, &h, &mut buf);
@@ -767,7 +768,7 @@ mod tests {
                 break;
             }
             assert!(pos.is_capture_stage(m));
-            assert!(pos.see_ge(m, 0));
+            assert!(pos.see_ge(m, VALUE_ZERO));
         }
     }
 

@@ -83,7 +83,7 @@ impl Skill {
             min_score = min_score.min(rm.score);
         }
 
-        let delta = i64::from((top_score - min_score).min(PAWN_VALUE));
+        let delta = i64::from((top_score - min_score).min(PAWN_VALUE.get()));
         let weakness = 120.0 - 2.0 * self.level;
         let mut max_score = -i64::from(VALUE_INFINITE);
 
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn the_pick_stays_within_the_multi_pv_window() {
-        let moves = root_moves(&[100, 90, 80, -900]);
+        let moves = root_moves(&[100, 90, 80, -900].map(crate::board::types::Value::new));
         let mut rng = Prng::new(0xDEAD_BEEF);
         let mut skill = Skill::new(0, None);
         for _ in 0..200 {
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn a_strong_level_almost_always_picks_the_best_move() {
-        let moves = root_moves(&[100, 40, 20]);
+        let moves = root_moves(&[100, 40, 20].map(crate::board::types::Value::new));
         let mut rng = Prng::new(12345);
         let mut strong = Skill::new(19, None);
         let mut weak = Skill::new(0, None);

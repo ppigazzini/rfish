@@ -95,7 +95,7 @@ fn interpolate(x: f64, x0: f64, x1: f64, y0: f64, y1: f64) -> f64 {
 /// is one centipawn wide and derived from the node count, so it is deterministic.
 #[inline]
 fn value_draw(nodes: u64) -> Value {
-    VALUE_DRAW - 1 + (nodes & 0x2) as Value
+    VALUE_DRAW - 1 + (nodes & 0x2) as i32
 }
 
 /// The correction-history bonus a multi-cut records (upstream `c5aef2bf1`'s predecessor).
@@ -323,11 +323,11 @@ impl SearchWorker {
             published_nodes: 0,
             published_tb_hits: 0,
             thread_count: 1,
-            optimism: [0; 2],
+            optimism: [VALUE_ZERO; 2],
             previous_time_reduction: 0.85,
             best_previous_score: VALUE_INFINITE,
             best_previous_average_score: VALUE_INFINITE,
-            iter_value: [0; 4],
+            iter_value: [VALUE_ZERO; 4],
             network: None,
             scratch: Scratch::default(),
             tablebases: None,
@@ -780,7 +780,7 @@ impl SearchWorker {
         self.nmp_min_ply = Ply::ROOT;
         self.best_move_changes = 0.0;
         self.calls_cnt = 0;
-        self.optimism = [0; 2];
+        self.optimism = [VALUE_ZERO; 2];
 
         // Build the root move list, honouring `searchmoves` when the caller gave one.
         //
@@ -1010,7 +1010,7 @@ impl SearchWorker {
                 // that score has been swinging.
                 let mut delta = 5
                     + (self.id % 8) as i32
-                    + self.root_moves[pv_idx].mean_squared_score.abs() / 10193;
+                    + self.root_moves[pv_idx].mean_squared_score.abs().get() / 10193;
                 let avg = self.root_moves[pv_idx].average_score;
                 let mut alpha = (avg - delta).max(-VALUE_INFINITE);
                 let mut beta = (avg + delta).min(VALUE_INFINITE);
@@ -1018,7 +1018,7 @@ impl SearchWorker {
                 // The evaluation is nudged toward the side that is already doing well, so
                 // a won position is evaluated by a network that expects to win it.
                 let us = self.pos.side_to_move();
-                self.optimism[us.index()] = 114 * avg / (avg.abs() + 85);
+                self.optimism[us.index()] = 114 * avg / (avg.abs().get() + 85);
                 self.optimism[(!us).index()] = -self.optimism[us.index()];
 
                 let mut failed_high_cnt = 0i32;
@@ -1505,7 +1505,7 @@ impl SearchWorker {
         }
         if prior_reduction >= 2
             && depth >= 2
-            && self.stack[si].static_eval + self.stack[si - 1].static_eval > 166
+            && self.stack[si].static_eval.get() + self.stack[si - 1].static_eval.get() > 166
         {
             depth -= 1;
         }
@@ -1609,8 +1609,9 @@ impl SearchWorker {
                 && !self.stack[si - 1].in_check
                 && !prior_capture
             {
-                let eval_diff = (-(self.stack[si - 1].static_eval + self.stack[si].static_eval))
-                    .clamp(-189, 194)
+                let eval_diff = (-(self.stack[si - 1].static_eval.get()
+                    + self.stack[si].static_eval.get()))
+                .clamp(-189, 194)
                     + 60;
                 let prev_move = self.stack[si - 1].current_move;
                 self.histories.main.update(!us, prev_move.raw(), eval_diff * 11);
@@ -1652,7 +1653,7 @@ impl SearchWorker {
                 if eval - futility_margin >= beta {
                     // Return a blend rather than the raw evaluation: the node was never
                     // searched, so a value that far above beta would be over-claiming.
-                    return (661 * beta + 363 * eval) / 1024;
+                    return Value::new((661 * beta.get() + 363 * eval.get()) / 1024);
                 }
             }
 
@@ -1709,7 +1710,7 @@ impl SearchWorker {
                 let mut mp = MovePicker::new_probcut(
                     &self.pos,
                     tt_move,
-                    prob_cut_beta - self.stack[si].static_eval,
+                    Value::new(prob_cut_beta - self.stack[si].static_eval),
                 );
                 let prob_cut_depth = depth - if improving { 5 } else { 3 };
 
@@ -1846,7 +1847,7 @@ impl SearchWorker {
                         let futility_value = self.stack[si].static_eval
                             + 234
                             + 247 * lmr_depth
-                            + piece_value(captured_piece)
+                            + piece_value(captured_piece).get()
                             + 134 * capt_hist / 1024;
                         if futility_value <= alpha {
                             continue;
@@ -1858,7 +1859,7 @@ impl SearchWorker {
                     let margin = 177 * depth + capt_hist * 34 / 1024;
                     if (alpha >= VALUE_DRAW
                         || self.pos.non_pawn_material(us) != piece_value(moved_piece))
-                        && !self.pos.see_ge(mv, -margin)
+                        && !self.pos.see_ge(mv, Value::new(-margin))
                     {
                         continue;
                     }
@@ -1900,7 +1901,7 @@ impl SearchWorker {
 
                     lmr_depth = lmr_depth.max(0);
 
-                    if !self.pos.see_ge(mv, -23 * lmr_depth * lmr_depth) {
+                    if !self.pos.see_ge(mv, Value::new(-23 * lmr_depth * lmr_depth)) {
                         continue;
                     }
                 }
@@ -2017,7 +2018,7 @@ impl SearchWorker {
 
             self.stack[si].stat_score = if capture {
                 let captured = self.pos.captured_piece();
-                873 * piece_value(captured) / 128
+                873 * piece_value(captured).get() / 128
                     + self.histories.captures.get(moved_piece, mv.to(), captured.piece_type())
             } else {
                 (2252 * self.histories.main.get(us, mv.raw())
@@ -2181,7 +2182,7 @@ impl SearchWorker {
         // A fail-high value is pulled back toward beta in proportion to how shallow the
         // node was: a shallow search that overshot is claiming more than it proved.
         if best_value >= beta && !is_decisive(best_value) && !is_decisive(alpha) {
-            best_value = (best_value * depth + beta) / (depth + 1);
+            best_value = Value::new((best_value.get() * depth + beta.get()) / (depth + 1));
         }
 
         if move_count == 0 {
@@ -2343,20 +2344,20 @@ impl SearchWorker {
             self.root_moves[idx].average_score = value;
         } else {
             let avg = self.root_moves[idx].average_score;
-            let sum = (value as i64 as u64)
+            let sum = (value.get() as i64 as u64)
                 .wrapping_mul(w)
-                .wrapping_add((avg as i64 as u64).wrapping_mul(SCALE - w));
-            self.root_moves[idx].average_score = (sum / SCALE) as u32 as i32;
+                .wrapping_add((avg.get() as i64 as u64).wrapping_mul(SCALE - w));
+            self.root_moves[idx].average_score = Value::new((sum / SCALE) as u32 as i32);
         }
 
         if self.root_moves[idx].mean_squared_score == MEAN_SQUARED_SENTINEL {
-            self.root_moves[idx].mean_squared_score = v2 as u32 as i32;
+            self.root_moves[idx].mean_squared_score = Value::new(v2 as u32 as i32);
         } else {
             let mss = self.root_moves[idx].mean_squared_score;
             let sum = (v2 as u64)
                 .wrapping_mul(w_mss)
-                .wrapping_add((mss as i64 as u64).wrapping_mul(SCALE - w_mss));
-            self.root_moves[idx].mean_squared_score = (sum / SCALE) as u32 as i32;
+                .wrapping_add((mss.get() as i64 as u64).wrapping_mul(SCALE - w_mss));
+            self.root_moves[idx].mean_squared_score = Value::new((sum / SCALE) as u32 as i32);
         }
 
         if move_count == 1 || value > alpha {
@@ -2505,7 +2506,7 @@ impl SearchWorker {
                 if !is_decisive(best_value) {
                     // Blended toward beta rather than returned raw: nothing below this node
                     // was searched, so the full margin was never proved.
-                    best_value = (441 * best_value + 583 * beta) / 1024;
+                    best_value = Value::new((441 * best_value.get() + 583 * beta.get()) / 1024);
                 }
                 if !tt_hit {
                     tt.store(
@@ -2575,13 +2576,14 @@ impl SearchWorker {
                         continue;
                     }
 
-                    let futility_value = futility_base + piece_value(self.pos.piece_on(mv.to()));
+                    let futility_value =
+                        futility_base + piece_value(self.pos.piece_on(mv.to())).get();
                     if futility_value <= alpha {
                         best_value = best_value.max(futility_value);
                         continue;
                     }
 
-                    if !self.pos.see_ge(mv, alpha - futility_base) {
+                    if !self.pos.see_ge(mv, Value::new(alpha - futility_base)) {
                         best_value = best_value.max(alpha.min(futility_base));
                         continue;
                     }
@@ -2591,7 +2593,7 @@ impl SearchWorker {
                     continue;
                 }
 
-                if !self.pos.see_ge(mv, -74) {
+                if !self.pos.see_ge(mv, Value::new(-74)) {
                     continue;
                 }
             }
@@ -2652,7 +2654,7 @@ impl SearchWorker {
         }
 
         if !is_decisive(best_value) && best_value > beta {
-            best_value = (462 * best_value + 562 * beta) / 1024;
+            best_value = Value::new((462 * best_value.get() + 562 * beta.get()) / 1024);
         }
 
         tt.store(
@@ -3227,19 +3229,22 @@ mod tests {
         // Both ends of the clamp. A quarter of CORRECTION_LIMIT is the cap upstream chose,
         // and /4 read as /2 would let a single multi-cut move the table twice as far.
         let cap = CORRECTION_LIMIT / 4;
-        assert_eq!(multicut_correction_bonus(30_000, 0, 64), cap);
-        assert_eq!(multicut_correction_bonus(0, 30_000, 64), -cap);
+        assert_eq!(multicut_correction_bonus(Value::new(30_000), VALUE_ZERO, 64), cap);
+        assert_eq!(multicut_correction_bonus(VALUE_ZERO, Value::new(30_000), 64), -cap);
     }
 
     #[test]
     fn the_multicut_correction_bonus_scales_with_the_singular_depth() {
         // The excess is measured from the static evaluation, and the depth it is weighted by
         // is the SINGULAR depth. Below the clamp the formula is exact, so pin it there.
-        assert_eq!(multicut_correction_bonus(100, 0, 1), 100 * 177 / 1024);
-        assert_eq!(multicut_correction_bonus(100, 0, 2), 200 * 177 / 1024);
+        assert_eq!(multicut_correction_bonus(Value::new(100), Value::new(0), 1), 100 * 177 / 1024);
+        assert_eq!(multicut_correction_bonus(Value::new(100), Value::new(0), 2), 200 * 177 / 1024);
         // Equal evaluation and value is no evidence at all.
-        assert_eq!(multicut_correction_bonus(50, 50, 8), 0);
+        assert_eq!(multicut_correction_bonus(Value::new(50), Value::new(50), 8), 0);
         // 177/1024 and not 177/1000: the shift is a power of two.
-        assert_ne!(multicut_correction_bonus(1000, 0, 1), 1000 * 177 / 1000);
+        assert_ne!(
+            multicut_correction_bonus(Value::new(1000), Value::new(0), 1),
+            1000 * 177 / 1000
+        );
     }
 }

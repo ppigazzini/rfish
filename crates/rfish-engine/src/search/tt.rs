@@ -288,8 +288,8 @@ impl TranspositionTable {
                 cur_gen | ((bound as u8) << BOUND_SHIFT) | (u8::from(is_pv) << PV_SHIFT);
             let packed = u64::from(probe.key16)
                 | (packed_move << 16)
-                | (u64::from(value as i16 as u16) << 32)
-                | (u64::from(eval as i16 as u16) << 48);
+                | (u64::from(value.get() as i16 as u16) << 32)
+                | (u64::from(eval.get() as i16 as u16) << 48);
             c.main[probe.slot].store(packed, Ordering::Relaxed);
             c.meta.store(pack_meta(meta, probe.slot, depth8, gen_bound), Ordering::Relaxed);
             return;
@@ -302,7 +302,7 @@ impl TranspositionTable {
         if i32::from(old_depth8) + DEPTH_NONE >= 5
             && Bound::from_raw((old_gen >> BOUND_SHIFT) & 3) != Bound::Exact
         {
-            let v16 = i32::from((main >> 32) as u16 as i16);
+            let v16 = Value::new(i32::from((main >> 32) as u16 as i16));
             if v16.abs() < crate::board::types::VALUE_INFINITE
                 && crate::board::types::is_decisive(v16)
             {
@@ -383,8 +383,8 @@ fn pack_meta(meta: u64, slot: usize, depth8: u8, gen_bound: u8) -> u64 {
 fn decode(main: u64, depth8: u8, gen_bound: u8) -> TTData {
     TTData {
         mv: Move::from_raw((main >> 16) as u16),
-        value: i32::from((main >> 32) as u16 as i16),
-        eval: i32::from((main >> 48) as u16 as i16),
+        value: Value::new(i32::from((main >> 32) as u16 as i16)),
+        eval: Value::new(i32::from((main >> 48) as u16 as i16)),
         depth: DEPTH_NONE + i32::from(depth8),
         bound: Bound::from_raw((gen_bound >> BOUND_SHIFT) & 3),
         is_pv: gen_bound & (1 << PV_SHIFT) != 0,
@@ -440,10 +440,10 @@ pub fn value_from_tt(v: Value, ply: Ply, rule50: i32) -> Value {
         return v - ply.get();
     }
     if is_loss(v) {
-        if is_mated(v) && VALUE_MATE + v > 100 - rule50 {
+        if is_mated(v) && VALUE_MATE.get() + v.get() > 100 - rule50 {
             return VALUE_TB_LOSS_IN_MAX_PLY + 1;
         }
-        if VALUE_TB + v > 100 - rule50 {
+        if VALUE_TB.get() + v.get() > 100 - rule50 {
             return VALUE_TB_LOSS_IN_MAX_PLY + 1;
         }
         return v + ply.get();
@@ -454,6 +454,7 @@ pub fn value_from_tt(v: Value, ply: Ply, rule50: i32) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::types::VALUE_ZERO;
     use crate::board::types::{Square, VALUE_MATE};
 
     #[test]
@@ -472,7 +473,7 @@ mod tests {
         let mv = Move::new(Square::A1, Square::H8);
         let p = tt.probe(key);
         assert!(!p.hit);
-        tt.store(p, mv, 123, -45, 7, Bound::Exact, true);
+        tt.store(p, mv, Value::new(123), Value::new(-45), 7, Bound::Exact, true);
 
         let q = tt.probe(key);
         assert!(q.hit);
@@ -492,7 +493,15 @@ mod tests {
         let base = 0xDEAD_BEEF_0000_0000u64;
         for i in 0..3u64 {
             let p = tt.probe(base | i);
-            tt.store(p, Move::from_raw(100 + i as u16), i as i32, 0, i as i32, Bound::Lower, false);
+            tt.store(
+                p,
+                Move::from_raw(100 + i as u16),
+                Value::new(i as i32),
+                VALUE_ZERO,
+                i as i32,
+                Bound::Lower,
+                false,
+            );
         }
         for i in 0..3u64 {
             let q = tt.probe(base | i);
@@ -507,9 +516,9 @@ mod tests {
         let tt = TranspositionTable::new(1);
         let key = 42;
         let mv = Move::new(Square::A1, Square::H1);
-        tt.store(tt.probe(key), mv, 10, 0, 5, Bound::Lower, false);
+        tt.store(tt.probe(key), mv, Value::new(10), VALUE_ZERO, 5, Bound::Lower, false);
         // A deeper search with no best move must keep the old one for ordering.
-        tt.store(tt.probe(key), Move::NONE, 20, 0, 9, Bound::Upper, false);
+        tt.store(tt.probe(key), Move::NONE, Value::new(20), VALUE_ZERO, 9, Bound::Upper, false);
         let q = tt.probe(key);
         assert!(q.hit);
         assert_eq!(q.data.mv, mv);
@@ -524,14 +533,22 @@ mod tests {
             let mated = -VALUE_MATE + 10;
             assert_eq!(value_from_tt(value_to_tt(mated, ply), ply, 0), mated);
             // An ordinary score is untouched.
-            assert_eq!(value_from_tt(value_to_tt(37, ply), ply, 0), 37);
+            assert_eq!(value_from_tt(value_to_tt(Value::new(37), ply), ply, 0), Value::new(37));
         }
     }
 
     #[test]
     fn clear_forgets_everything() {
         let tt = TranspositionTable::new(1);
-        tt.store(tt.probe(7), Move::from_raw(9), 1, 1, 1, Bound::Exact, false);
+        tt.store(
+            tt.probe(7),
+            Move::from_raw(9),
+            Value::new(1),
+            Value::new(1),
+            1,
+            Bound::Exact,
+            false,
+        );
         assert!(tt.probe(7).hit);
         tt.clear();
         assert!(!tt.probe(7).hit);
@@ -553,8 +570,8 @@ mod tests {
                         tt.store(
                             p,
                             Move::from_raw(i as u16 | 1),
-                            i as i32,
-                            0,
+                            Value::new(i as i32),
+                            VALUE_ZERO,
                             3,
                             Bound::Lower,
                             false,

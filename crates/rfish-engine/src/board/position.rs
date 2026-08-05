@@ -30,7 +30,7 @@ use super::bitboard::{
 use super::threats::{self, DirtyPawnPairs, DirtyThreat};
 use super::types::{
     COLOR_NB, CastlingRights, Color, Direction, File, GamePly, Key, Move, MoveType, PIECE_NB,
-    PIECE_TYPE_NB, Piece, PieceType, Ply, Rank, SQUARE_NB, Square, SquareOrNone, Value,
+    PIECE_TYPE_NB, Piece, PieceType, Ply, Rank, SQUARE_NB, Square, SquareOrNone, VALUE_ZERO, Value,
     piece_value,
 };
 use super::zobrist;
@@ -107,7 +107,7 @@ impl StateInfo {
             pawn_key: 0,
             minor_piece_key: 0,
             non_pawn_key: [0; COLOR_NB],
-            non_pawn_material: [0; COLOR_NB],
+            non_pawn_material: [VALUE_ZERO; COLOR_NB],
             rule50: 0,
             plies_from_null: 0,
             ep_square: SquareOrNone::NONE,
@@ -499,7 +499,7 @@ impl Position {
     #[inline(always)]
     #[must_use]
     pub fn non_pawn_material_total(&self) -> Value {
-        self.st().non_pawn_material[0] + self.st().non_pawn_material[1]
+        Value::new(self.st().non_pawn_material[0].get() + self.st().non_pawn_material[1].get())
     }
 
     /// True when `cr` is still available.
@@ -973,7 +973,7 @@ impl Position {
         let mut minor_key: Key = 0;
         let mut non_pawn_key = [0 as Key; COLOR_NB];
         let mut material_key: Key = 0;
-        let mut non_pawn_material = [0 as Value; COLOR_NB];
+        let mut non_pawn_material = [VALUE_ZERO; COLOR_NB];
 
         for sq in self.occupied() {
             let pc = self.piece_on(sq);
@@ -985,7 +985,7 @@ impl Position {
             } else {
                 non_pawn_key[c.index()] ^= zobrist::psq(pc, sq);
                 if pt != PieceType::King {
-                    non_pawn_material[c.index()] += piece_value(pc);
+                    non_pawn_material[c.index()] += piece_value(pc).get();
                 }
                 if matches!(pt, PieceType::Knight | PieceType::Bishop) {
                     minor_key ^= zobrist::psq(pc, sq);
@@ -1519,7 +1519,7 @@ impl Position {
                     self.st.pawn_key ^= zobrist::psq(captured, capsq);
                 } else {
                     self.st.non_pawn_key[them.index()] ^= zobrist::psq(captured, capsq);
-                    self.st.non_pawn_material[them.index()] -= piece_value(captured);
+                    self.st.non_pawn_material[them.index()] -= piece_value(captured).get();
                     if matches!(captured.piece_type(), PieceType::Knight | PieceType::Bishop) {
                         self.st.minor_piece_key ^= zobrist::psq(captured, capsq);
                     }
@@ -1574,7 +1574,7 @@ impl Position {
                     key ^= zobrist::psq(pc, to) ^ zobrist::psq(promo, to);
                     self.st.pawn_key ^= zobrist::psq(pc, to);
                     self.st.non_pawn_key[us.index()] ^= zobrist::psq(promo, to);
-                    self.st.non_pawn_material[us.index()] += piece_value(promo);
+                    self.st.non_pawn_material[us.index()] += piece_value(promo).get();
                     if matches!(m.promotion_type(), PieceType::Knight | PieceType::Bishop) {
                         self.st.minor_piece_key ^= zobrist::psq(promo, to);
                     }
@@ -1874,16 +1874,19 @@ impl Position {
         // The special move types are given upstream's fixed answers rather than being
         // replayed: their material effect is not a simple exchange on one square.
         if m.move_type() != MoveType::Normal {
-            return threshold <= 0;
+            return threshold <= VALUE_ZERO;
         }
 
         let from = m.from();
         let to = m.to();
+        // `swap` is a running MARGIN against `threshold`, not a score: it is the material
+        // the side to move is ahead by if the exchange stops here. `Value - Value` is an `i32`
+        // for exactly this reason.
         let mut swap = piece_value(self.piece_on(to)) - threshold;
         if swap < 0 {
             return false;
         }
-        swap = piece_value(self.piece_on(from)) - swap;
+        swap = piece_value(self.piece_on(from)).get() - swap;
         if swap <= 0 {
             return true;
         }
@@ -1925,7 +1928,7 @@ impl Position {
             // load-bearing: cheapest attacker first, king last.
             let bb = stm_attackers & self.pieces(PieceType::Pawn);
             if bb.any() {
-                swap = piece_value(Piece::new(Color::White, PieceType::Pawn)) - swap;
+                swap = piece_value(Piece::new(Color::White, PieceType::Pawn)).get() - swap;
                 if swap < i32::from(result) {
                     return result;
                 }
@@ -1936,7 +1939,7 @@ impl Position {
             }
             let bb = stm_attackers & self.pieces(PieceType::Knight);
             if bb.any() {
-                swap = piece_value(Piece::new(Color::White, PieceType::Knight)) - swap;
+                swap = piece_value(Piece::new(Color::White, PieceType::Knight)).get() - swap;
                 if swap < i32::from(result) {
                     return result;
                 }
@@ -1946,7 +1949,7 @@ impl Position {
             }
             let bb = stm_attackers & self.pieces(PieceType::Bishop);
             if bb.any() {
-                swap = piece_value(Piece::new(Color::White, PieceType::Bishop)) - swap;
+                swap = piece_value(Piece::new(Color::White, PieceType::Bishop)).get() - swap;
                 if swap < i32::from(result) {
                     return result;
                 }
@@ -1957,7 +1960,7 @@ impl Position {
             }
             let bb = stm_attackers & self.pieces(PieceType::Rook);
             if bb.any() {
-                swap = piece_value(Piece::new(Color::White, PieceType::Rook)) - swap;
+                swap = piece_value(Piece::new(Color::White, PieceType::Rook)).get() - swap;
                 if swap < i32::from(result) {
                     return result;
                 }
@@ -1968,7 +1971,7 @@ impl Position {
             }
             let bb = stm_attackers & self.pieces(PieceType::Queen);
             if bb.any() {
-                swap = piece_value(Piece::new(Color::White, PieceType::Queen)) - swap;
+                swap = piece_value(Piece::new(Color::White, PieceType::Queen)).get() - swap;
                 if swap < i32::from(result) {
                     return result;
                 }
@@ -2294,11 +2297,11 @@ mod tests {
             .into_iter()
             .find(|m| format!("{m:?}") == "e4d5")
             .expect("exd5 is legal");
-        assert!(pos.see_ge(m, 0));
+        assert!(pos.see_ge(m, VALUE_ZERO));
         assert!(pos.see_ge(m, QUEEN_VALUE_MINUS_ONE));
     }
 
-    const QUEEN_VALUE_MINUS_ONE: Value = 2537;
+    const QUEEN_VALUE_MINUS_ONE: Value = Value::new(2537);
 
     #[test]
     fn repetition_is_detected_and_signed() {
