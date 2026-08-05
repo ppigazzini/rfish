@@ -374,8 +374,7 @@ fn generate_pawn_moves<S: MoveSink>(
             }
         }
 
-        let ep = pos.ep_square();
-        if ep.is_ok() {
+        if let Some(ep) = pos.ep_square().square() {
             // An en passant capture cannot resolve a discovered check: it removes the
             // pawn that blocked the line, so the check remains.
             if evasions && (target & Bitboard::from_square(ep.shift(up))).any() {

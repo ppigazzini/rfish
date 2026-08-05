@@ -39,7 +39,6 @@ impl Bitboard {
     #[inline(always)]
     #[must_use]
     pub const fn from_square(sq: Square) -> Bitboard {
-        debug_assert!(sq.is_ok());
         Bitboard(1u64 << sq.index())
     }
 
