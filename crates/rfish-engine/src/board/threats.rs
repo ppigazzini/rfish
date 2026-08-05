@@ -26,6 +26,7 @@ use crate::board::types::{Piece, PieceType, Square};
 /// Packed into a `u32` the way `../zfish` packs it, because the list is written on the
 /// `do_move` path and read on the accumulator path and nothing in between inspects a field.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(transparent)]
 pub struct DirtyThreat(u32);
 
 impl DirtyThreat {

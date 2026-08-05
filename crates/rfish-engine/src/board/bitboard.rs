@@ -23,6 +23,7 @@ use super::types::{Color, Direction, FILE_NB, File, RANK_NB, Rank, SQUARE_NB, Sq
 /// what `pub` on the field used to buy, without leaving the representation open to a caller
 /// who decides a `Bitboard` is a convenient place to keep an unrelated mask.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
 pub struct Bitboard(u64);
 
 impl Bitboard {
