@@ -465,6 +465,12 @@ const TILE: usize = 128;
 /// [`FT_MAX_VAL`] at the accumulator's own width.
 const FT_MAX: i16 = FT_MAX_VAL as i16;
 
+/// Half an accumulator: the pairwise product pairs entry `j` with entry `j + HALF`.
+///
+/// A named constant rather than `L1 / 2` at the use site, because it is the LENGTH the two
+/// walks are stated against — see the end of [`FeatureTransformer::transform`].
+const HALF: usize = L1 / 2;
+
 impl FeatureTransformer {
     /// An unloaded transformer with every weight zero.
     #[must_use]
@@ -1334,7 +1340,6 @@ impl FeatureTransformer {
             - scratch.plies[ply].side[perspectives[1].index()].psqt[bucket])
             / 2;
 
-        let half = L1 / 2;
         // Both operands are clamped into [0, 255], so their product cannot exceed 65,025 and
         // the whole pairwise step fits in `u16` -- twice the lanes per register that the
         // `i32` form allowed, for identical values. The `/ 512` is a shift for the same
@@ -1344,8 +1349,16 @@ impl FeatureTransformer {
         // and the two are distinct fields of the same scratch.
         let (live, output) = (&scratch.plies[ply].side, scratch.transformed.as_mut_slice());
         for (p, side) in perspectives.iter().enumerate() {
-            let (lo, hi) = live[side.index()].acc.split_at(half);
-            let out = &mut output[half * p..half * (p + 1)];
+            // State both lengths in the TYPE before walking them. `acc` is a `Vec` and
+            // `transformed` an `Aligned`, so neither carries its length past the borrow, and
+            // LLVM emitted this as a runtime-trip vector loop plus an eight-wide fixup loop
+            // and a scalar tail -- twice per evaluation, around a body that is already twenty
+            // instructions per thirty-two outputs. `L1` is a constant and both walks are
+            // exactly half of it, so one length test apiece makes the trip count one too.
+            let acc: &[i16; L1] = live[side.index()].acc.as_slice().try_into().expect("L1 wide");
+            let out: &mut [u8; HALF] =
+                (&mut output[HALF * p..HALF * (p + 1)]).try_into().expect("half of L1");
+            let (lo, hi) = acc.split_at(HALF);
             for ((o, &a), &b) in out.iter_mut().zip(lo.iter()).zip(hi.iter()) {
                 let sum0 = a.clamp(0, FT_MAX) as u16;
                 let sum1 = b.clamp(0, FT_MAX) as u16;
