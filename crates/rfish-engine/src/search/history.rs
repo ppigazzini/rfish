@@ -314,11 +314,49 @@ pub struct ContinuationHistory {
 }
 
 /// The flat index of a continuation plane.
+///
+/// A distinct type from [`CorrKey`] and [`PawnRow`] because all three are flat indices into
+/// differently shaped tables and all three used to be `usize`. A `StackEntry` carries a
+/// continuation plane and a correction plane side by side; the correction space is a SUBRANGE
+/// of the continuation space, so swapping them compiled, never panicked, and silently read
+/// the wrong plane.
+///
+/// No arithmetic, no `From<usize>`: an index is produced by [`cont_plane_index`] and consumed
+/// by [`ContinuationHistory`], and there is no third thing to do with one.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ContKey(usize);
+
+impl ContKey {
+    /// The plane given to a slot a picker never reads.
+    ///
+    /// Not every move-picker sequence reads all six planes: the quiescence and `ProbCut`
+    /// sequences reach `score_quiets` only from `QuietInit`, which they never enter. Those
+    /// slots were `Option<usize>`, which put a branch per plane on the picker's hottest line
+    /// -- 17.2M instructions on a bench, in a branch that could never be taken.
+    ///
+    /// A named constant says the same thing with no branch. Plane zero is also a REAL plane,
+    /// the one a move by [`Piece::NONE`] to a1 selects, which no move can produce; that is
+    /// what makes it safe to read as well as safe to name, and it is the same plane a stack
+    /// entry with no previous move carries.
+    pub const UNREAD: ContKey = ContKey(0);
+
+    /// Index the named plane into the continuation table.
+    #[inline(always)]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
+/// The flat index of a continuation plane.
 #[inline(always)]
 #[must_use]
-pub fn cont_plane_index(in_check: bool, capture: bool, pc: Piece, to: Square) -> usize {
-    ((usize::from(in_check) * 2 + usize::from(capture)) * PIECE_NB + pc.index()) * SQUARE_NB
-        + to.index()
+pub fn cont_plane_index(in_check: bool, capture: bool, pc: Piece, to: Square) -> ContKey {
+    ContKey(
+        ((usize::from(in_check) * 2 + usize::from(capture)) * PIECE_NB + pc.index()) * SQUARE_NB
+            + to.index(),
+    )
 }
 
 impl Default for ContinuationHistory {
@@ -331,20 +369,24 @@ impl ContinuationHistory {
     /// The score a follow-up `(pc, to)` has after the parent plane `idx`.
     #[inline(always)]
     #[must_use]
-    pub fn get(&self, idx: usize, pc: Piece, to: Square) -> i32 {
-        i32::from(self.table[idx][pc.index()][to.index()])
+    pub fn get(&self, idx: ContKey, pc: Piece, to: Square) -> i32 {
+        i32::from(self.table[idx.index()][pc.index()][to.index()])
     }
 
     /// The whole plane `idx` selects, for a caller that reads many moves at one plane.
     #[inline(always)]
     #[must_use]
-    pub fn plane(&self, idx: usize) -> &PieceToPlane {
-        &self.table[idx]
+    pub fn plane(&self, idx: ContKey) -> &PieceToPlane {
+        &self.table[idx.index()]
     }
 
     #[inline(always)]
-    pub fn update(&mut self, idx: usize, pc: Piece, to: Square, bonus: i32) {
-        apply_gravity(&mut self.table[idx][pc.index()][to.index()], bonus, CONTINUATION_LIMIT);
+    pub fn update(&mut self, idx: ContKey, pc: Piece, to: Square, bonus: i32) {
+        apply_gravity(
+            &mut self.table[idx.index()][pc.index()][to.index()],
+            bonus,
+            CONTINUATION_LIMIT,
+        );
     }
 
     /// Reset every plane to upstream's negative sentinel.
@@ -366,12 +408,34 @@ pub struct ContinuationCorrectionHistory {
     table: Box<[Line<[[i16; SQUARE_NB]; PIECE_NB]>; PIECE_NB * SQUARE_NB]>,
 }
 
+/// The flat index of a continuation-correction plane.
+///
+/// Distinct from [`ContKey`] even though both are flat plane indices, because the correction
+/// table is a quarter the size: every valid `CorrKey` is also a valid `ContKey`, so a swap
+/// reads a real plane of the wrong table rather than panicking. See [`ContKey`].
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CorrKey(usize);
+
+impl CorrKey {
+    /// The plane a stack entry with no previous move carries, for the same reason
+    /// [`ContKey::UNREAD`] does: it is the plane a [`Piece::NONE`] move to a1 selects.
+    pub const UNREAD: CorrKey = CorrKey(0);
+
+    /// Index the named plane into the correction table.
+    #[inline(always)]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
 /// The flat index of a continuation-correction plane. Unlike the continuation history this
 /// one is not split by check or capture.
 #[inline(always)]
 #[must_use]
-pub fn corr_plane_index(pc: Piece, to: Square) -> usize {
-    pc.index() * SQUARE_NB + to.index()
+pub fn corr_plane_index(pc: Piece, to: Square) -> CorrKey {
+    CorrKey(pc.index() * SQUARE_NB + to.index())
 }
 
 impl Default for ContinuationCorrectionHistory {
@@ -383,13 +447,17 @@ impl Default for ContinuationCorrectionHistory {
 impl ContinuationCorrectionHistory {
     #[inline(always)]
     #[must_use]
-    pub fn get(&self, idx: usize, pc: Piece, to: Square) -> i32 {
-        i32::from(self.table[idx][pc.index()][to.index()])
+    pub fn get(&self, idx: CorrKey, pc: Piece, to: Square) -> i32 {
+        i32::from(self.table[idx.index()][pc.index()][to.index()])
     }
 
     #[inline(always)]
-    pub fn update(&mut self, idx: usize, pc: Piece, to: Square, bonus: i32) {
-        apply_gravity(&mut self.table[idx][pc.index()][to.index()], bonus, CORRECTION_LIMIT);
+    pub fn update(&mut self, idx: CorrKey, pc: Piece, to: Square, bonus: i32) {
+        apply_gravity(
+            &mut self.table[idx.index()][pc.index()][to.index()],
+            bonus,
+            CORRECTION_LIMIT,
+        );
     }
 
     pub fn fill(&mut self, v: i16) {
@@ -415,30 +483,53 @@ impl Default for PawnHistory {
     }
 }
 
+/// The row of the pawn-history table a pawn key selects.
+///
+/// The third flat index into a `PieceToPlane`-shaped table, and the third that used to be
+/// `usize`. It is masked into range by [`PawnHistory::row`], so unlike [`ContKey`] and
+/// [`CorrKey`] it cannot be out of bounds -- but it is still not either of them, and the
+/// three appear within a few lines of each other in `movepick::score_quiets`.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PawnRow(usize);
+
+impl PawnRow {
+    /// Index the named row into the pawn table.
+    #[inline(always)]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
 impl PawnHistory {
     /// The row a pawn key selects.
     #[inline(always)]
     #[must_use]
-    pub fn row(pawn_key: u64) -> usize {
-        (pawn_key as usize) & (PAWN_HISTORY_SIZE - 1)
+    pub fn row(pawn_key: u64) -> PawnRow {
+        PawnRow((pawn_key as usize) & (PAWN_HISTORY_SIZE - 1))
     }
 
     #[inline(always)]
     #[must_use]
-    pub fn get(&self, row: usize, pc: Piece, to: Square) -> i32 {
-        i32::from(self.table[row][pc.index()][to.index()])
+    pub fn get(&self, row: PawnRow, pc: Piece, to: Square) -> i32 {
+        i32::from(self.table[row.index()][pc.index()][to.index()])
     }
 
     /// The whole plane `row` selects, for a caller that reads many moves at one pawn key.
     #[inline(always)]
     #[must_use]
-    pub fn plane(&self, row: usize) -> &PieceToPlane {
-        &self.table[row]
+    pub fn plane(&self, row: PawnRow) -> &PieceToPlane {
+        &self.table[row.index()]
     }
 
     #[inline(always)]
-    pub fn update(&mut self, row: usize, pc: Piece, to: Square, bonus: i32) {
-        apply_gravity(&mut self.table[row][pc.index()][to.index()], bonus, PAWN_HISTORY_LIMIT);
+    pub fn update(&mut self, row: PawnRow, pc: Piece, to: Square, bonus: i32) {
+        apply_gravity(
+            &mut self.table[row.index()][pc.index()][to.index()],
+            bonus,
+            PAWN_HISTORY_LIMIT,
+        );
     }
 
     pub fn fill(&mut self, v: i16) {
@@ -613,10 +704,13 @@ mod tests {
         h.clear();
         assert_eq!(h.main.get(Color::White, 100), -5);
         assert_eq!(h.captures.get(Piece::W_PAWN, Square::make(0, 0), PieceType::Queen), -742);
-        assert_eq!(h.pawn.get(0, Piece::W_PAWN, Square::make(0, 0)), -1338);
+        assert_eq!(h.pawn.get(PawnHistory::row(0), Piece::W_PAWN, Square::make(0, 0)), -1338);
         assert_eq!(h.correction.entry(0, Color::White).pawn, -5);
-        assert_eq!(h.continuation.get(0, Piece::W_PAWN, Square::make(0, 0)), -586);
-        assert_eq!(h.continuation_correction.get(0, Piece::W_PAWN, Square::make(0, 0)), 5);
+        assert_eq!(h.continuation.get(ContKey::UNREAD, Piece::W_PAWN, Square::make(0, 0)), -586);
+        assert_eq!(
+            h.continuation_correction.get(CorrKey::UNREAD, Piece::W_PAWN, Square::make(0, 0)),
+            5
+        );
     }
 
     /// A pawn key and a minor key that collide must land on the same bundle but on
@@ -642,7 +736,7 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_ne!(a, d);
-        assert!(a < 2 * 2 * PIECE_NB * SQUARE_NB);
-        assert!(c < 2 * 2 * PIECE_NB * SQUARE_NB);
+        assert!(a.index() < 2 * 2 * PIECE_NB * SQUARE_NB);
+        assert!(c.index() < 2 * 2 * PIECE_NB * SQUARE_NB);
     }
 }

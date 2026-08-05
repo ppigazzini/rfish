@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::board::types::{Color, MAX_PLY, Move, VALUE_DRAW, VALUE_INFINITE, VALUE_NONE, Value};
+use crate::search::history::{ContKey, CorrKey};
 
 /// What the caller asked the search to do.
 ///
@@ -502,9 +503,9 @@ pub struct StackEntry {
     /// [`Piece::NONE`] to a1 would select, which no move can — so it serves as the
     /// sentinel for "no previous move" while still being readable. Upstream points at it
     /// the same way, and the move picker reads it unconditionally.
-    pub continuation: usize,
+    pub continuation: ContKey,
     /// The plane of the continuation CORRECTION history this node's move selects.
-    pub continuation_correction: usize,
+    pub continuation_correction: CorrKey,
     /// The static evaluation of this node.
     pub static_eval: Value,
     /// The combined history score of the move being searched, reused by the reduction
@@ -561,8 +562,8 @@ impl Default for StackEntry {
             cutoff_count: 0,
             reduction: 0,
             stat_score: 0,
-            continuation: 0,
-            continuation_correction: 0,
+            continuation: ContKey::UNREAD,
+            continuation_correction: CorrKey::UNREAD,
         }
     }
 }
