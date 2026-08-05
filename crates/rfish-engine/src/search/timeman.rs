@@ -15,7 +15,7 @@
 use std::time::Instant;
 
 use crate::board::types::{Color, GamePly};
-use crate::state::{Limits, SearchOptions, TimeBudget};
+use crate::state::{Budget, Elapsed, Limits, SearchOptions, TimeBudget};
 
 /// Milliseconds reserved for the move to reach the GUI.
 ///
@@ -67,12 +67,15 @@ impl TimeManagement {
     /// The budget the workers enforce.
     #[must_use]
     pub fn budget(&self) -> TimeBudget {
-        TimeBudget {
-            start: self.start,
-            optimum: self.optimum,
-            maximum: self.maximum,
-            use_nodes_time: self.use_nodes_time,
-        }
+        let (optimum, maximum) = (Elapsed::new(self.optimum), Elapsed::new(self.maximum));
+        // The one place the flag becomes the bounds' container. Everything downstream reads
+        // the pair through the arm, so a bound cannot be had without its unit.
+        let budget = if self.use_nodes_time {
+            Budget::Nodes { optimum, maximum }
+        } else {
+            Budget::Wall { optimum, maximum }
+        };
+        TimeBudget::new(self.start, budget)
     }
 
     /// True when the clock is being counted in nodes rather than milliseconds.
@@ -211,7 +214,7 @@ mod tests {
         // `go depth` is not bounded by the clock, and the caller checks
         // `uses_time_management` before reading these at all.
         assert!(!l.uses_time_management());
-        assert_eq!(tm.budget().optimum, 0);
+        assert_eq!(tm.budget().optimum().get(), 0);
     }
 
     #[test]
@@ -219,8 +222,8 @@ mod tests {
         for ms in [10u64, 100, 1000, 60_000, 3_600_000] {
             for inc in [0u64, 100, 1000] {
                 let b = budget(ms, inc, None, GamePly::new(20));
-                assert!(b.maximum <= ms as i64, "budget {b:?} exceeds a {ms} ms clock");
-                assert!(b.optimum <= b.maximum);
+                assert!(b.maximum().get() <= ms as i64, "budget {b:?} exceeds a {ms} ms clock");
+                assert!(b.optimum().get() <= b.maximum().get());
             }
         }
     }
@@ -229,22 +232,22 @@ mod tests {
     fn a_short_clock_still_yields_a_positive_budget() {
         // Under the overhead the budget must not become zero, or the engine forfeits by
         // making no move at all.
-        assert!(budget(5, 0, None, GamePly::new(20)).maximum >= 1);
+        assert!(budget(5, 0, None, GamePly::new(20)).maximum().get() >= 1);
     }
 
     #[test]
     fn a_known_move_quota_spends_a_larger_share_than_sudden_death() {
         assert!(
-            budget(60_000, 0, Some(5), GamePly::new(20)).optimum
-                > budget(60_000, 0, None, GamePly::new(20)).optimum
+            budget(60_000, 0, Some(5), GamePly::new(20)).optimum().get()
+                > budget(60_000, 0, None, GamePly::new(20)).optimum().get()
         );
     }
 
     #[test]
     fn an_increment_raises_the_per_move_budget() {
         assert!(
-            budget(60_000, 1000, None, GamePly::new(20)).optimum
-                > budget(60_000, 0, None, GamePly::new(20)).optimum
+            budget(60_000, 1000, None, GamePly::new(20)).optimum().get()
+                > budget(60_000, 0, None, GamePly::new(20)).optimum().get()
         );
     }
 
@@ -254,12 +257,12 @@ mod tests {
         let mut tm = TimeManagement::default();
         let plain = SearchOptions::default();
         tm.init(&mut l, Color::White, GamePly::new(20), &plain);
-        let without = tm.budget().optimum;
+        let without = tm.budget().optimum().get();
 
         let mut l = limits_with_clock(60_000, 0, None);
         let mut tm = TimeManagement::default();
         tm.init(&mut l, Color::White, GamePly::new(20), &SearchOptions { ponder: true, ..plain });
-        assert_eq!(tm.budget().optimum, without + without / 4);
+        assert_eq!(tm.budget().optimum().get(), without + without / 4);
     }
 
     #[test]
@@ -270,7 +273,7 @@ mod tests {
         tm.init(&mut l, Color::White, GamePly::new(20), &opts);
 
         assert!(tm.uses_nodes_time());
-        assert!(tm.budget().use_nodes_time);
+        assert!(tm.budget().counts_nodes());
         // The clock became a node budget at the declared rate, and the increment with it.
         assert_eq!(l.time[Color::White.index()], Some(600 * 60_000));
         assert_eq!(l.inc[Color::White.index()], 600 * 100);
@@ -283,13 +286,13 @@ mod tests {
         let mut tm = TimeManagement::default();
         let opts = SearchOptions { nodestime: 600, ..SearchOptions::default() };
         tm.init(&mut l, Color::White, GamePly::new(0), &opts);
-        let first = tm.budget().optimum;
+        let first = tm.budget().optimum().get();
 
         tm.advance_nodes_time(500_000);
         let mut l = limits_with_clock(1000, 0, None);
         tm.init(&mut l, Color::White, GamePly::new(2), &opts);
         // Half the game's nodes are gone, so the next move plans for less.
-        assert!(tm.budget().optimum < first, "spending nodes must shrink the next budget");
+        assert!(tm.budget().optimum().get() < first, "spending nodes must shrink the next budget");
     }
 
     #[test]
