@@ -112,13 +112,24 @@ impl Default for Accumulator {
 struct Side {
     /// The king square these were computed for, or `None` when the slot holds nothing.
     king: Option<Square>,
-    /// Left a `Vec` on purpose. A `Box<[i16; L1]>` gives the fold's tile loop a trip count
-    /// of eight at compile time and drops the `resize` that says what the type already says
-    /// — and it measured 6.1M WORSE on `bench 16 1 8` at avx2, 1,592.2M to 1,598.3M, at an
-    /// identical node count. Fully unrolling a loop that was already eight tiles of
-    /// register-resident work buys nothing and costs code size, which is the counter this
-    /// port is already worst on. Do not re-derive it.
-    acc: Vec<i16>,
+    /// A `Box<[i16]>`, which is NOT the refuted `Box<[i16; L1]>`. The array form gives the
+    /// fold's tile loop a trip count of eight at COMPILE time and measured 6.1M WORSE at
+    /// avx2, 1,592.2M to 1,598.3M: fully unrolling a loop that was already eight tiles of
+    /// register-resident work buys nothing and costs code size. Do not re-derive that one.
+    ///
+    /// The slice form keeps the runtime length, so the loop is unchanged, and drops only the
+    /// capacity word a `Vec` carries — which was dead weight, because this buffer's length
+    /// never varies once written. That is worth having twice over: [`Side`] lands on 128
+    /// bytes rather than 136, so `side[c]` and `plies[ply]` are addressed by a shift; and the
+    /// three `resize(L1, 0)` calls and two `clear` + `extend_from_slice` pairs on the write
+    /// path become nothing and a `copy_from_slice`, since the destination is already exactly
+    /// as wide as it will ever be. Measured −3.35M at avx2 and −4.39M at sse41, all of it
+    /// inside `transform`.
+    ///
+    /// It costs the lazy allocation `Vec::new()` bought: every slot is now full-width from
+    /// construction, +916 KB peak RSS per worker. `computed_for` was always the emptiness
+    /// flag, never the buffer's length, so nothing read the difference.
+    acc: Box<[i16]>,
     psqt: [i32; PSQT_BUCKETS],
     /// The placement that produced the above. The king-piece features are diffed straight
     /// off this rather than recomputed and merged, so the set itself is never materialised.
@@ -135,7 +146,7 @@ impl Side {
     fn empty() -> Side {
         Side {
             king: None,
-            acc: Vec::new(),
+            acc: vec![0; L1].into_boxed_slice(),
             psqt: [0; PSQT_BUCKETS],
             board: [Piece::NONE; SQUARE_NB],
             computed_for: EMPTY_KEY,
@@ -1046,7 +1057,6 @@ impl FeatureTransformer {
             // own placement and arrival key are read.
             let PlySlot { side, board, reached, .. } = &mut at[0];
             let dst = &mut side[i];
-            dst.acc.resize(L1, 0);
             dst.psqt = src.psqt;
             dst.king = Some(ksq);
             dst.board = *board;
@@ -1152,8 +1162,7 @@ impl FeatureTransformer {
         };
         let slot = &mut scratch.ka_cache[i][ksq.index()];
         if !seeded {
-            slot.acc.clear();
-            slot.acc.extend_from_slice(&self.biases);
+            slot.acc.copy_from_slice(&self.biases);
             slot.psqt = [0; PSQT_BUCKETS];
         }
         slot.king = Some(ksq);
@@ -1240,7 +1249,6 @@ impl FeatureTransformer {
         let parent_acc = &below[base].side[i];
         let PlySlot { side, board, reached, .. } = &mut at[0];
         let dst = &mut side[i];
-        dst.acc.resize(L1, 0);
         dst.psqt = psqt;
         dst.king = Some(ksq);
         dst.board = *board;
@@ -1302,8 +1310,7 @@ impl FeatureTransformer {
         // slot first: an unseeded one starts from the biases, which is the from-scratch case.
         let cache_slot = &mut scratch.cache[i][ksq.index()];
         if !seeded {
-            cache_slot.side.acc.clear();
-            cache_slot.side.acc.extend_from_slice(&self.biases);
+            cache_slot.side.acc.copy_from_slice(&self.biases);
         }
         cache_slot.side.psqt = base_psqt;
         cache_slot.side.king = Some(ksq);
@@ -1324,7 +1331,6 @@ impl FeatureTransformer {
         let slot = &mut cache[ksq.index()];
         self.fold_psqt(&mut slot.side.psqt, ka, tp);
         let dst = &mut plies[ply].side[i];
-        dst.acc.resize(L1, 0);
         dst.psqt = slot.side.psqt;
         dst.king = Some(ksq);
         dst.board = *pos.board();
@@ -1437,7 +1443,7 @@ impl FeatureTransformer {
             // and a scalar tail -- twice per evaluation, around a body that is already twenty
             // instructions per thirty-two outputs. `L1` is a constant and both walks are
             // exactly half of it, so one length test apiece makes the trip count one too.
-            let acc: &[i16; L1] = live[side.index()].acc.as_slice().try_into().expect("L1 wide");
+            let acc: &[i16; L1] = (&*live[side.index()].acc).try_into().expect("L1 wide");
             let out: &mut [u8; HALF] =
                 (&mut output[HALF * p..HALF * (p + 1)]).try_into().expect("half of L1");
             let (lo, hi) = acc.split_at(HALF);
