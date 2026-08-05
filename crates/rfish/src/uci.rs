@@ -16,7 +16,7 @@ use rfish_engine::board::movegen::{move_to_uci, parse_uci_move, perft_divide};
 use rfish_engine::board::position::{Position, START_FEN};
 use rfish_engine::board::types::{Color, Ply, VALUE_ZERO, Value};
 use rfish_engine::eval::nnue;
-use rfish_engine::platform::numa::{self, NumaConfig};
+use rfish_engine::platform::numa::{self, NumaConfig, NumaIndex};
 use rfish_engine::platform::syzygy::TableRegistry;
 use rfish_engine::platform::threads::ThreadPool;
 use rfish_engine::search::score;
@@ -426,14 +426,14 @@ impl Engine {
         let assignment = self.numa.distribute_threads_among_numa_nodes(threads);
         let mut counts = vec![0usize; self.numa.num_numa_nodes()];
         for &n in &assignment {
-            if let Some(slot) = counts.get_mut(n) {
+            if let Some(slot) = counts.get_mut(n.index()) {
                 *slot += 1;
             }
         }
         let split: Vec<String> = counts
             .iter()
             .enumerate()
-            .map(|(n, c)| format!("{c}/{}", self.numa.num_cpus_in_numa_node(n)))
+            .map(|(n, c)| format!("{c}/{}", self.numa.num_cpus_in_numa_node(NumaIndex::new(n))))
             .collect();
         let _ = writeln!(
             out,
