@@ -20,6 +20,7 @@ Read in order. Each page owns a zone of the source and is the live claim about i
 | [09-tooling-ci.md](09-tooling-ci.md) | `cargo xtask`, the gates, CI, and each instrument's blind spots |
 | [10-references.md](10-references.md) | upstream, Rust and UCI sources this port is checked against |
 | [11-writing.md](11-writing.md) | how to write a comment and a doc page here |
+| [12-what-the-types-prevent.md](12-what-the-types-prevent.md) | the twenty domain newtypes, and the boundary of what they catch |
 
 ## Docs are part of the change, not after it
 
