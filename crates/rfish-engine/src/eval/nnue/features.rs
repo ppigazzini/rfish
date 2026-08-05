@@ -361,7 +361,11 @@ const _: () = assert!(
 );
 
 /// The pieces the tables are built for, in the order that decides their cumulative offsets.
-const ALL_PIECES: [Piece; 12] = [
+/// The twelve COLOURED pieces, for the threat cross-product.
+///
+/// Not `PieceType::ALL_PIECES`, which is `PieceType::None` used as occupancy index 0 — a
+/// different thing under the same name, one module over.
+const COLOURED_PIECES: [Piece; 12] = [
     Piece::W_PAWN,
     Piece::W_KNIGHT,
     Piece::W_BISHOP,
@@ -391,7 +395,7 @@ impl ThreatTables {
         let mut block_start = [0u32; PIECE_NB];
 
         let mut cumulative = 0u32;
-        for pc in ALL_PIECES {
+        for pc in COLOURED_PIECES {
             let i = pc.index();
             let mut used = 0u32;
             for from in Square::all() {
@@ -418,8 +422,8 @@ impl ThreatTables {
         }
         debug_assert_eq!(cumulative, THREAT_DIMENSIONS);
 
-        for attacker in ALL_PIECES {
-            for attacked in ALL_PIECES {
+        for attacker in COLOURED_PIECES {
+            for attacked in COLOURED_PIECES {
                 let a = attacker.index();
                 let d = attacked.index();
                 let enemy = (attacker.raw() ^ attacked.raw()) == 8;

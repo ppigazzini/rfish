@@ -12,7 +12,7 @@ use crate::board::types::{Color, File, Piece, PieceType, Rank, Square};
 
 use super::pairs::{decompress, flag};
 use super::table::{Loaded, TbTable, TbType};
-use super::tables::{INDEX, TB_PIECES, edge_distance, off_a1h8};
+use super::tables::{INDEX, TB_PIECES, TbFile, off_a1h8};
 
 /// A win/draw/loss verdict, from the side to move's point of view.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -75,7 +75,7 @@ pub fn do_probe_table(
     let mut size = 0usize;
     let mut lead_pawns_count = 0usize;
     let mut lead_pawns = crate::board::bitboard::Bitboard::EMPTY;
-    let mut tb_file = 0usize;
+    let mut tb_file = TbFile::ONLY;
 
     // A file stores one colour assignment only. Two cases send us to the mirrored view: the
     // material is symmetric and it is Black to move, or Black is the stronger side.
@@ -90,7 +90,7 @@ pub fn do_probe_table(
         // With pawns, the file is split four ways by which file the leading pawn is on
         // after mirroring. The leading pawn's colour is the table's reference colour, taken
         // from the first entry of the piece order.
-        let pc = Piece::from_raw(entry.pairs(loaded, 0, 0).pieces[0] ^ flip_color);
+        let pc = Piece::from_raw(entry.pairs(loaded, 0, TbFile::ONLY).pieces[0] ^ flip_color);
         debug_assert_eq!(pc.piece_type(), PieceType::Pawn);
         lead_pawns = pos.pieces_of(pc.color(), PieceType::Pawn);
         for s in lead_pawns {
@@ -108,7 +108,7 @@ pub fn do_probe_table(
             }
         }
         squares.swap(0, best);
-        tb_file = edge_distance(squares[0].file().index());
+        tb_file = TbFile::for_board_file(squares[0].file());
     }
 
     // A DTZ table stores only one side to move. When it is the other one, the caller has to
@@ -255,7 +255,7 @@ pub fn do_probe_table(
 ///
 /// For WDL that is a shift by two. For DTZ it is a per-table remap and, when the table
 /// stores moves rather than plies, a doubling.
-fn map_score(entry: &TbTable, loaded: &Loaded, file: usize, value: i32, wdl: Wdl) -> i32 {
+fn map_score(entry: &TbTable, loaded: &Loaded, file: TbFile, value: i32, wdl: Wdl) -> i32 {
     /// Which of the four stored remap tables a verdict selects, indexed by `wdl + 2`.
     const WDL_MAP: [usize; 5] = [1, 3, 0, 2, 0];
 
