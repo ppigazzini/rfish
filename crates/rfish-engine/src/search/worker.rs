@@ -31,7 +31,7 @@ use std::time::Instant;
 use crate::board::movegen::{generate_legal, has_legal_move, move_to_uci};
 use crate::board::position::Position;
 use crate::board::types::{
-    Bound, Color, MAX_MOVES, MAX_PLY, Move, NodeKind, NonPv, Piece, PieceType, Ply, Pv,
+    Bound, Color, Expect, MAX_MOVES, MAX_PLY, Move, NodeKind, NonPv, Piece, PieceType, Ply, Pv,
     QuiescentKind, Root, Square, SquareOrNone, VALUE_DRAW, VALUE_INFINITE, VALUE_MATE,
     VALUE_MATE_IN_MAX_PLY, VALUE_NONE, VALUE_TB, VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY,
     VALUE_ZERO, Value, is_decisive, is_loss, is_mate_or_mated, is_valid, is_win, mate_in, mated_in,
@@ -1034,7 +1034,7 @@ impl SearchWorker {
                             .max(1);
                     self.root_delta = beta - alpha;
                     best_value =
-                        self.node::<Root>(alpha, beta, adjusted_depth, Ply::ROOT, false, tt);
+                        self.node::<Root>(alpha, beta, adjusted_depth, Ply::ROOT, Expect::All, tt);
 
                     // Stable, because every score but the first and the new best is set to
                     // -INFINITE and the order of the rest must be preserved.
@@ -1329,10 +1329,10 @@ impl SearchWorker {
         mut beta: Value,
         mut depth: i32,
         ply: Ply,
-        cut_node: bool,
+        cut_node: Expect,
         tt: &TranspositionTable,
     ) -> Value {
-        let all_node = !(N::PV || cut_node);
+        let all_node = !(N::PV || cut_node.is_cut());
 
         if depth <= 0 {
             return self.qsearch::<N::Quiescent>(alpha, beta, ply, tt);
@@ -1531,7 +1531,7 @@ impl SearchWorker {
                 Bound::Upper => tt_value < beta,
                 Bound::None => false,
             }
-            && (cut_node == (tt_value >= beta) || depth > 4)
+            && (cut_node.is_cut() == (tt_value >= beta) || depth > 4)
         {
             if tt_move.is_some() && tt_value >= beta {
                 if !tt_capture {
@@ -1667,7 +1667,7 @@ impl SearchWorker {
             }
 
             // Step 9. Null move search with verification search
-            if cut_node
+            if cut_node.is_cut()
                 && self.stack[si.index()].static_eval
                     >= beta - 13 * depth - 47 * i32::from(improving) + 365
                 && excluded_move.is_none()
@@ -1681,7 +1681,7 @@ impl SearchWorker {
                 let r = 7 + depth / 3 + ((self.stack[si.index()].static_eval - beta) / 256).max(0);
                 self.do_null_move(si);
                 let null_value =
-                    -self.node::<NonPv>(-beta, -beta + 1, depth - r, ply.next(), false, tt);
+                    -self.node::<NonPv>(-beta, -beta + 1, depth - r, ply.next(), Expect::All, tt);
                 self.undo_null_move();
 
                 if null_value >= beta && !is_win(null_value) {
@@ -1693,7 +1693,7 @@ impl SearchWorker {
                     // search, with null moves disabled below so the verification cannot
                     // lean on the very assumption it is checking.
                     self.nmp_min_ply = ply.offset(3 * (depth - r) / 4);
-                    let v = self.node::<NonPv>(beta - 1, beta, depth - r, ply, false, tt);
+                    let v = self.node::<NonPv>(beta - 1, beta, depth - r, ply, Expect::All, tt);
                     self.nmp_min_ply = Ply::ROOT;
                     if v >= beta {
                         return null_value;
@@ -1746,7 +1746,7 @@ impl SearchWorker {
                             -prob_cut_beta + 1,
                             prob_cut_depth,
                             ply.next(),
-                            !cut_node,
+                            cut_node.flipped(),
                             tt,
                         );
                     }
@@ -1982,7 +1982,7 @@ impl SearchWorker {
                     }
 
                     return v;
-                } else if tt_value >= beta || cut_node {
+                } else if tt_value >= beta || cut_node.is_cut() {
                     // Neither singular nor multi-cut. The transposition move is expected to
                     // fail high anyway, or this is a cut node -- either way search it
                     // shallower in favour of the others. Upstream collapsed the two cases
@@ -2003,14 +2003,14 @@ impl SearchWorker {
                 r -= 3023
                     + i32::from(N::PV) * 1004
                     + i32::from(tt_value > alpha) * 885
-                    + i32::from(tt_depth >= depth) * (816 + i32::from(cut_node) * 940);
+                    + i32::from(tt_depth >= depth) * (816 + i32::from(cut_node.is_cut()) * 940);
             }
 
             r += 697;
             r -= move_count * 65;
             r -= correction_value.abs() / 26310;
 
-            if cut_node {
+            if cut_node.is_cut() {
                 r += 4026 + 933 * i32::from(tt_move.is_none());
             }
             if tt_capture {
@@ -2065,7 +2065,7 @@ impl SearchWorker {
                 let d = (new_depth - r / 1024).min(new_depth + 2).max(1) + i32::from(N::PV);
 
                 self.stack[si.index()].reduction = new_depth - d;
-                value = -self.node::<NonPv>(-(alpha + 1), -alpha, d, ply.next(), true, tt);
+                value = -self.node::<NonPv>(-(alpha + 1), -alpha, d, ply.next(), Expect::Cut, tt);
                 self.stack[si.index()].reduction = 0;
 
                 if value > alpha {
@@ -2083,7 +2083,7 @@ impl SearchWorker {
                             -alpha,
                             new_depth,
                             ply.next(),
-                            !cut_node,
+                            cut_node.flipped(),
                             tt,
                         );
                     }
@@ -2097,7 +2097,14 @@ impl SearchWorker {
                     r += 1127;
                 }
                 let d = new_depth - i32::from(r > 5234) - i32::from(r > 5487 && new_depth > 2);
-                value = -self.node::<NonPv>(-(alpha + 1), -alpha, d, ply.next(), !cut_node, tt);
+                value = -self.node::<NonPv>(
+                    -(alpha + 1),
+                    -alpha,
+                    d,
+                    ply.next(),
+                    cut_node.flipped(),
+                    tt,
+                );
             }
 
             // For N::PV nodes only, do a full N::PV search on the first move or after a fail
@@ -2116,7 +2123,7 @@ impl SearchWorker {
                     new_depth = new_depth.max(1);
                 }
 
-                value = -self.node::<Pv>(-beta, -alpha, new_depth, ply.next(), false, tt);
+                value = -self.node::<Pv>(-beta, -alpha, new_depth, ply.next(), Expect::All, tt);
             }
 
             // Step 19. Undo move

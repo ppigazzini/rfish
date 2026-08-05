@@ -1752,6 +1752,41 @@ impl NodeKind for NonPv {
 impl QuiescentKind for Pv {}
 impl QuiescentKind for NonPv {}
 
+/// What the parent expects of this node: a cut, or an exhaustive answer.
+///
+/// A two-variant type rather than a `bool` because it is passed POSITIONALLY at nine call
+/// sites, where `..., ply.next(), true, tt)` says nothing about what the `true` means. The
+/// value carries no information beyond itself; the name is the whole content.
+///
+/// `Cut` means the parent expects a beta cutoff here, so the search may reduce harder and
+/// prune more; `All` means it does not.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Expect {
+    /// The parent expects a cutoff.
+    Cut,
+    /// The parent expects to search every move.
+    All,
+}
+
+impl Expect {
+    /// True when the parent expects a cutoff.
+    #[inline(always)]
+    #[must_use]
+    pub const fn is_cut(self) -> bool {
+        matches!(self, Expect::Cut)
+    }
+
+    /// What the child of this node expects, when the search flips the expectation.
+    #[inline(always)]
+    #[must_use]
+    pub const fn flipped(self) -> Expect {
+        match self {
+            Expect::Cut => Expect::All,
+            Expect::All => Expect::Cut,
+        }
+    }
+}
+
 /// The transposition table's bound kind for a stored score.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
