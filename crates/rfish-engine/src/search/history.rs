@@ -19,7 +19,10 @@
 //!
 //! Golden: `Stockfish/src/history.h`, `Stockfish/src/search.cpp`.
 
-use crate::board::types::{COLOR_NB, Color, PIECE_NB, Piece, PieceType, Ply, SQUARE_NB, Square};
+use crate::board::types::{
+    COLOR_NB, Color, Key, MinorKey, NonPawnKey, PIECE_NB, PawnKey, Piece, PieceType, Ply,
+    SQUARE_NB, Square,
+};
 
 /// One `(piece, square)` plane, as the continuation and pawn tables store it.
 ///
@@ -586,8 +589,8 @@ impl PawnHistory {
     /// The row a pawn key selects.
     #[inline(always)]
     #[must_use]
-    pub fn row(pawn_key: u64) -> PawnRow {
-        PawnRow((pawn_key as usize) & (PAWN_HISTORY_SIZE - 1))
+    pub fn row(pawn_key: PawnKey) -> PawnRow {
+        PawnRow((pawn_key.get() as usize) & (PAWN_HISTORY_SIZE - 1))
     }
 
     #[inline(always)]
@@ -655,22 +658,66 @@ impl Default for CorrectionHistory {
 }
 
 impl CorrectionHistory {
-    /// The row a key selects.
+    /// The row a key word selects. Private: a bare word must not reach this table, because
+    /// which COUNTER of the row is right depends on which key the word came from.
     #[inline(always)]
-    #[must_use]
-    pub fn row(key: u64) -> usize {
+    fn row(key: Key) -> usize {
         (key as usize) & (CORRECTION_HISTORY_SIZE - 1)
     }
 
+    /// The pawn-structure counter, at the row the pawn key selects.
+    ///
+    /// One method per counter, each taking only the key that selects it. The table holds four
+    /// counters per row and the four keys used to pick them by convention: a row chosen by
+    /// the pawn key and read through `.minor` compiled and returned a real counter of the
+    /// wrong kind. The pairing is now the signature.
     #[inline(always)]
     #[must_use]
-    pub fn entry(&self, key: u64, c: Color) -> &CorrectionBundle {
-        &self.table[Self::row(key)][c.index()]
+    pub fn pawn(&self, k: PawnKey, c: Color) -> i32 {
+        i32::from(self.table[Self::row(k.get())][c.index()].pawn)
     }
 
+    /// The minor-piece counter, at the row the minor key selects.
     #[inline(always)]
-    pub fn entry_mut(&mut self, key: u64, c: Color) -> &mut CorrectionBundle {
-        &mut self.table[Self::row(key)][c.index()]
+    #[must_use]
+    pub fn minor(&self, k: MinorKey, c: Color) -> i32 {
+        i32::from(self.table[Self::row(k.get())][c.index()].minor)
+    }
+
+    /// One side's non-pawn counter, at the row that side's key selects.
+    ///
+    /// Which counter is decided by the key, not by an argument: [`NonPawnKey`] carries the
+    /// side whose pieces it hashes, so there is no second `Color` to swap with `c`.
+    #[inline(always)]
+    #[must_use]
+    pub fn non_pawn(&self, k: NonPawnKey, c: Color) -> i32 {
+        let bundle = &self.table[Self::row(k.get())][c.index()];
+        i32::from(match k.side() {
+            Color::White => bundle.non_pawn_white,
+            Color::Black => bundle.non_pawn_black,
+        })
+    }
+
+    /// The pawn counter, to update.
+    #[inline(always)]
+    pub fn pawn_mut(&mut self, k: PawnKey, c: Color) -> &mut i16 {
+        &mut self.table[Self::row(k.get())][c.index()].pawn
+    }
+
+    /// The minor-piece counter, to update.
+    #[inline(always)]
+    pub fn minor_mut(&mut self, k: MinorKey, c: Color) -> &mut i16 {
+        &mut self.table[Self::row(k.get())][c.index()].minor
+    }
+
+    /// One side's non-pawn counter, to update.
+    #[inline(always)]
+    pub fn non_pawn_mut(&mut self, k: NonPawnKey, c: Color) -> &mut i16 {
+        let bundle = &mut self.table[Self::row(k.get())][c.index()];
+        match k.side() {
+            Color::White => &mut bundle.non_pawn_white,
+            Color::Black => &mut bundle.non_pawn_black,
+        }
     }
 
     pub fn fill(&mut self, v: i16) {
@@ -794,13 +841,13 @@ mod tests {
         );
         assert_eq!(
             h.pawn.get(
-                PawnHistory::row(0),
+                PawnHistory::row(PawnKey::new(0)),
                 Piece::W_PAWN,
                 Square::make(File::new(0), Rank::new(0))
             ),
             -1338
         );
-        assert_eq!(h.correction.entry(0, Color::White).pawn, -5);
+        assert_eq!(h.correction.pawn(PawnKey::new(0), Color::White), -5);
         assert_eq!(
             h.continuation.get(
                 ContKey::UNREAD,
@@ -819,16 +866,19 @@ mod tests {
         );
     }
 
-    /// A pawn key and a minor key that collide must land on the same bundle but on
-    /// different FIELDS of it: the interference is upstream's, the field split is too.
+    /// A pawn key and a minor key that COLLIDE must land on the same bundle but on
+    /// different counters: the interference is upstream's, the field split is too.
+    ///
+    /// The two keys are the same word here, which is the point — only their types say which
+    /// counter each one reaches, and that is now the only thing that can.
     #[test]
     fn the_correction_bundle_keeps_four_independent_counters() {
         let mut h = CorrectionHistory::default();
-        let e = h.entry_mut(7, Color::White);
-        update_correction_entry(&mut e.pawn, Bonus::new(500));
-        assert!(h.entry(7, Color::White).pawn > -5);
-        assert_eq!(h.entry(7, Color::White).minor, -5);
-        assert_eq!(h.entry(7, Color::Black).pawn, -5);
+        update_correction_entry(h.pawn_mut(PawnKey::new(7), Color::White), Bonus::new(500));
+        assert!(h.pawn(PawnKey::new(7), Color::White) > -5);
+        assert_eq!(h.minor(MinorKey::new(7), Color::White), -5);
+        assert_eq!(h.pawn(PawnKey::new(7), Color::Black), -5);
+        assert_eq!(h.non_pawn(NonPawnKey::new(7, Color::White), Color::White), -5);
     }
 
     /// The continuation planes are addressed by a flat index; two different parents must

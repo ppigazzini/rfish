@@ -1452,6 +1452,110 @@ impl TtKey {
     }
 }
 
+/// The key of the pawn skeleton alone.
+///
+/// Indexes the pawn-history table and the `pawn` counter of the correction bundle. One of
+/// four keys that address the SAME correction table through four different counters — see
+/// [`NonPawnKey`] for why each is its own type.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct PawnKey(Key);
+
+/// The key of the minor pieces alone, for the `minor` correction counter.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct MinorKey(Key);
+
+/// The key of ONE SIDE's non-pawn pieces, for that side's correction counter.
+///
+/// **Carries the side it belongs to**, which is the whole design. The correction bundle holds
+/// four counters and the four keys select them by convention alone: a row chosen by the pawn
+/// key read through `.minor` compiles and returns a real counter of the wrong kind. Making
+/// the accessor take `(key, us, side)` would only move the problem — two adjacent `Color`s
+/// are their own swap. With the side inside the key there is nothing left to pair wrongly.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct NonPawnKey {
+    key: Key,
+    side: Color,
+}
+
+impl PawnKey {
+    /// Build from an accumulated Zobrist word.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(k: Key) -> PawnKey {
+        PawnKey(k)
+    }
+
+    /// The word, for the table index.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> Key {
+        self.0
+    }
+}
+
+impl MinorKey {
+    /// Build from an accumulated Zobrist word.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(k: Key) -> MinorKey {
+        MinorKey(k)
+    }
+
+    /// The word, for the table index.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> Key {
+        self.0
+    }
+}
+
+impl NonPawnKey {
+    /// Build `side`'s non-pawn key from an accumulated Zobrist word.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(k: Key, side: Color) -> NonPawnKey {
+        NonPawnKey { key: k, side }
+    }
+
+    /// The word, for the table index.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> Key {
+        self.key
+    }
+
+    /// Whose pieces this key hashes, and therefore which counter it selects.
+    #[inline(always)]
+    #[must_use]
+    pub const fn side(self) -> Color {
+        self.side
+    }
+}
+
+impl core::ops::BitXorAssign<Key> for PawnKey {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, w: Key) {
+        self.0 ^= w;
+    }
+}
+
+impl core::ops::BitXorAssign<Key> for MinorKey {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, w: Key) {
+        self.0 ^= w;
+    }
+}
+
+/// Folding a word in never changes whose key it is.
+impl core::ops::BitXorAssign<Key> for NonPawnKey {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, w: Key) {
+        self.key ^= w;
+    }
+}
+
 /// The difference between two position keys: what a MOVE changes about the hash.
 ///
 /// The same shape as [`Value`]'s margin and [`Ply`]'s distance — a difference of two points is
