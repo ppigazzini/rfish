@@ -359,7 +359,14 @@ fail on purpose.
   mixing, and probing with the unmixed one made positions share an entry the fifty-move rule
   invalidates — the "key identity" bug class, which no perft can see.
 - A position key where a move key belongs, or a material key where either belongs.
-- A correction row selected by one key and read through another key's counter.
+- A correction row selected by one key and read through another key's counter. The one pair
+  that shares a signature — the two non-pawn counters — is closed by a different move:
+  `NonPawnKey` carries the side whose pieces it hashes, and the accessor picks the field from
+  `k.side()`, so the call site holds no second argument to transpose. Verified by mutation
+  rather than by argument: swapping both non-pawn call sites leaves the bench signature on the
+  anchor, because the key and its field move together. A sibling port that instead gives the
+  four accessors distinct *names* records the same swap as compiling and moving its signature.
+  The guarantee is in where the discriminator lives, not in how many types there are.
 - A node kind the search has no meaning for. `node` took two independent booleans and
   admitted `PV = false, ROOT = true` — a non-PV root, which no call site produced. `NodeKind`
   is sealed, so the fourth combination cannot be named and a fifth kind cannot be added from
@@ -386,6 +393,14 @@ refinement over a range. `ContKey` stops a correction plane reaching the continu
 it does not stop the *wrong* continuation plane reaching it. The Syzygy prober is the sharpest
 case — an index computed one off there returns a confident wrong verdict, and `TbFile` narrows
 which space the index lives in, not which entry.
+
+**A transposition between two arguments of the same type.** A newtype stops a `Ply` reaching a
+`GamePly` parameter; it does nothing about two arguments that are *both* `Square` —
+`move_piece(from, to)` and `Move::new(from, to)` are reversible in silence, and so is any pair
+of `Color`s or same-typed keys. Where this mattered most here, the fix was not another type: it
+was moving the discriminator *into* the key, so no call site carries one to transpose. That
+technique does not generalise to `from`/`to`, which are genuinely two of the same thing, and
+nothing in this design protects them.
 
 **Anything inside a fold.** `fold_psqt` indexes two weight tables with the same element type,
 so a `TpIndex` used against the king-piece rows still compiles *within* that function. The
