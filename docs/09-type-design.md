@@ -99,64 +99,75 @@ number: a report to the GUI, a quantisation into `i64`, a pack into a 16-bit tra
 word, an ordering number in the move picker. **Those are the lines a reviewer should look at**,
 and before the domain had types they were invisible, because everything was already a number.
 
-## The map
+## The maps
+
+Four of them rather than one, because the families answer different questions and drawing them
+together hides all four. Every solid arrow is a **total function with a name**; none is a cast.
+A value crosses a boundary by calling something, and the call is where a reader looks.
+
+### Geometry: how a square is built and taken apart
 
 ```mermaid
-graph TD
-  subgraph geometry["Board geometry"]
-    File; Rank; Square; SquareOrNone; Bitboard
-    File -->|"Square::make"| Square
-    Rank --> Square
-    Square -->|"some()"| SquareOrNone
-    SquareOrNone -->|"square()"| Square
-    Square -->|"from_square"| Bitboard
-    Square -->|"try_shift"| Square
-  end
+graph LR
+  File & Rank -->|"Square::make"| Square
+  Square -->|"some()"| SquareOrNone
+  SquareOrNone -->|"square()"| Opt["a Square, or None"]
+  Square -->|"try_shift()"| Opt
+  Square -->|"from_square()"| Bitboard
+  Bitboard -->|"pop_lsb()"| Square
+```
 
-  subgraph material["Material"]
-    Color; PieceType; Piece
-    Color -->|"Piece::new"| Piece
-    PieceType --> Piece
-    Piece -->|"color / piece_type"| PieceType
-  end
+The two routes into `Opt` are the point. A `Square` is always on the board, so the two ways of
+*not* having one — an optional field, and a step that may leave the board — are both explicit
+and neither is a sentinel value hiding inside `Square`.
 
-  subgraph moves["Moves"]
-    MoveType; Move
-    Square -->|"Move::typed"| Move
-    MoveType --> Move
-    PieceType -->|"promotion"| Move
-  end
+### Material and moves: what packs into what
 
-  subgraph quantities["Dimensioned quantities"]
-    Ply; GamePly; Value; Bonus
-    Ply -->|"mate_in / mated_in"| Value
-    Ply -->|"value_to_tt / value_from_tt"| Value
-  end
+```mermaid
+graph LR
+  Color & PieceType -->|"Piece::new"| Piece
+  Square & MoveType & PieceType -->|"Move::typed"| Move
+```
 
-  subgraph indices["Index spaces"]
-    StackIx; ContKey; CorrKey; PawnRow; KaIndex; TpIndex; TbFile
-    Ply -->|"StackIx::from_ply"| StackIx
-    StackIx -->|"ply()"| Ply
-    Piece -->|"cont_plane_index"| ContKey
-    Piece -->|"corr_plane_index"| CorrKey
-    Square -->|"halfka_index"| KaIndex
-    Square -->|"threat_index / pawn_pair_index"| TpIndex
-    File -->|"TbFile::for_board_file"| TbFile
-  end
+Both are bit-packings whose widths are load-bearing, and `board/types.rs` asserts each width
+against the relationship that implies it rather than against a literal.
 
+### Quantities: the affine ones, and the one that is absent
+
+```mermaid
+graph LR
+  Ply -->|"mate_in / mated_in / value_to_tt"| Value
+  Value -->|"Value - Value"| Margin["i32, a margin"]
+  Margin -->|"Value + i32"| Value
   Value -->|"Score::new"| Score["Score, at the protocol edge"]
-  Bonus -->|"apply_gravity"| Tables["the history tables"]
-  ContKey --> Tables
-  CorrKey --> Tables
-  PawnRow --> Tables
-
-  Depth["Depth — deliberately absent"]
-  Depth -.->|"scales into six codomains"| Bonus
+  Bonus -->|"apply_gravity"| Hist["the history tables"]
+  Depth["Depth, deliberately absent"] -.->|"six codomains"| Bonus
   Depth -.-> Value
 ```
 
-Every solid arrow is a total function with a name. None is a cast: a value crosses a boundary
-by calling something, and the call is where a reader looks.
+The two-way arrow through `Margin` **is** the torsor: a difference of scores leaves the score
+domain, and only a margin can bring it back. `Depth` is dashed because it does not exist —
+its products land in six different codomains, so it has no single one to return.
+
+### Index spaces: one type per table, and no crossings
+
+```mermaid
+graph LR
+  StackIx["StackIx — from_ply"] --> A["the search stack"]
+  ContKey["ContKey — cont_plane_index"] --> B["continuation planes"]
+  CorrKey["CorrKey — corr_plane_index"] --> C["correction planes"]
+  PawnRow["PawnRow — PawnHistory::row"] --> D["pawn planes"]
+  KaIndex["KaIndex — halfka_index"] --> E["king-piece weights"]
+  TpIndex["TpIndex — threat / pawn_pair"] --> F["threat and pawn-pair weights"]
+  TbFile["TbFile — for_board_file"] --> G["Syzygy sub-tables"]
+```
+
+**The absence of crossings is the design.** Seven index types, seven tables, one arrow each,
+and each index built by exactly one function. Before the split, five of the seven travelled as
+`usize` and two as `u32`, so any of them reached any table. Two of the pairs genuinely overlap
+in range — the correction plane space is a subrange of the continuation space, and the
+king-piece index space is a prefix of the threat-and-pawn-pair one — which is what makes a
+swap read a real entry of the wrong table rather than fail.
 
 ## Denotation: a type is a set of values
 
