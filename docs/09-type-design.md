@@ -21,6 +21,84 @@ So the design rule throughout is: when the code knows something, put it where th
 see it. A doc-comment saying "this index is always below 64" is a proof that has evaporated. A
 `Square` is the same proof, still there at every call site.
 
+The theory each family rests on is collected in [11-references.md](11-references.md) under
+"Type theory and type design", with what each citation is for. This page assumes it.
+
+## What this buys
+
+The return, stated before the design, because a design doc that lists structure without
+stating its yield is asking to be taken on faith.
+
+### It closes a class of defect this port is uniquely exposed to
+
+rfish is a bit-exact port, and its hardest bugs are the ones that produce a *plausible wrong
+answer* rather than a crash. A swapped argument between two same-typed quantities is exactly
+that shape: the engine keeps running, the evaluation is wrong, and the only gate that notices
+is the bench signature — which tells you *that* something moved, never *where*.
+
+The types remove the shape rather than the instance. Concretely, each of these compiled before
+its type existed and is now a compile error:
+
+| the swap | what it did instead of failing |
+| --- | --- |
+| a game ply where a search ply belongs | the fifty-move and repetition tests measured from the wrong origin |
+| a continuation plane where a correction plane belongs | read a **real** plane of the wrong table — the correction space is a subrange |
+| a board file where a Syzygy sub-table index belongs | a confident wrong tablebase verdict |
+| a threat index where a king-piece index belongs | folded a different column of the weight table into the accumulator |
+| a history bonus where a score belongs | a score-domain number clamped by a history limit |
+| a bonus and its clamp, swapped | a differently shaped gravity curve, so a different move ordering |
+
+None of those is hypothetical: each was reachable, and each has been broken on purpose to
+confirm the compiler rejects it.
+
+### It finds defects, not only prevents them
+
+Three were found by *introducing* the type, in code that had been reviewed and gated:
+
+- `set_ep_square` took a square straight out of a FEN and stepped it in both pawn directions
+  **before** checking its rank, so a record naming a1 or h8 as the en-passant target read back
+  a wrapped byte. Splitting `Square` from `SquareOrNone` forced the step to become fallible
+  and the bug surfaced as a type error.
+- `Limits.ply` and `Position::is_draw(ply)` were both `i32` and both called `ply`, and they
+  count from different origins.
+- A doc-comment, a `const` assertion and a unit test all insisted `Square::NONE` must be 64
+  because a `DirtyPiece` record depended on it. There is no `DirtyPiece` in this engine — the
+  accumulator diffs recomputed feature sets. The contract had no holder and the assertion
+  defending it proved nothing.
+
+### It pays in performance more often than it costs
+
+This is the part that is genuinely counter-intuitive, so it is stated with mechanisms rather
+than adjectives. A type does not make code faster by existing; it makes a *shape* impossible,
+and the replacement shape is sometimes better:
+
+- **A fallible accessor beats a step-then-test-twice.** `Square`'s split forced
+  `s.shift(d)` followed by an on-board test to become `s.try_shift(d)` returning `Option`,
+  which short-circuits before the Chebyshev distance is computed at all. `sliding_attacks`
+  runs that loop for every square by every occupancy: **−22.2M instructions in
+  `build_magics`**, on the startup axis that `perf-budget` subtracts and no gate in `parity`
+  can see.
+- **An `Option`-returning accessor reads the field once.** `if ep.is_ok() { … ep.file() … }`
+  loads `st.ep_square` twice; `if let Some(ep) = ep.square()` loads it once — **−743K** on the
+  `do_move` path.
+- **A clamp that belongs to the table can be a const parameter.** Moving `apply_gravity`'s
+  limit out of the argument list removed the swap *and* an argument from every history update.
+- **Splitting an index space can force a better loop.** `fold_psqt` paired a weight table with
+  an index slice at runtime, a shape that only typechecks while both index spaces share a
+  type. Writing the two out separately was **−8.08M at sse41**.
+
+And it costs, in one specific and now-understood way — see [the cost rule](#the-cost-rule).
+Across the whole domain the ledger is **avx2 +0.37%, sse41 −0.21%**, plus that 22.2M of
+startup neither figure includes. The point is not that types are free; it is that the
+direction is not predictable from the source and must be measured at both tiers.
+
+### It makes the conversions visible to a reviewer
+
+`grep -rc '\.get()' crates/rfish-engine/src` counts the places a domain value becomes a plain
+number: a report to the GUI, a quantisation into `i64`, a pack into a 16-bit transposition
+word, an ordering number in the move picker. **Those are the lines a reviewer should look at**,
+and before the domain had types they were invisible, because everything was already a number.
+
 ## The map
 
 ```mermaid
