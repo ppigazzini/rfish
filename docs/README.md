@@ -17,10 +17,10 @@ Read in order. Each page owns a zone of the source and is the live claim about i
 | [06-platform.md](06-platform.md) | what the platform layer deliberately does NOT contain |
 | [07-shell.md](07-shell.md) | `crates/rfish/src/` — UCI transport, options, benchmark |
 | [08-idiomatic-rust.md](08-idiomatic-rust.md) | the pattern-by-pattern translation, and the measurement laws |
-| [09-tooling-ci.md](09-tooling-ci.md) | `cargo xtask`, the gates, CI, and each instrument's blind spots |
-| [10-references.md](10-references.md) | upstream, Rust and UCI sources this port is checked against |
-| [11-writing.md](11-writing.md) | how to write a comment and a doc page here |
-| [12-what-the-types-prevent.md](12-what-the-types-prevent.md) | the twenty domain newtypes, and the boundary of what they catch |
+| [09-type-design.md](09-type-design.md) | the value domain: what each type means, why it has that shape, and what it does not promise |
+| [10-tooling-ci.md](10-tooling-ci.md) | `cargo xtask`, the gates, CI, and each instrument's blind spots |
+| [11-references.md](11-references.md) | upstream, Rust and UCI sources this port is checked against |
+| [12-writing.md](12-writing.md) | how to write a comment and a doc page here |
 
 ## Docs are part of the change, not after it
 

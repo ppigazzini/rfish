@@ -17,7 +17,7 @@
 //!
 //! What this module does NOT do is pick the numbers. It builds comparable binaries and runs
 //! two instruments over them; the instruments disagree often, and both readings belong in a
-//! report. See `docs/09-tooling-ci.md` for which instrument settles which question.
+//! report. See `docs/10-tooling-ci.md` for which instrument settles which question.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -739,7 +739,7 @@ const BUDGET_GOLDEN: &str = "tools/instr_budget.golden";
 /// missed anything smaller.
 ///
 /// Against a spread of ten instructions in 1.7e9 across a from-scratch rebuild, 0.005% is
-/// ~8000x the noise and ~11x under the mutation. `docs/09-tooling-ci.md` records the run.
+/// ~8000x the noise and ~11x under the mutation. `docs/10-tooling-ci.md` records the run.
 const BUDGET_TOLERANCE: f64 = 0.000_05;
 
 /// How many times the bench is profiled before the median is taken.
