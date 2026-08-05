@@ -399,7 +399,7 @@ impl ThreatTables {
                 for to in Square::all() {
                     // The rank of `to` is how many attacked squares come before it, and the
                     // origin's own base is what every earlier origin already used.
-                    let below = Bitboard((1u64 << to.index()) - 1);
+                    let below = Bitboard::from_bits((1u64 << to.index()) - 1);
                     let rank = (attacks & below).count();
                     let combined = u16::try_from(used + rank).expect("a threat slot fits u16");
                     blocks[i].slot[from.index()][to.index()] = combined;
@@ -638,7 +638,7 @@ const PAWN_PAIR_BB: [Bitboard; SQUARE_NB] = {
         if f > 0 {
             files |= file >> 1;
         }
-        t[s] = Bitboard(files & RANKS_2_TO_7 & !(1u64 << s));
+        t[s] = Bitboard::from_bits(files & RANKS_2_TO_7 & !(1u64 << s));
         s += 1;
     }
     t

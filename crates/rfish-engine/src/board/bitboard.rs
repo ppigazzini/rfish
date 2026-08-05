@@ -17,8 +17,13 @@ use super::types::{Color, Direction, FILE_NB, RANK_NB, SQUARE_NB, Square};
 /// The operators are the set operations: `&` is intersection, `|` union, `^` symmetric
 /// difference, `!` complement. That is upstream's spelling too, so a ported expression
 /// reads the same on both sides.
+///
+/// The word is private, as every other domain newtype's is. Build one from
+/// [`Bitboard::from_bits`] and read it back with [`Bitboard::bits`]; the two together are
+/// what `pub` on the field used to buy, without leaving the representation open to a caller
+/// who decides a `Bitboard` is a convenient place to keep an unrelated mask.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct Bitboard(pub u64);
+pub struct Bitboard(u64);
 
 impl Bitboard {
     /// The empty set.
@@ -36,6 +41,17 @@ impl Bitboard {
     pub const fn from_square(sq: Square) -> Bitboard {
         debug_assert!(sq.is_ok());
         Bitboard(1u64 << sq.index())
+    }
+
+    /// The set whose members are the set bits of `w`.
+    ///
+    /// Total: every one of the 64 bits names a square, so no word is out of range. That is
+    /// what makes this the one `from_raw`-shaped constructor in the tree that needs neither a
+    /// check nor a mask.
+    #[inline(always)]
+    #[must_use]
+    pub const fn from_bits(w: u64) -> Bitboard {
+        Bitboard(w)
     }
 
     /// The raw word.
