@@ -408,9 +408,15 @@ pub struct ContinuationHistory {
 ///
 /// No arithmetic, no `From<usize>`: an index is produced by [`cont_plane_index`] and consumed
 /// by [`ContinuationHistory`], and there is no third thing to do with one.
+/// Held at `u32` rather than `usize` because the DOMAIN says so: the table is
+/// `2 * 2 * PIECE_NB * SQUARE_NB` planes, so a plane index needs twelve bits and a `usize`
+/// spends sixty-four. Width is the one property of a flat index that is not free — a
+/// `StackEntry` carries one of these beside a [`CorrKey`], and the eight bytes the pair wastes
+/// are what pushed the entry over a cache line. The const block below asserts the bound
+/// against the table's own shape, so it cannot go stale if the table grows.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct ContKey(usize);
+pub struct ContKey(u32);
 
 impl ContKey {
     /// The plane given to a slot a picker never reads.
@@ -430,7 +436,7 @@ impl ContKey {
     #[inline(always)]
     #[must_use]
     pub const fn index(self) -> usize {
-        self.0
+        self.0 as usize
     }
 }
 
@@ -477,7 +483,7 @@ impl WasCapture {
 #[must_use]
 pub fn cont_plane_index(in_check: InCheck, capture: WasCapture, pc: Piece, to: Square) -> ContKey {
     let quadrant = (in_check as usize) * 2 + capture as usize;
-    ContKey((quadrant * PIECE_NB + pc.index()) * SQUARE_NB + to.index())
+    ContKey(((quadrant * PIECE_NB + pc.index()) * SQUARE_NB + to.index()) as u32)
 }
 
 impl Default for ContinuationHistory {
@@ -535,7 +541,7 @@ pub struct ContinuationCorrectionHistory {
 /// reads a real plane of the wrong table rather than panicking. See [`ContKey`].
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct CorrKey(usize);
+pub struct CorrKey(u32);
 
 impl CorrKey {
     /// The plane a stack entry with no previous move carries, for the same reason
@@ -546,7 +552,7 @@ impl CorrKey {
     #[inline(always)]
     #[must_use]
     pub const fn index(self) -> usize {
-        self.0
+        self.0 as usize
     }
 }
 
@@ -555,8 +561,20 @@ impl CorrKey {
 #[inline(always)]
 #[must_use]
 pub fn corr_plane_index(pc: Piece, to: Square) -> CorrKey {
-    CorrKey(pc.index() * SQUARE_NB + to.index())
+    CorrKey((pc.index() * SQUARE_NB + to.index()) as u32)
 }
+
+/// Assert each plane index's WIDTH against the table shape that implies it.
+///
+/// Both constructors truncate to `u32`. That is sound only while the table it addresses has
+/// fewer planes than a `u32` can name, and a table is grown by editing its own declaration —
+/// far from here. Stated against the shapes rather than against a literal, so it cannot go
+/// stale: grow either table past the width and this fails to COMPILE, instead of silently
+/// truncating an index at the constructor and reading a real plane of the wrong quadrant.
+const _: () = {
+    assert!(2 * 2 * PIECE_NB * SQUARE_NB <= u32::MAX as usize, "a continuation plane index");
+    assert!(PIECE_NB * SQUARE_NB <= u32::MAX as usize, "a correction plane index");
+};
 
 impl Default for ContinuationCorrectionHistory {
     fn default() -> ContinuationCorrectionHistory {
