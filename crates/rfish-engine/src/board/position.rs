@@ -29,8 +29,8 @@ use super::bitboard::{
 };
 use super::threats::{self, DirtyPawnPairs, DirtyThreat};
 use super::types::{
-    COLOR_NB, CastlingRights, Color, Direction, File, Key, Move, MoveType, PIECE_NB, PIECE_TYPE_NB,
-    Piece, PieceType, Rank, SQUARE_NB, Square, Value, piece_value,
+    COLOR_NB, CastlingRights, Color, Direction, File, GamePly, Key, Move, MoveType, PIECE_NB,
+    PIECE_TYPE_NB, Piece, PieceType, Ply, Rank, SQUARE_NB, Square, Value, piece_value,
 };
 use super::zobrist;
 
@@ -263,7 +263,7 @@ pub struct Position {
     /// own index, so a backwards walk starts inside `prev` and never asks which half of the
     /// chain an index falls in.
     prev: Vec<StateInfo>,
-    game_ply: i32,
+    game_ply: GamePly,
     side_to_move: Color,
     chess960: bool,
 }
@@ -287,7 +287,7 @@ impl Position {
             by_color: [Bitboard::EMPTY; COLOR_NB],
             piece_count: [0; PIECE_NB],
             side_to_move: Color::White,
-            game_ply: 0,
+            game_ply: GamePly::START,
             castling_rook_square: [Square::NONE; 16],
             castling_path: [Bitboard::EMPTY; 16],
             castling_rights_mask: [CastlingRights::NONE; SQUARE_NB],
@@ -476,7 +476,7 @@ impl Position {
     /// The number of plies played from the position's own start.
     #[inline(always)]
     #[must_use]
-    pub fn game_ply(&self) -> i32 {
+    pub fn game_ply(&self) -> GamePly {
         self.game_ply
     }
 
@@ -857,7 +857,8 @@ impl Position {
             return Err(FenError::GamePlyOutOfRange);
         }
         // Upstream converts to a ply count from move 1, then subtracts one for Black.
-        self.game_ply = (fullmove.max(1) - 1) * 2 + i32::from(self.side_to_move == Color::Black);
+        self.game_ply =
+            GamePly::new((fullmove.max(1) - 1) * 2 + i32::from(self.side_to_move == Color::Black));
 
         let st = self.st_mut();
         st.rule50 = rule50;
@@ -1156,7 +1157,7 @@ impl Position {
     /// no single move can bridge the gap.
     #[must_use]
     #[inline]
-    pub fn upcoming_repetition(&self, ply: i32) -> bool {
+    pub fn upcoming_repetition(&self, ply: Ply) -> bool {
         let top = self.prev.len();
         let st = &self.st;
         let end = st.rule50.min(st.plies_from_null);
@@ -1191,7 +1192,7 @@ impl Position {
                 // XORing the destination back out, so an occupied destination is fine — the
                 // move would be a capture, which is still a move to that square.
                 if ((between_bb(s1, s2) ^ Bitboard::from_square(s2)) & self.occupied()).is_empty() {
-                    if ply > i {
+                    if ply.get() > i {
                         return true;
                     }
                     // At or above the root the position must already have repeated once:
@@ -1464,7 +1465,7 @@ impl Position {
         let mut key = self.st.key ^ zobrist::side();
         self.st.rule50 += 1;
         self.st.plies_from_null += 1;
-        self.game_ply += 1;
+        self.game_ply = self.game_ply.next();
 
         // Clear the parent's en-passant key before anything else can set a new one.
         if self.st.ep_square.is_ok() {
@@ -1681,7 +1682,7 @@ impl Position {
         }
 
         self.st = self.prev.pop().expect("the chain was checked non-empty above");
-        self.game_ply -= 1;
+        self.game_ply = self.game_ply.prev();
     }
 
     /// Flip the side to move without touching a piece.
@@ -1731,7 +1732,7 @@ impl Position {
     /// threefold. That asymmetry is upstream's, and it is why the search can claim a draw
     /// on the second occurrence.
     #[must_use]
-    pub fn is_draw(&self, ply: i32) -> bool {
+    pub fn is_draw(&self, ply: Ply) -> bool {
         let st = self.st();
         if st.rule50 > 99 && (!self.in_check() || super::movegen::has_legal_move(self)) {
             return true;
@@ -1827,9 +1828,9 @@ impl Position {
     /// repetition alone: with `Syzygy50MoveRule` off, the fifty-move half of a draw does
     /// not apply but a repetition still does.
     #[must_use]
-    pub fn is_repetition(&self, ply: i32) -> bool {
+    pub fn is_repetition(&self, ply: Ply) -> bool {
         let st = self.st();
-        st.repetition != 0 && st.repetition < ply
+        st.repetition != 0 && st.repetition < ply.get()
     }
 
     /// True when the side to move can reach a repetition with one move — upstream's
@@ -2055,7 +2056,7 @@ impl Position {
             s.push('-');
         }
 
-        let fullmove = 1 + (self.game_ply - i32::from(self.side_to_move == Color::Black)) / 2;
+        let fullmove = 1 + (self.game_ply.get() - i32::from(self.side_to_move == Color::Black)) / 2;
         write!(s, " {} {fullmove}", self.st().rule50).expect("writing to a String cannot fail");
         s
     }

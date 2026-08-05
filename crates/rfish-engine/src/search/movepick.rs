@@ -19,7 +19,7 @@
 use crate::board::movegen::{GenType, MoveSink, generate_into};
 use crate::board::position::Position;
 use crate::board::types::{
-    File, MAX_MOVES, Move, MoveType, Piece, PieceType, Square, Value, piece_value,
+    File, MAX_MOVES, Move, MoveType, Piece, PieceType, Ply, Square, Value, piece_value,
 };
 
 use super::history::{ContKey, Histories, PawnHistory, PawnRow};
@@ -219,7 +219,7 @@ pub struct MovePicker {
     threshold: Value,
     stage: Stage,
     depth: i32,
-    ply: i32,
+    ply: Ply,
     skip_quiets: bool,
 
     /// Cursor into `moves`.
@@ -257,7 +257,7 @@ impl MovePicker {
         continuations: ContKeys,
         tt_move: Move,
         depth: i32,
-        ply: i32,
+        ply: Ply,
     ) -> MovePicker {
         let usable = tt_move.is_ok() && pos.pseudo_legal(tt_move);
         let stage = if pos.in_check() {
@@ -297,7 +297,7 @@ impl MovePicker {
             threshold,
             stage: if usable { Stage::ProbCutTt } else { Stage::ProbCutInit },
             depth: 0,
-            ply: 0,
+            ply: Ply::ROOT,
             skip_quiets: false,
             cur: 0,
             end_cur: 0,
@@ -550,8 +550,8 @@ impl MovePicker {
         let main_row = h.main.row(us);
         let pawn_plane = h.pawn.plane(self.pawn_row);
         let cont = [0usize, 1, 2, 3, 5].map(|s| h.continuation.plane(self.continuations[s]));
-        let low_ply = ((self.ply as usize) < super::history::LOW_PLY_HISTORY_SIZE)
-            .then(|| h.low_ply.row(self.ply as usize));
+        let low_ply = (self.ply.index() < super::history::LOW_PLY_HISTORY_SIZE)
+            .then(|| h.low_ply.row(self.ply));
 
         // The quiet list starts where the captures ended; only the new entries are scored.
         let start = self.end_captures;
@@ -579,7 +579,7 @@ impl MovePicker {
             score += piece_value(Piece::new(us, pt)) * v;
 
             if let Some(row) = low_ply {
-                score += 8 * i32::from(row[mv.raw() as usize]) / (1 + self.ply);
+                score += 8 * i32::from(row[mv.raw() as usize]) / (1 + self.ply.get());
             }
 
             slot.score = score;
@@ -627,7 +627,7 @@ mod tests {
     use crate::board::types::Rank;
 
     fn collect(pos: &Position, h: &Histories, tt: Move) -> Vec<Move> {
-        let mut mp = MovePicker::new(pos, [ContKey::UNREAD; 6], tt, 4, 0);
+        let mut mp = MovePicker::new(pos, [ContKey::UNREAD; 6], tt, 4, Ply::ROOT);
         let mut buf = MoveBuf::new();
         let mut out = Vec::new();
         loop {
@@ -697,7 +697,7 @@ mod tests {
     fn qsearch_yields_only_forcing_moves() {
         let h = Histories::default();
         let pos = Position::from_fen("4k3/8/8/3q4/4P3/8/8/R3K3 w - - 0 1", false).expect("valid");
-        let mut mp = MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, 0, 0);
+        let mut mp = MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, 0, Ply::ROOT);
         let mut buf = MoveBuf::new();
         let mut any = false;
         loop {
@@ -716,7 +716,7 @@ mod tests {
     fn qsearch_in_check_yields_every_evasion() {
         let h = Histories::default();
         let pos = Position::from_fen("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1", false).expect("valid");
-        let mut mp = MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, 0, 0);
+        let mut mp = MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, 0, Ply::ROOT);
         let mut buf = MoveBuf::new();
         let mut out = Vec::new();
         loop {
@@ -738,7 +738,7 @@ mod tests {
     fn skip_quiets_stops_the_quiet_stage_mid_node() {
         let h = Histories::default();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
-        let mut mp = MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, 4, 0);
+        let mut mp = MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, 4, Ply::ROOT);
         let mut buf = MoveBuf::new();
         mp.skip_quiet_moves();
         let mut seen = 0;

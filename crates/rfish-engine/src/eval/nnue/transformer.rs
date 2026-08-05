@@ -34,7 +34,7 @@ use core::simd::Simd;
 
 use crate::board::position::Position;
 use crate::board::threats::{DirtyPawnPairs, DirtyThreat};
-use crate::board::types::{COLOR_NB, Color, Key, MAX_PLY, Piece, SQUARE_NB, Square};
+use crate::board::types::{COLOR_NB, Color, Key, MAX_PLY, Piece, Ply, SQUARE_NB, Square};
 
 use super::common::{Aligned, FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
 use super::features::{
@@ -423,8 +423,8 @@ impl EvalScratch {
     /// Called from the search's own `do_move`. The records are consumed by
     /// [`FeatureTransformer::transform`] at that ply and at any ply below it that walks back
     /// through this one.
-    pub fn record(&mut self, ply: usize, pos: &Position, key: Key, dpp: DirtyPawnPairs) {
-        let slot = &mut self.plies[ply];
+    pub fn record(&mut self, ply: Ply, pos: &Position, key: Key, dpp: DirtyPawnPairs) {
+        let slot = &mut self.plies[ply.index()];
         slot.reached = key;
         slot.dpp = dpp;
         slot.recorded = true;
@@ -436,9 +436,9 @@ impl EvalScratch {
     ///
     /// Handed out before the move is made, because `do_move_recording` fills it as it moves
     /// the pieces. Cleared here so the caller never has to remember to.
-    pub fn record_threats(&mut self, ply: usize) -> &mut Vec<DirtyThreat> {
-        self.plies[ply].dts.clear();
-        &mut self.plies[ply].dts
+    pub fn record_threats(&mut self, ply: Ply) -> &mut Vec<DirtyThreat> {
+        self.plies[ply.index()].dts.clear();
+        &mut self.plies[ply.index()].dts
     }
 
     /// Mark the hop that reached `ply` as one no records describe.
@@ -446,8 +446,8 @@ impl EvalScratch {
     /// A null move needs none — it moves no piece, so no threat and no pawn pair changes —
     /// but anything else that advances a ply without recording must say so, or the roll
     /// forward would skip a move.
-    pub fn record_null(&mut self, ply: usize, pos: &Position, key: Key) {
-        let slot = &mut self.plies[ply];
+    pub fn record_null(&mut self, ply: Ply, pos: &Position, key: Key) {
+        let slot = &mut self.plies[ply.index()];
         slot.reached = key;
         slot.dts.clear();
         slot.dpp = DirtyPawnPairs::default();
@@ -1496,9 +1496,9 @@ mod tests {
                 }
                 let m = list.get(pick % list.len()).copied().expect("in range");
                 let gives_check = pos.gives_check(m);
-                let dts = walk.record_threats(ply);
+                let dts = walk.record_threats(Ply::new(ply as i32));
                 let dpp = pos.do_move_recording(m, gives_check, Some(dts));
-                walk.record(ply, &pos, pos.raw_key(), dpp);
+                walk.record(Ply::new(ply as i32), &pos, pos.raw_key(), dpp);
 
                 let rolled = ft.transform(&pos, 0, ply, &mut walk);
                 let rolled_out = walk.transformed().to_vec();

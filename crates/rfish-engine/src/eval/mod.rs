@@ -19,7 +19,7 @@ pub mod classical;
 pub mod nnue;
 
 use crate::board::position::Position;
-use crate::board::types::{Color, PieceType, VALUE_DRAW, Value};
+use crate::board::types::{Color, PieceType, Ply, VALUE_DRAW, Value};
 #[cfg(not(feature = "eval-material"))]
 use crate::board::types::{VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY};
 
@@ -35,7 +35,7 @@ use crate::board::types::{VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY};
 pub fn evaluate(
     pos: &Position,
     network: Option<&nnue::Network>,
-    ply: usize,
+    ply: Ply,
     scratch: &mut nnue::Scratch,
     optimism: Value,
 ) -> Value {
@@ -56,7 +56,7 @@ pub fn evaluate(
 pub fn evaluate(
     pos: &Position,
     network: Option<&nnue::Network>,
-    ply: usize,
+    ply: Ply,
     scratch: &mut nnue::Scratch,
     optimism: Value,
 ) -> Value {
@@ -100,7 +100,7 @@ fn material_only(pos: &Position) -> Value {
 fn nnue_value(
     pos: &Position,
     net: &nnue::Network,
-    ply: usize,
+    ply: Ply,
     scratch: &mut nnue::Scratch,
     optimism: Value,
 ) -> Value {
@@ -164,7 +164,7 @@ mod tests {
     /// Evaluate with no network, which is the fallback path.
     fn eval_classical(pos: &Position) -> Value {
         let mut scratch = nnue::Scratch::default();
-        evaluate(pos, None, 0, &mut scratch, 0)
+        evaluate(pos, None, Ply::ROOT, &mut scratch, 0)
     }
 
     #[test]

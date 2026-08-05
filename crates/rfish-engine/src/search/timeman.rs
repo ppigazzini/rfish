@@ -14,7 +14,7 @@
 
 use std::time::Instant;
 
-use crate::board::types::Color;
+use crate::board::types::{Color, GamePly};
 use crate::state::{Limits, SearchOptions, TimeBudget};
 
 /// Milliseconds reserved for the move to reach the GUI.
@@ -87,7 +87,7 @@ impl TimeManagement {
     /// increment and the overhead are all converted into node counts, and everything
     /// downstream then compares node counts against node counts. That conversion is
     /// upstream's, and doing it anywhere else would leave two units in play at once.
-    pub fn init(&mut self, limits: &mut Limits, us: Color, ply: i32, opts: &SearchOptions) {
+    pub fn init(&mut self, limits: &mut Limits, us: Color, ply: GamePly, opts: &SearchOptions) {
         let npmsec = opts.nodestime as i64;
 
         // With no clock there is nothing to divide up. `start` and `use_nodes_time` still
@@ -158,13 +158,13 @@ impl TimeManagement {
 
             // A healthy increment can push `time_left` past the time actually available for
             // this move, so cap against the clock as well as against the formula.
-            opt_scale = (0.012_112 + (f64::from(ply) + 3.22713).powf(0.46866) * opt_constant)
+            opt_scale = (0.012_112 + (f64::from(ply.get()) + 3.22713).powf(0.46866) * opt_constant)
                 .min(0.19404 * time as f64 / time_left as f64)
                 * self.original_time_adjust;
-            max_scale = 6.873f64.min(max_constant + f64::from(ply) / 12.352);
+            max_scale = 6.873f64.min(max_constant + f64::from(ply.get()) / 12.352);
         } else {
             // x moves in y seconds (+ z increment).
-            opt_scale = ((0.88 + f64::from(ply) / 116.4) / f64::from(mtg))
+            opt_scale = ((0.88 + f64::from(ply.get()) / 116.4) / f64::from(mtg))
                 .min(0.88 * time as f64 / time_left as f64);
             max_scale = 1.3 + 0.11 * f64::from(mtg);
         }
@@ -196,7 +196,7 @@ mod tests {
         }
     }
 
-    fn budget(ms: u64, inc: u64, mtg: Option<u32>, ply: i32) -> TimeBudget {
+    fn budget(ms: u64, inc: u64, mtg: Option<u32>, ply: GamePly) -> TimeBudget {
         let mut l = limits_with_clock(ms, inc, mtg);
         let mut tm = TimeManagement::default();
         tm.init(&mut l, Color::White, ply, &SearchOptions::default());
@@ -207,7 +207,7 @@ mod tests {
     fn no_clock_leaves_the_bounds_at_zero() {
         let mut l = Limits { depth: Some(10), start: Some(Instant::now()), ..Limits::default() };
         let mut tm = TimeManagement::default();
-        tm.init(&mut l, Color::White, 0, &SearchOptions::default());
+        tm.init(&mut l, Color::White, GamePly::new(0), &SearchOptions::default());
         // `go depth` is not bounded by the clock, and the caller checks
         // `uses_time_management` before reading these at all.
         assert!(!l.uses_time_management());
@@ -218,7 +218,7 @@ mod tests {
     fn the_budget_never_exceeds_the_clock() {
         for ms in [10u64, 100, 1000, 60_000, 3_600_000] {
             for inc in [0u64, 100, 1000] {
-                let b = budget(ms, inc, None, 20);
+                let b = budget(ms, inc, None, GamePly::new(20));
                 assert!(b.maximum <= ms as i64, "budget {b:?} exceeds a {ms} ms clock");
                 assert!(b.optimum <= b.maximum);
             }
@@ -229,17 +229,23 @@ mod tests {
     fn a_short_clock_still_yields_a_positive_budget() {
         // Under the overhead the budget must not become zero, or the engine forfeits by
         // making no move at all.
-        assert!(budget(5, 0, None, 20).maximum >= 1);
+        assert!(budget(5, 0, None, GamePly::new(20)).maximum >= 1);
     }
 
     #[test]
     fn a_known_move_quota_spends_a_larger_share_than_sudden_death() {
-        assert!(budget(60_000, 0, Some(5), 20).optimum > budget(60_000, 0, None, 20).optimum);
+        assert!(
+            budget(60_000, 0, Some(5), GamePly::new(20)).optimum
+                > budget(60_000, 0, None, GamePly::new(20)).optimum
+        );
     }
 
     #[test]
     fn an_increment_raises_the_per_move_budget() {
-        assert!(budget(60_000, 1000, None, 20).optimum > budget(60_000, 0, None, 20).optimum);
+        assert!(
+            budget(60_000, 1000, None, GamePly::new(20)).optimum
+                > budget(60_000, 0, None, GamePly::new(20)).optimum
+        );
     }
 
     #[test]
@@ -247,12 +253,12 @@ mod tests {
         let mut l = limits_with_clock(60_000, 0, None);
         let mut tm = TimeManagement::default();
         let plain = SearchOptions::default();
-        tm.init(&mut l, Color::White, 20, &plain);
+        tm.init(&mut l, Color::White, GamePly::new(20), &plain);
         let without = tm.budget().optimum;
 
         let mut l = limits_with_clock(60_000, 0, None);
         let mut tm = TimeManagement::default();
-        tm.init(&mut l, Color::White, 20, &SearchOptions { ponder: true, ..plain });
+        tm.init(&mut l, Color::White, GamePly::new(20), &SearchOptions { ponder: true, ..plain });
         assert_eq!(tm.budget().optimum, without + without / 4);
     }
 
@@ -261,7 +267,7 @@ mod tests {
         let mut l = limits_with_clock(60_000, 100, None);
         let mut tm = TimeManagement::default();
         let opts = SearchOptions { nodestime: 600, ..SearchOptions::default() };
-        tm.init(&mut l, Color::White, 20, &opts);
+        tm.init(&mut l, Color::White, GamePly::new(20), &opts);
 
         assert!(tm.uses_nodes_time());
         assert!(tm.budget().use_nodes_time);
@@ -276,12 +282,12 @@ mod tests {
         let mut l = limits_with_clock(1000, 0, None);
         let mut tm = TimeManagement::default();
         let opts = SearchOptions { nodestime: 600, ..SearchOptions::default() };
-        tm.init(&mut l, Color::White, 0, &opts);
+        tm.init(&mut l, Color::White, GamePly::new(0), &opts);
         let first = tm.budget().optimum;
 
         tm.advance_nodes_time(500_000);
         let mut l = limits_with_clock(1000, 0, None);
-        tm.init(&mut l, Color::White, 2, &opts);
+        tm.init(&mut l, Color::White, GamePly::new(2), &opts);
         // Half the game's nodes are gone, so the next move plans for less.
         assert!(tm.budget().optimum < first, "spending nodes must shrink the next budget");
     }
@@ -291,17 +297,17 @@ mod tests {
         let mut tm = TimeManagement::default();
         let opts = SearchOptions::default();
         let mut l = limits_with_clock(600_000, 0, None);
-        tm.init(&mut l, Color::White, 0, &opts);
+        tm.init(&mut l, Color::White, GamePly::new(0), &opts);
         let fixed = tm.original_time_adjust;
 
         // A later move with far less clock keeps the factor the game opened with.
         let mut l = limits_with_clock(1_000, 0, None);
-        tm.init(&mut l, Color::White, 60, &opts);
+        tm.init(&mut l, Color::White, GamePly::new(60), &opts);
         assert!((tm.original_time_adjust - fixed).abs() < f64::EPSILON);
 
         tm.clear();
         let mut l = limits_with_clock(1_000, 0, None);
-        tm.init(&mut l, Color::White, 0, &opts);
+        tm.init(&mut l, Color::White, GamePly::new(0), &opts);
         assert!(
             (tm.original_time_adjust - fixed).abs() > f64::EPSILON,
             "ucinewgame must re-derive the factor"

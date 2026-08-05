@@ -19,7 +19,7 @@
 //!
 //! Golden: `Stockfish/src/history.h`, `Stockfish/src/search.cpp`.
 
-use crate::board::types::{COLOR_NB, Color, PIECE_NB, Piece, PieceType, SQUARE_NB, Square};
+use crate::board::types::{COLOR_NB, Color, PIECE_NB, Piece, PieceType, Ply, SQUARE_NB, Square};
 
 /// One `(piece, square)` plane, as the continuation and pawn tables store it.
 ///
@@ -196,20 +196,20 @@ impl Default for LowPlyHistory {
 impl LowPlyHistory {
     #[inline(always)]
     #[must_use]
-    pub fn get(&self, ply: usize, mv: u16) -> i32 {
-        i32::from(self.table[ply][mv as usize])
+    pub fn get(&self, ply: Ply, mv: u16) -> i32 {
+        i32::from(self.table[ply.index()][mv as usize])
     }
 
     /// The whole row for `ply`, for a caller that reads many moves at one ply.
     #[inline(always)]
     #[must_use]
-    pub fn row(&self, ply: usize) -> &MoveRow {
-        &self.table[ply]
+    pub fn row(&self, ply: Ply) -> &MoveRow {
+        &self.table[ply.index()]
     }
 
     #[inline(always)]
-    pub fn update(&mut self, ply: usize, mv: u16, bonus: i32) {
-        apply_gravity(&mut self.table[ply][mv as usize], bonus, MAIN_HISTORY_LIMIT);
+    pub fn update(&mut self, ply: Ply, mv: u16, bonus: i32) {
+        apply_gravity(&mut self.table[ply.index()][mv as usize], bonus, MAIN_HISTORY_LIMIT);
     }
 
     /// Reset every entry to `v`. Upstream refills this at the start of every iteration,

@@ -950,15 +950,15 @@ pub const fn piece_value(pc: Piece) -> Value {
 /// The score for delivering mate in `ply` plies.
 #[inline(always)]
 #[must_use]
-pub const fn mate_in(ply: i32) -> Value {
-    VALUE_MATE - ply
+pub const fn mate_in(ply: Ply) -> Value {
+    VALUE_MATE - ply.get()
 }
 
 /// The score for being mated in `ply` plies.
 #[inline(always)]
 #[must_use]
-pub const fn mated_in(ply: i32) -> Value {
-    ply - VALUE_MATE
+pub const fn mated_in(ply: Ply) -> Value {
+    ply.get() - VALUE_MATE
 }
 
 /// True unless the value is the "no score" sentinel.
@@ -1011,6 +1011,121 @@ pub const fn is_mated(v: Value) -> bool {
 #[must_use]
 pub const fn is_mate_or_mated(v: Value) -> bool {
     is_mate(v) || is_mated(v)
+}
+
+// ---------------------------------------------------------------------------
+// Plies
+// ---------------------------------------------------------------------------
+
+/// Distance from the ROOT of the current search, in plies.
+///
+/// Split from [`GamePly`] because the two were both `i32` and both spelled `ply`, and they
+/// are not the same quantity: this one is zero at the root of every search, that one counts
+/// from the start of the game. `Limits.ply` is a [`GamePly`] and feeds the time manager;
+/// `Position::is_draw(ply)` takes a [`Ply`] and decides a repetition. Neither function
+/// rejects the other's argument today.
+///
+/// The operator set is deliberately closed and small — a step forward, a step back, an
+/// ordering, and an index. Everything else a ply participates in is a mate distance or a
+/// transposition adjustment, and those take a `Ply` directly rather than an `i32`.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct Ply(i32);
+
+impl Ply {
+    /// The root of a search.
+    pub const ROOT: Ply = Ply(0);
+    /// The deepest ply the search may reach, as [`MAX_PLY`] names it.
+    pub const MAX: Ply = Ply(MAX_PLY as i32);
+
+    /// Checked construction, per the rule at the top of this file.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(i: i32) -> Ply {
+        debug_assert!(i >= 0, "a ply is a distance from the root");
+        Ply(i)
+    }
+
+    /// The distance as a number, for the reporting and time paths that need one.
+    ///
+    /// This is the escape hatch, and it is narrow on purpose: `seldepth` is reported as an
+    /// integer and the time manager scales by one. A search formula that wants a ply should
+    /// take a [`Ply`].
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+
+    /// Index a per-ply table, such as the stack or the low-ply history.
+    #[inline(always)]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    /// One ply deeper — the child of this node.
+    #[inline(always)]
+    #[must_use]
+    pub const fn next(self) -> Ply {
+        Ply(self.0 + 1)
+    }
+
+    /// One ply shallower — this node's parent.
+    #[inline(always)]
+    #[must_use]
+    pub const fn prev(self) -> Ply {
+        Ply(self.0 - 1)
+    }
+
+    /// `n` plies deeper.
+    #[inline(always)]
+    #[must_use]
+    pub const fn offset(self, n: i32) -> Ply {
+        Ply(self.0 + n)
+    }
+}
+
+/// Plies since the START OF THE GAME, as the FEN's move number implies.
+///
+/// Distinct from [`Ply`]: see that type. This one is what the time manager scales its budget
+/// by and what `Position::fen` turns back into a move number.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct GamePly(i32);
+
+impl GamePly {
+    /// The start of a game.
+    pub const START: GamePly = GamePly(0);
+
+    /// Checked construction, per the rule at the top of this file.
+    #[inline(always)]
+    #[must_use]
+    pub const fn new(i: i32) -> GamePly {
+        debug_assert!(i >= 0, "a game ply is a count from the start");
+        GamePly(i)
+    }
+
+    /// The count as a number, for the move-number arithmetic and the time model.
+    #[inline(always)]
+    #[must_use]
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+
+    /// One ply later.
+    #[inline(always)]
+    #[must_use]
+    pub const fn next(self) -> GamePly {
+        GamePly(self.0 + 1)
+    }
+
+    /// One ply earlier.
+    #[inline(always)]
+    #[must_use]
+    pub const fn prev(self) -> GamePly {
+        GamePly(self.0 - 1)
+    }
 }
 
 /// A Zobrist hash key.

@@ -31,10 +31,10 @@ use std::time::Instant;
 use crate::board::movegen::{generate_legal, has_legal_move, move_to_uci};
 use crate::board::position::Position;
 use crate::board::types::{
-    Bound, Color, MAX_MOVES, MAX_PLY, Move, Piece, PieceType, Square, VALUE_DRAW, VALUE_INFINITE,
-    VALUE_MATE, VALUE_MATE_IN_MAX_PLY, VALUE_NONE, VALUE_TB, VALUE_TB_LOSS_IN_MAX_PLY,
-    VALUE_TB_WIN_IN_MAX_PLY, VALUE_ZERO, Value, is_decisive, is_loss, is_mate_or_mated, is_valid,
-    is_win, mate_in, mated_in, piece_value,
+    Bound, Color, MAX_MOVES, MAX_PLY, Move, Piece, PieceType, Ply, Square, VALUE_DRAW,
+    VALUE_INFINITE, VALUE_MATE, VALUE_MATE_IN_MAX_PLY, VALUE_NONE, VALUE_TB,
+    VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY, VALUE_ZERO, Value, is_decisive, is_loss,
+    is_mate_or_mated, is_valid, is_win, mate_in, mated_in, piece_value,
 };
 use crate::eval;
 use crate::eval::nnue::{Network, Scratch};
@@ -211,7 +211,7 @@ pub struct SearchWorker {
     pv_last: usize,
     multi_pv: usize,
     /// The ply below which null-move pruning is disabled during a verification search.
-    nmp_min_ply: i32,
+    nmp_min_ply: Ply,
     /// The previous iteration's principal variation for the current PV slot, which the
     /// follow-PV test compares against.
     last_iteration_pv: Vec<Move>,
@@ -301,7 +301,7 @@ impl SearchWorker {
             pv_index: 0,
             pv_last: 0,
             multi_pv: 1,
-            nmp_min_ply: 0,
+            nmp_min_ply: Ply::ROOT,
             last_iteration_pv: Vec::new(),
             best_move_changes: 0.0,
             reductions: match vec![0; MAX_MOVES].into_boxed_slice().try_into() {
@@ -403,9 +403,9 @@ impl SearchWorker {
 
     /// The static evaluation of the worker's current position.
     #[inline]
-    fn evaluate(&mut self, ply: i32) -> Value {
+    fn evaluate(&mut self, ply: Ply) -> Value {
         let optimism = self.optimism[self.pos.side_to_move().index()];
-        let ply = ply.max(0) as usize;
+        let ply = ply.max(Ply::ROOT);
         eval::evaluate(&self.pos, self.network.as_deref(), ply, &mut self.scratch, optimism)
     }
 
@@ -435,7 +435,7 @@ impl SearchWorker {
         }
         // Record what the child's accumulator will roll forward from. Split the borrow by
         // FIELD: the record list belongs to the scratch and the pieces to the position.
-        let ply = si - STACK_BASE + 1;
+        let ply = Ply::new((si - STACK_BASE) as i32 + 1);
         #[cfg(not(feature = "eval-material"))]
         {
             let dts = self.scratch.record_threats(ply);
@@ -468,7 +468,11 @@ impl SearchWorker {
         self.pos.do_null_move();
         // A null move moves no piece, so it changes no threat and no pawn pair: the child
         // rolls forward from the parent with an EMPTY delta rather than refreshing.
-        self.scratch.record_null(si - STACK_BASE + 1, &self.pos, self.pos.raw_key());
+        self.scratch.record_null(
+            Ply::new((si - STACK_BASE) as i32 + 1),
+            &self.pos,
+            self.pos.raw_key(),
+        );
         self.stack[si].current_move = Move::NULL;
         self.stack[si].continuation = cont_plane_index(false, false, Piece::NONE, Square::A1);
         self.stack[si].continuation_correction = corr_plane_index(Piece::NONE, Square::A1);
@@ -626,13 +630,13 @@ impl SearchWorker {
     /// Reward or punish a quiet move across every table that orders quiet moves.
     fn update_quiet_histories(&mut self, si: usize, mv: Move, bonus: i32) {
         let us = self.pos.side_to_move();
-        let ply = si - STACK_BASE;
+        let ply = Ply::new((si - STACK_BASE) as i32);
         let pc = self.pos.moved_piece(mv);
         let to = mv.to();
         let pawn_row = super::history::PawnHistory::row(self.pos.st().pawn_key);
 
         self.histories.main.update(us, mv.raw(), bonus);
-        if ply < LOW_PLY_HISTORY_SIZE {
+        if ply.index() < LOW_PLY_HISTORY_SIZE {
             self.histories.low_ply.update(ply, mv.raw(), bonus * 712 / 1024);
         }
         self.update_continuation_histories(si, pc, to, bonus * 750 / 1024);
@@ -773,7 +777,7 @@ impl SearchWorker {
         self.sel_depth = 0;
         self.root_depth = 0;
         self.completed_depth = 0;
-        self.nmp_min_ply = 0;
+        self.nmp_min_ply = Ply::ROOT;
         self.best_move_changes = 0.0;
         self.calls_cnt = 0;
         self.optimism = [0; 2];
@@ -865,7 +869,7 @@ impl SearchWorker {
         }
 
         self.pos.do_move(best);
-        if !self.pos.is_draw(1) {
+        if !self.pos.is_draw(Ply::new(1)) {
             let probe = tt.probe(self.pos.key());
             if probe.hit
                 && probe.data.mv.is_ok()
@@ -1025,7 +1029,8 @@ impl SearchWorker {
                         (self.root_depth - failed_high_cnt - 3 * (search_again_counter + 1) / 4)
                             .max(1);
                     self.root_delta = beta - alpha;
-                    best_value = self.node::<true, true>(alpha, beta, adjusted_depth, 0, false, tt);
+                    best_value =
+                        self.node::<true, true>(alpha, beta, adjusted_depth, Ply::ROOT, false, tt);
 
                     // Stable, because every score but the first and the new best is set to
                     // -INFINITE and the order of the rest must be preserved.
@@ -1206,8 +1211,8 @@ impl SearchWorker {
 
                 // Stop when the budget is spent, or when the line is already decided.
                 if elapsed > total_time.min(self.budget.maximum as f64)
-                    || self.root_moves[self.multi_pv - 1].score >= mate_in(3)
-                    || self.root_moves[0].score == mated_in(2)
+                    || self.root_moves[self.multi_pv - 1].score >= mate_in(Ply::new(3))
+                    || self.root_moves[0].score == mated_in(Ply::new(2))
                 {
                     if self.shared.pondering() {
                         // Pondering is free time. Keep going until the GUI says otherwise.
@@ -1319,7 +1324,7 @@ impl SearchWorker {
         mut alpha: Value,
         mut beta: Value,
         mut depth: i32,
-        ply: i32,
+        ply: Ply,
         cut_node: bool,
         tt: &TranspositionTable,
     ) -> Value {
@@ -1340,7 +1345,7 @@ impl SearchWorker {
             }
         }
 
-        let si = STACK_BASE + ply as usize;
+        let si = STACK_BASE + ply.index();
         let mut best_value;
         let mut max_value = VALUE_INFINITE;
         // Fixed arrays, not `Vec`. Upstream's `ValueList<Move, 32>` is inline storage and
@@ -1364,21 +1369,21 @@ impl SearchWorker {
         // relaxed there, because that line is the one the iteration most needs resolved.
         self.stack[si].follow_pv = ROOT
             || (self.stack[si - 1].follow_pv
-                && ((ply - 1) as usize) < self.last_iteration_pv.len()
-                && self.stack[si - 1].current_move == self.last_iteration_pv[(ply - 1) as usize]);
+                && ply.prev().index() < self.last_iteration_pv.len()
+                && self.stack[si - 1].current_move == self.last_iteration_pv[ply.prev().index()]);
 
         if self.id == 0 {
             self.check_time();
         }
 
-        if PV && self.sel_depth < ply + 1 {
-            self.sel_depth = ply + 1;
+        if PV && self.sel_depth < ply.next().get() {
+            self.sel_depth = ply.next().get();
         }
 
         if !ROOT {
             // Step 2. Check for aborted search and immediate draw
-            if self.shared.stopped() || self.pos.is_draw(ply) || ply >= MAX_PLY as i32 {
-                return if ply >= MAX_PLY as i32 && !in_check {
+            if self.shared.stopped() || self.pos.is_draw(ply) || ply >= Ply::MAX {
+                return if ply >= Ply::MAX && !in_check {
                     self.evaluate(ply)
                 } else {
                     value_draw(self.nodes)
@@ -1389,7 +1394,7 @@ impl SearchWorker {
             // this subtree could produce, so the window can be narrowed to the mate range —
             // and when that empties the window, the node is already answered.
             alpha = alpha.max(mated_in(ply));
-            beta = beta.min(mate_in(ply + 1));
+            beta = beta.min(mate_in(ply.next()));
             if alpha >= beta {
                 return alpha;
             }
@@ -1661,20 +1666,20 @@ impl SearchWorker {
                 let r = 7 + depth / 3 + ((self.stack[si].static_eval - beta) / 256).max(0);
                 self.do_null_move(si);
                 let null_value =
-                    -self.node::<false, false>(-beta, -beta + 1, depth - r, ply + 1, false, tt);
+                    -self.node::<false, false>(-beta, -beta + 1, depth - r, ply.next(), false, tt);
                 self.undo_null_move();
 
                 if null_value >= beta && !is_win(null_value) {
-                    if self.nmp_min_ply != 0 || depth < 16 {
+                    if self.nmp_min_ply != Ply::ROOT || depth < 16 {
                         return null_value;
                     }
 
                     // At high depth the null-move assumption is verified with a real
                     // search, with null moves disabled below so the verification cannot
                     // lean on the very assumption it is checking.
-                    self.nmp_min_ply = ply + 3 * (depth - r) / 4;
+                    self.nmp_min_ply = ply.offset(3 * (depth - r) / 4);
                     let v = self.node::<false, false>(beta - 1, beta, depth - r, ply, false, tt);
-                    self.nmp_min_ply = 0;
+                    self.nmp_min_ply = Ply::ROOT;
                     if v >= beta {
                         return null_value;
                     }
@@ -1695,7 +1700,7 @@ impl SearchWorker {
             prob_cut_beta = beta + 241 - 64 * i32::from(improving);
             if depth >= 3 && !is_decisive(beta) && !(is_valid(tt_value) && tt_value < prob_cut_beta)
             {
-                let slot = SLOTS_PER_PLY * ply as usize
+                let slot = SLOTS_PER_PLY * ply.index()
                     + if excluded_move.is_some() { SLOT_EXCLUDED } else { SLOT_NODE };
                 let mut mp = MovePicker::new_probcut(
                     &self.pos,
@@ -1719,13 +1724,13 @@ impl SearchWorker {
                     // A quiescence probe first: it is far cheaper than the real search and
                     // rejects most candidates outright.
                     let mut value =
-                        -self.qsearch::<false>(-prob_cut_beta, -prob_cut_beta + 1, ply + 1, tt);
+                        -self.qsearch::<false>(-prob_cut_beta, -prob_cut_beta + 1, ply.next(), tt);
                     if value >= prob_cut_beta && prob_cut_depth > 0 {
                         value = -self.node::<false, false>(
                             -prob_cut_beta,
                             -prob_cut_beta + 1,
                             prob_cut_depth,
-                            ply + 1,
+                            ply.next(),
                             !cut_node,
                             tt,
                         );
@@ -1772,7 +1777,7 @@ impl SearchWorker {
             self.stack[si - 6].continuation,
         ];
 
-        let slot = SLOTS_PER_PLY * ply as usize
+        let slot = SLOTS_PER_PLY * ply.index()
             + if excluded_move.is_some() { SLOT_EXCLUDED } else { SLOT_NODE };
         let mut mp = MovePicker::new(&self.pos, cont_keys, tt_move, depth, ply);
         let mut value = best_value;
@@ -1932,11 +1937,11 @@ impl SearchWorker {
                         - 152 * i32::from(!tt_capture)
                         - corr_val_adj
                         - 1175 * i32::from(self.histories.tt_move) / 114_178
-                        - i32::from(ply > self.root_depth) * 38;
+                        - i32::from(ply.get() > self.root_depth) * 38;
                     let triple_margin = 70 + 279 * i32::from(PV) - 188 * i32::from(!tt_capture)
                         + 81 * i32::from(self.stack[si].tt_pv)
                         - corr_val_adj
-                        - i32::from(ply > self.root_depth) * 43;
+                        - i32::from(ply.get() > self.root_depth) * 43;
 
                     extension = 1
                         + i32::from(v < singular_beta - double_margin)
@@ -2044,7 +2049,7 @@ impl SearchWorker {
                 let d = (new_depth - r / 1024).min(new_depth + 2).max(1) + i32::from(PV);
 
                 self.stack[si].reduction = new_depth - d;
-                value = -self.node::<false, false>(-(alpha + 1), -alpha, d, ply + 1, true, tt);
+                value = -self.node::<false, false>(-(alpha + 1), -alpha, d, ply.next(), true, tt);
                 self.stack[si].reduction = 0;
 
                 if value > alpha {
@@ -2061,7 +2066,7 @@ impl SearchWorker {
                             -(alpha + 1),
                             -alpha,
                             new_depth,
-                            ply + 1,
+                            ply.next(),
                             !cut_node,
                             tt,
                         );
@@ -2076,7 +2081,8 @@ impl SearchWorker {
                     r += 1127;
                 }
                 let d = new_depth - i32::from(r > 5234) - i32::from(r > 5487 && new_depth > 2);
-                value = -self.node::<false, false>(-(alpha + 1), -alpha, d, ply + 1, !cut_node, tt);
+                value =
+                    -self.node::<false, false>(-(alpha + 1), -alpha, d, ply.next(), !cut_node, tt);
             }
 
             // For PV nodes only, do a full PV search on the first move or after a fail
@@ -2095,7 +2101,7 @@ impl SearchWorker {
                     new_depth = new_depth.max(1);
                 }
 
-                value = -self.node::<true, false>(-beta, -alpha, new_depth, ply + 1, false, tt);
+                value = -self.node::<true, false>(-beta, -alpha, new_depth, ply.next(), false, tt);
             }
 
             // Step 19. Undo move
@@ -2115,7 +2121,7 @@ impl SearchWorker {
             // later one breaks that up without changing the score.
             let inc = i32::from(
                 value == best_value
-                    && ply + 2 >= self.root_depth
+                    && ply.offset(2).get() >= self.root_depth
                     && (self.nodes as i32 & 0xE) == 0
                     && !is_win(value.abs() + 1),
             );
@@ -2385,7 +2391,7 @@ impl SearchWorker {
         &mut self,
         mut alpha: Value,
         beta: Value,
-        ply: i32,
+        ply: Ply,
         tt: &TranspositionTable,
     ) -> Value {
         // A repetition available here is worth at least a draw, exactly as in the main
@@ -2397,7 +2403,7 @@ impl SearchWorker {
             }
         }
 
-        let si = STACK_BASE + ply as usize;
+        let si = STACK_BASE + ply.index();
 
         // Step 1. Initialize node
         if PV {
@@ -2411,17 +2417,13 @@ impl SearchWorker {
         let in_check = self.stack[si].in_check;
         let mut move_count = 0i32;
 
-        if PV && self.sel_depth < ply + 1 {
-            self.sel_depth = ply + 1;
+        if PV && self.sel_depth < ply.next().get() {
+            self.sel_depth = ply.next().get();
         }
 
         // Step 2. Check for an immediate draw or maximum ply reached
-        if self.pos.is_draw(ply) || ply >= MAX_PLY as i32 {
-            return if ply >= MAX_PLY as i32 && !in_check {
-                self.evaluate(ply)
-            } else {
-                VALUE_DRAW
-            };
+        if self.pos.is_draw(ply) || ply >= Ply::MAX {
+            return if ply >= Ply::MAX && !in_check { self.evaluate(ply) } else { VALUE_DRAW };
         }
 
         // Step 3. Transposition table lookup
@@ -2534,7 +2536,7 @@ impl SearchWorker {
             Square::NONE
         };
 
-        let slot = SLOTS_PER_PLY * ply as usize + SLOT_QSEARCH;
+        let slot = SLOTS_PER_PLY * ply.index() + SLOT_QSEARCH;
         let mut mp = MovePicker::new(&self.pos, cont_keys, tt_move, DEPTH_QS, ply);
 
         // Step 5. Loop through all pseudo-legal moves until no moves remain or a beta
@@ -2588,7 +2590,7 @@ impl SearchWorker {
 
             // Step 7. Make and search the move
             self.do_move(mv, gives_check, si);
-            let value = -self.qsearch::<PV>(-beta, -alpha, ply + 1, tt);
+            let value = -self.qsearch::<PV>(-beta, -alpha, ply.next(), tt);
             self.undo_move(mv);
 
             // Step 8. Check for a new best move
@@ -2662,7 +2664,7 @@ impl SearchWorker {
     fn probe_tablebases(
         &mut self,
         depth: i32,
-        ply: i32,
+        ply: Ply,
         alpha: Value,
         beta: Value,
         tt: &TranspositionTable,
@@ -2704,7 +2706,7 @@ impl SearchWorker {
         // the fifty-move rule does not apply to this game.
         let draw_score = i32::from(self.tb_use_rule50);
         let w = wdl as i32;
-        let tb_value = VALUE_TB - ply;
+        let tb_value = VALUE_TB - ply.get();
 
         let value = if w < -draw_score {
             -tb_value
@@ -2734,7 +2736,7 @@ impl SearchWorker {
                 VALUE_NONE,
                 (depth + 6).min(MAX_PLY as i32 - 1),
                 bound,
-                self.stack[STACK_BASE + ply as usize].tt_pv,
+                self.stack[STACK_BASE + ply.index()].tt_pv,
             );
             return Some(TbOutcome::Cutoff(value));
         }
@@ -2916,7 +2918,11 @@ impl SearchWorker {
             pos.do_move(pv_move);
 
             // A repetition or a fifty-move draw inside a won line is not part of the win.
-            if (rule50 && pos.is_draw(ply as i32)) || pos.is_repetition(ply as i32) {
+            // `ply` indexes the PV here AND counts plies from the root, and those are the
+            // same number only because the walk starts at the root. Say which one the
+            // predicate wants.
+            let from_root = Ply::new(ply as i32);
+            if (rule50 && pos.is_draw(from_root)) || pos.is_repetition(from_root) {
                 pos.undo_move(pv_move);
                 ply -= 1;
                 break;
@@ -2929,7 +2935,7 @@ impl SearchWorker {
 
         // Step 2: extend by playing the shortest win each time, as a reader of the tables
         // would.
-        while !(rule50 && pos.is_draw(0)) {
+        while !(rule50 && pos.is_draw(Ply::ROOT)) {
             if timed_out(&start) {
                 break;
             }
@@ -2969,7 +2975,7 @@ impl SearchWorker {
         // Reaching a draw here is exceptional, and only possible when the position was set
         // up with a fifty-move counter the tables cannot rank exactly. The score follows the
         // line actually found rather than the one the search believed.
-        if pos.is_draw(0) {
+        if pos.is_draw(Ply::ROOT) {
             *v = VALUE_DRAW;
         }
 
