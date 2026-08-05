@@ -162,6 +162,24 @@ graph LR
   TbFile["TbFile — for_board_file"] --> G["Syzygy sub-tables"]
 ```
 
+### Hashes: seven key spaces, and the one conversion between two of them
+
+```mermaid
+graph LR
+  PosKey -->|"for_tt(rule50)"| TtKey --> TT["the transposition table"]
+  PosKey --> ACC["the NNUE accumulator"]
+  PosKey -->|"PosKey ^ PosKey"| MoveKey --> CK["the cuckoo table"]
+  PawnKey --> P1["the pawn counter"]
+  MinorKey --> P2["the minor counter"]
+  NonPawnKey --> P3["that side's counter"]
+  MaterialKey --> TB["Syzygy discovery"]
+```
+
+`for_tt` is the only arrow between two key types, and it is the only place the halfmove clock
+is mixed in. Everything else is a distinct space: `PosKey ^ PosKey` leaves the position domain
+for the same reason `Value - Value` leaves the score domain, and the four correction keys reach
+four counters of one table through four accessors that each take only their own key.
+
 **The absence of crossings is the design.** Seven index types, seven tables, one arrow each,
 and each index built by exactly one function. Before the split, five of the seven travelled as
 `usize` and two as `u32`, so any of them reached any table. Two of the pairs genuinely overlap
@@ -337,6 +355,11 @@ fail on purpose.
 - A threat feature index where a king-piece feature index belongs, at the fold boundary.
 - An off-board square: a step that may leave the board is `try_shift`, returning `Option`.
 - A tablebase verdict blended like an estimate.
+- A raw position key where a transposition key belongs. The two differ by the halfmove-clock
+  mixing, and probing with the unmixed one made positions share an entry the fifty-move rule
+  invalidates — the "key identity" bug class, which no perft can see.
+- A position key where a move key belongs, or a material key where either belongs.
+- A correction row selected by one key and read through another key's counter.
 - A widened domain type. `board/types.rs` closes with a `const` block asserting each width
   against the *relationship* that implies it, so the assertion cannot go stale:
   `PIECE_NB == COLOR_NB * 8` because a piece is `colour << 3 | type`, and
