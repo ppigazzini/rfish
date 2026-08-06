@@ -27,6 +27,23 @@ answer in one of them, that answer is worth reading before inventing another.
 
 They are **not** goldens. The differential reference is always upstream.
 
+### How to sweep them
+
+**A sibling's refactor is a hypothesis about what this tree never wired up** — ask what it
+implies about rfish's *use* of the same thing, not only whether the same duplication is
+here. The 2026-08-06 sweep took `mcfish ac7d02c7` and `zfish b09519f6`, which each gave the
+`currmove` node threshold one owner after finding it declared twice. rfish already had one
+owner and all three of upstream's call sites, so on the sibling's own terms there was
+nothing to take. The site that announces the move called nothing at all, and the whole
+`info depth N currmove X currmovenumber M` line was missing from the port.
+
+**A measurement does not transfer, in either direction.** What a sibling's language pays for
+a construct says nothing about what Rust pays. Take the idea, then price it here — the same
+sweep priced three ways of routing that reporter and two of them were gates-red.
+
+**Probe against this tree, not against the subject line.** The commits worth recording are
+as often the ones NOT taken, with the reason, so the next sweep does not re-open them.
+
 ## Rust
 
 - **The Rust Reference** — <https://doc.rust-lang.org/reference/>. Particularly the
