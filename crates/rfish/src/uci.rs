@@ -56,6 +56,14 @@ impl<W: Write> InfoSink for UciSink<W> {
         let _ = writeln!(self.out, "info depth {depth} score {}", score.to_uci());
     }
 
+    /// Upstream's `on_iter`: three fields, in this order, and no others. A GUI polls this
+    /// line to show which root move a long iteration is on, so it is flushed like every
+    /// other `info` line rather than left in the buffer until the iteration ends.
+    fn current_move(&mut self, mv: &str, number: usize, depth: i32) {
+        let _ = writeln!(self.out, "info depth {depth} currmove {mv} currmovenumber {number}");
+        let _ = self.out.flush();
+    }
+
     fn depth_finished(&mut self, r: &DepthReport<'_>) {
         let mut line = format!(
             "info depth {} seldepth {} multipv {} score {}",
