@@ -104,6 +104,7 @@ lands, and nobody knows which claim broke better than the person who broke it.
 | [10-tooling-ci.md](10-tooling-ci.md) | `cargo xtask` steps, the tiers, `.github/workflows/` | hot — a step added here is a page edit there |
 | [11-references.md](11-references.md) | external links | cold |
 | this page | the rules | cold |
+| [13-glossary.md](13-glossary.md) | the vocabulary, in four tiers | warm — every entry names an owner, and a rename dates it |
 
 Cold does not mean unowned. It means the claim outlives a release, so when it *is* wrong it
 has usually been wrong for a long time.
