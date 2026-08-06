@@ -1,20 +1,21 @@
 # rfish
 
 **rfish** is a [Rust][rust] port of the [Stockfish][stockfish] chess engine, written in
-**100% safe Rust** — `#![forbid(unsafe_code)]` for the whole workspace, no `unsafe` block
-anywhere, and no nightly feature. Like Stockfish, it is a UCI engine, not a GUI.
+**100% safe Rust** — `unsafe_code = "forbid"` for the whole workspace, and no `unsafe` block
+anywhere. Like Stockfish, it is a UCI engine, not a GUI.
 
 The goal is a **bit-exact 1:1 clone**: the same `bench` node signature, the same bestmove,
 NNUE evaluation, Syzygy tablebases and Lazy-SMP threading. `../Stockfish` is the **golden**
 — where rfish and Stockfish disagree, Stockfish wins.
 
-**The port is in progress.** The board, the search, the transposition table, the threads,
-the UCI shell and the **NNUE evaluation** are written and gated — `cargo xtask nnue-check`
-proves the network's output is identical to a pristine upstream build's, position by
-position. The Syzygy prober is not written, and the NNUE accumulator is recomputed rather
-than updated incrementally, which costs about an order of magnitude in speed. Run
-`cargo xtask parity` for the current state of every gate, and see [docs/](docs/README.md)
-for what each zone does and does not do yet.
+The board, the search, the transposition table, the threads, the UCI shell, the **NNUE
+evaluation** and the **Syzygy prober** are written and gated: `cargo xtask nnue-check`
+proves the network's output is identical to a pristine upstream build's position by
+position, `cargo xtask tb` does the same for the WDL verdict and the DTZ distance, and
+`cargo xtask signature` holds the bench node total to upstream's own. What is missing is
+thread PINNING, which `std` exposes no API for — [docs/06-platform.md](docs/06-platform.md)
+says why that is blocked rather than pending. Run `cargo xtask parity` for the current state
+of every gate, and see [docs/](docs/README.md) for what each zone does.
 
 ## Why safe Rust
 
@@ -28,7 +29,7 @@ same idea another way:
 | an unsynchronised 10-byte transposition entry | atomic words, `Relaxed` — the same race, defined |
 | a persistent thread pool holding raw worker pointers | `std::thread::scope`, one lend per search |
 | `mmap` of each Syzygy table | positioned file reads |
-| SIMD intrinsics in the NNUE kernels | loops over fixed-size arrays, autovectorised — **bit-exact with upstream** |
+| SIMD intrinsics in the NNUE kernels | `std::simd`, which needs no `unsafe` block — **bit-exact with upstream** |
 
 None of those are workarounds. Each removes a class of bug the C++ has to avoid by
 convention — a dangling `StateInfo`, a worker outliving its data, a table truncated under
@@ -37,8 +38,10 @@ its own mapping — and the cost is measured rather than assumed. See
 
 ## Build
 
-Requires **stable Rust**, edition 2024. No other dependencies, and the engine itself has
-**no crates.io dependencies at all**.
+Requires the **dated nightly** pinned in `rust-toolchain.toml`, which `rustup` installs by
+itself — the engine enables one nightly feature, `portable_simd`, and no stable channel
+accepts it. `std::simd` needs no `unsafe` block, so the workspace forbid is untouched. No
+other tooling is needed, and the engine itself has **no crates.io dependencies at all**.
 
 ```
 cargo xtask build            # build the engine -> target/release/stockfish
