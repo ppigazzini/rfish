@@ -26,6 +26,7 @@ use rfish_engine::state::{Limits, SearchOptions};
 
 use crate::bench::{BenchEntry, BenchSpec, parse_entry};
 use crate::options::Options;
+use crate::speedtest;
 
 /// What `help` and `license` print.
 ///
@@ -96,6 +97,35 @@ impl<W: Write> InfoSink for UciSink<W> {
         line.push_str(&r.pv.join(" "));
         let _ = writeln!(self.out, "{line}");
         let _ = self.out.flush();
+    }
+}
+
+/// What one `speedtest` pass measured.
+#[derive(Debug, Default)]
+struct SpeedTally {
+    nodes: u64,
+    elapsed: std::time::Duration,
+    /// How many `go` commands contributed a hashfull reading.
+    readings: usize,
+    /// Indexed by upstream's two ages: what this search left, and what the game touched.
+    max_hashfull: [u32; 2],
+    total_hashfull: [u32; 2],
+}
+
+/// A sink that keeps the node count and prints nothing.
+///
+/// Upstream nulls its five search callbacks for the duration of a `speedtest` and replaces
+/// the full-update one with a recorder, so 258 searches' worth of `info` lines stay off the
+/// stream while their node counts are still counted. This is that recorder: the count taken
+/// is the LAST iteration's, which is the number upstream sums.
+#[derive(Debug, Default)]
+struct NodeTally {
+    nodes: u64,
+}
+
+impl InfoSink for NodeTally {
+    fn depth_finished(&mut self, r: &DepthReport<'_>) {
+        self.nodes = r.nodes;
     }
 }
 
@@ -257,6 +287,10 @@ impl Engine {
                 let _ = writeln!(out, "{HELP}");
             }
             "bench" => self.cmd_bench(&rest, out),
+            // Upstream's `BenchmarkCommand`. It reports on STANDARD ERROR, so it takes no
+            // output stream: a GUI reading standard output must not be sent a report it
+            // cannot parse, and the progress counter overwrites its own line.
+            "speedtest" => self.cmd_speedtest(&rest),
             "compiler" => Self::cmd_compiler(out),
             "quit" => {
                 self.pool.shared().request_stop();
@@ -751,12 +785,203 @@ impl Engine {
         }
     }
 
+    /// `speedtest` — upstream's `UCIEngine::benchmark`, on standard error.
+    ///
+    /// Five games of 258 real positions, each searched for a scheduled `movetime`, and a
+    /// report of what the machine managed. `bench` answers "does this tree search the same
+    /// tree"; this answers "how fast is this box", and the two share no number.
+    fn cmd_speedtest(&mut self, args: &[&str]) {
+        // Enough to get the caches and the branch predictors warm; upstream calls it
+        // sanity rather than science.
+        const NUM_WARMUP_POSITIONS: usize = 3;
+
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        let setup = speedtest::setup(args, cores);
+
+        // Through the option model, as upstream does, so `Threads` and `Hash` take the same
+        // path a GUI's `setoption` takes -- including the pool resize and the reallocation.
+        let mut quiet = std::io::sink();
+        for cmd in [
+            format!("setoption name Threads value {}", setup.threads),
+            format!("setoption name Hash value {}", setup.tt_size),
+            "setoption name UCI_Chess960 value false".to_string(),
+        ] {
+            self.handle(&cmd, &mut quiet);
+        }
+
+        let mut warm = SpeedTally::default();
+        self.speedtest_pass(
+            &setup.commands,
+            Some(NUM_WARMUP_POSITIONS),
+            "Warmup position",
+            &mut warm,
+        );
+        eprintln!();
+
+        // Upstream clears between the warmup and the measurement, so the warmup's table
+        // does not answer the first measured search.
+        self.cmd_newgame();
+
+        let mut tally = SpeedTally::default();
+        self.speedtest_pass(&setup.commands, None, "Position", &mut tally);
+        eprintln!();
+
+        // Positivity, so the two divisions below cannot divide by zero.
+        let ms = u64::try_from(tally.elapsed.as_millis()).unwrap_or(u64::MAX).max(1);
+        let readings = u32::try_from(tally.readings).unwrap_or(1).max(1);
+
+        // rfish DISTRIBUTES threads across nodes and cannot pin them -- `sched_setaffinity`
+        // has no safe interface -- so this row says what the engine did, not what upstream's
+        // says it did. The column is upstream's; the word is this port's, for the reason
+        // `report_thread_allocation` gives.
+        let distribution = self.thread_distribution().unwrap_or_else(|| "none".to_string());
+
+        eprint!("===========================");
+        eprint!("\nVersion                    : {}", engine_name());
+        eprint!("{}", Self::compiler_info());
+        // No large pages anywhere in this port: every allocation is a plain `Vec`, and the
+        // flags that would ask for them are behind FFI.
+        eprint!("Large pages                : no");
+        eprint!("\nUser invocation            : speedtest {}", setup.original);
+        eprint!("\nFilled invocation          : speedtest {}", setup.filled);
+        eprint!("\nAvailable processors       : {}", self.numa.to_string_spec());
+        eprint!("\nThread count               : {}", setup.threads);
+        eprint!("\nThread distribution        : {distribution}");
+        eprint!("\nTT size [MiB]              : {}", setup.tt_size);
+        eprint!("\nHash max, avg [per mille]  : ");
+        eprint!(
+            "\n    single search          : {}, {}",
+            tally.max_hashfull[0],
+            tally.total_hashfull[0] / readings
+        );
+        eprint!(
+            "\n    single game            : {}, {}",
+            tally.max_hashfull[1],
+            tally.total_hashfull[1] / readings
+        );
+        eprint!("\nTotal nodes searched       : {}", tally.nodes);
+        eprint!("\nTotal search time [s]      : {}", ms as f64 / 1000.0);
+        eprintln!("\nNodes/second               : {}", 1000 * tally.nodes / ms);
+    }
+
+    /// Drive one pass over the speedtest command list, capped at `limit` searches.
+    ///
+    /// The commands are the same strings a GUI would send, and each is answered the way
+    /// upstream's benchmark loop answers it -- `ucinewgame` clears, `position fen` sets,
+    /// `go movetime` searches. It does NOT go through `handle`: the search must run with the
+    /// reporting silenced, which is what upstream's five nulled callbacks do.
+    fn speedtest_pass(
+        &mut self,
+        commands: &[String],
+        limit: Option<usize>,
+        label: &str,
+        tally: &mut SpeedTally,
+    ) {
+        let shown =
+            limit.unwrap_or_else(|| commands.iter().filter(|c| c.starts_with("go ")).count());
+        let mut cnt = 1usize;
+        for cmd in commands {
+            let mut tokens = cmd.split_ascii_whitespace();
+            match tokens.next() {
+                Some("ucinewgame") => self.cmd_newgame(),
+                Some("position") => {
+                    // Always `position fen <fen>`, built by `speedtest::setup` itself, so a
+                    // FEN that will not parse is a fault in this file rather than input.
+                    // The dialect is read off the option rather than assumed false, exactly
+                    // as upstream's `position` reads it -- `cmd_speedtest` has just set it
+                    // false, and a setting that did not take should show up as a refused
+                    // FEN rather than as a position parsed under the other dialect.
+                    let chess960 = self.options.check("UCI_Chess960");
+                    if let Some(fen) = cmd.strip_prefix("position fen ")
+                        && let Ok(p) = Position::from_fen(fen, chess960)
+                    {
+                        self.pos = p;
+                    }
+                }
+                Some("go") => {
+                    // The search prints one line of its own, so this one carries no newline
+                    // and is overwritten by the next.
+                    eprint!("\r{label} {cnt}/{shown}");
+                    let _ = std::io::stderr().flush();
+                    cnt += 1;
+
+                    let ms: u64 = tokens.nth(1).and_then(|t| t.parse().ok()).unwrap_or(0);
+                    let pos = self.pos.clone();
+                    let limits = Limits {
+                        start: Some(Instant::now()),
+                        ply: pos.game_ply(),
+                        move_time: Some(ms),
+                        ..Limits::default()
+                    };
+                    let opts = self.search_options();
+                    let started = Instant::now();
+                    let mut sink = NodeTally::default();
+                    let _ = self.pool.search(&pos, &limits, &self.tt, &opts, &mut sink);
+                    tally.elapsed += started.elapsed();
+                    tally.nodes += sink.nodes;
+
+                    if limit.is_none() {
+                        tally.readings += 1;
+                        // Age 0 is what this search left behind; the saturating age is
+                        // everything the game has touched. Upstream writes the second as
+                        // 999 against a relative age that cannot exceed the generation
+                        // mask, so any value past the mask selects the same entries.
+                        for (i, age) in [0u8, u8::MAX].into_iter().enumerate() {
+                            let hashfull = self.tt.hashfull(age);
+                            tally.max_hashfull[i] = tally.max_hashfull[i].max(hashfull);
+                            tally.total_hashfull[i] += hashfull;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if limit.is_some_and(|c| cnt > c) {
+                break;
+            }
+        }
+    }
+
+    /// The per-node thread split, or `None` when no distribution is in effect.
+    fn thread_distribution(&self) -> Option<String> {
+        let threads = self.pool.len();
+        if !self.numa_distributes_threads(threads) {
+            return None;
+        }
+        let assignment = self.numa.distribute_threads_among_numa_nodes(threads);
+        let mut counts = vec![0usize; self.numa.num_numa_nodes()];
+        for &n in &assignment {
+            if let Some(slot) = counts.get_mut(n.index()) {
+                *slot += 1;
+            }
+        }
+        Some(
+            counts
+                .iter()
+                .enumerate()
+                .map(|(n, c)| format!("{c}/{}", self.numa.num_cpus_in_numa_node(NumaIndex::new(n))))
+                .collect::<Vec<_>>()
+                .join(":"),
+        )
+    }
+
     /// Upstream's `compiler` block: four aligned fields between two blank lines.
     ///
     /// The CONTENT is necessarily this port's -- rustc built it, not g++ -- but the shape is
     /// upstream's, because a bug report pastes this verbatim and a reader should not have to
     /// learn a second layout to read it.
     fn cmd_compiler(out: &mut impl Write) {
+        // The trailing blank line belongs to the COMMAND, not to the block: upstream is
+        // `sync_cout << compiler_info() << sync_endl`, and `compiler_info` itself ends in a
+        // single newline. `speedtest` embeds the block mid-report and must NOT get that
+        // extra line, which is why the two are split.
+        let _ = write!(out, "{}", Self::compiler_info());
+        let _ = writeln!(out);
+    }
+
+    /// Upstream's `compiler_info()`: a leading blank line, four fields, one trailing
+    /// newline. Returned rather than printed, because `speedtest` embeds it in a larger
+    /// report.
+    fn compiler_info() -> String {
         let os = match std::env::consts::OS {
             "linux" => "Linux",
             "macos" => "Apple",
@@ -785,12 +1010,13 @@ impl Engine {
         // upstream's `__VERSION__` field carries: the version and nothing else.
         let version = env!("RFISH_RUSTC").split_whitespace().nth(1).unwrap_or("unknown");
 
-        let _ = writeln!(out);
-        let _ = writeln!(out, "Compiled by                : rustc {version} on {os}");
-        let _ = writeln!(out, "Compilation architecture   : {}", env!("RFISH_TARGET_CPU"));
-        let _ = writeln!(out, "Compilation settings       : {}", settings.join(" "));
-        let _ = writeln!(out, "Compiler __VERSION__ macro : {version}");
-        let _ = writeln!(out);
+        let mut block = String::new();
+        let _ = writeln!(block);
+        let _ = writeln!(block, "Compiled by                : rustc {version} on {os}");
+        let _ = writeln!(block, "Compilation architecture   : {}", env!("RFISH_TARGET_CPU"));
+        let _ = writeln!(block, "Compilation settings       : {}", settings.join(" "));
+        let _ = writeln!(block, "Compiler __VERSION__ macro : {version}");
+        block
     }
 
     fn cmd_eval(&self, out: &mut impl Write) {

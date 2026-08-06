@@ -88,10 +88,12 @@ state. Check the state against the tree before acting on it:
   byte for byte. `Skill Level`, `UCI_LimitStrength` and `UCI_Elo` run upstream's `Skill`;
   `nodestime` converts the whole clock model into node counts; `Ponder` buys the current
   move a quarter more time and `ponderhit` honours a budget that ran out while pondering.
-- **The command surface** — every command upstream accepts is accepted here, with one
-  exception: `speedtest`, upstream's machine benchmark. `bench` is the command every gate
-  and harness in this repo uses and it IS ported; `speedtest` is a separate "how fast is
-  this box" tool with no consumer here. It is missing on purpose, not by oversight.
+- **The command surface** — **complete.** Every command upstream accepts is accepted here,
+  `speedtest` included. It is not `bench` and shares no number with it: `bench` fixes a
+  DEPTH over 51 positions and its node total is this repo's anchor, while `speedtest` fixes
+  a TIME over five real games and reports throughput. Its report goes to standard error, as
+  upstream's does, so no golden can hold it — the schedule that decides what it measures is
+  a pure function with its own tests instead.
 - **The search** — **ported, and bit-exact.** The pruning set, the constants, the reduction
   model, ProbCut, singular extensions, the correction histories and the move picker's
   staging are upstream's, and `crates/rfish-engine/src/search/` is a 1:1 translation rather

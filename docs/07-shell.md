@@ -82,6 +82,39 @@ once per position — the table and the history block carry across positions.
 Treating every entry as a bare FEN silently drops both. A test asserts every entry parses
 and every trailing move is legal.
 
+## `speedtest.rs` — "how fast is this box"
+
+Upstream's `BenchmarkCommand`, and **not** a second `bench`. The two measure different
+things and share no number: `bench` fixes a DEPTH over 51 positions and its node total is
+this repository's bit-exactness anchor, so it must not move; `speedtest` fixes a TIME over
+five real games — 258 positions taken from upstream byte for byte — and reports throughput,
+so its numbers move with the machine and pin nothing. A change costing 3% of nodes per
+second is invisible to one and is the entire subject of the other.
+
+**The schedule is the part that had to be exact.** Each ply is worth `50000/(ply+15)` ms,
+the 258 terms are summed, and the total is scaled to the requested duration — and upstream
+sums into a `float` while the fit itself is `double`, then truncates the product to an
+integer millisecond. Reproducing those widths is not pedantry: an `f64` accumulator
+diverges at `speedtest N M 579`, where five positions come out a millisecond short and the
+run measures different work. That duration is a test, because the defect is invisible at
+the default one.
+
+**The argument parse is C++ stream semantics, and its failure mode is observable.**
+`is >> threads` sets failbit on a token that is not an integer, and every later extraction
+on a failed stream fails too — so `speedtest x 8 5` takes all three defaults rather than
+just the first, and echoes an empty user invocation. Parsing each argument independently
+would accept the 8 and the 5, which is a different run. The report prints the typed
+invocation and the filled one side by side precisely so that difference is visible.
+
+**Everything it prints goes to standard error**, as upstream does: a GUI reading standard
+output must not be sent a report it cannot parse, and the progress counter overwrites its
+own line with `\r`. That is also why no golden holds it — the gate is the schedule's own
+tests, plus a field-for-field diff against the oracle with the values elided.
+
+One row is renamed and it is the port-wide reason: upstream prints `Thread binding`, rfish
+prints `Thread distribution`, because `sched_setaffinity` has no safe interface and this
+engine assigns threads to nodes without pinning them. See [06-platform.md](06-platform.md).
+
 ## `uci.rs` — the transport
 
 Unknown commands are reported and ignored, never fatal: a GUI sends what it likes, and an
@@ -122,12 +155,11 @@ Two things follow from it, and both had to move together:
 
 ## What is not here
 
-- **`speedtest` — and nothing else.** Every other command upstream accepts is accepted here,
-  including the debugging surface it calls "custom non-UCI commands": `d`, `eval`,
-  `compiler`, `flip`, `export_net`, and `help`/`license` with upstream's own text. Upstream
-  spells the missing one `BenchmarkCommand`; it is a "how fast is this box" tool with no
-  consumer in this repository, where `bench` is what every gate and harness drives. Absent on
-  purpose, not by oversight — and `bench` itself IS ported.
+- **No command.** Every command upstream accepts is accepted here, including the debugging
+  surface it calls "custom non-UCI commands" — `d`, `eval`, `compiler`, `flip`,
+  `export_net`, `speedtest`, and `help`/`license` with upstream's own text. See
+  [`speedtest.rs`](#speedtestrs--how-fast-is-this-box) for the last one to land, and what
+  pins it.
 - **Reading and searching do not share a thread.** They cannot: the search runs where `go`
   was dispatched, so a loop that reads a line, dispatches it, and only then reads the next
   one cannot see a `stop` until the search it would stop has already ended. `go infinite`
