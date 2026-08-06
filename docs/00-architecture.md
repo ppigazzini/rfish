@@ -63,15 +63,21 @@ for byte must own every line that can move it, and a transitive dependency bump 
 behaviour change nobody reviewed. It also means `cargo build` on a fresh clone compiles
 exactly the code in this repository and nothing else.
 
-## No `unsafe`, and no nightly
+## No `unsafe`, and one nightly feature
 
 `unsafe_code = "forbid"` is set once, for the whole workspace, in `Cargo.toml`. `forbid`
 rather than `deny` so no module can re-enable it locally.
 
-The toolchain is pinned to **stable**. rfish uses no nightly feature: not `portable_simd`,
-not `allocator_api`, not `stdarch` intrinsics. Reaching for nightly would trade the port's
-central property — it builds on the compiler everyone has — for a constant factor nobody
-has measured.
+The toolchain is pinned to a **dated nightly** in `rust-toolchain.toml`, for exactly one
+feature: `portable_simd`, which the NNUE kernels use. That pin does not weaken the central
+property — `std::simd` is **safe**, needs no `unsafe` block, and leaves
+`cargo xtask unsafe-lint` asserting the same thing it always did. `std::arch` intrinsics
+were the alternative and are refused for the opposite reason: every one of them is an
+`unsafe fn`. Nothing else nightly is enabled — not `allocator_api`, not a niche attribute.
+
+The pin is DATED rather than `nightly`, because the instruction mix and every perf number
+in the ledger are properties of the compiler and a floating channel would silently
+invalidate them.
 
 [docs/08-idiomatic-rust.md](08-idiomatic-rust.md) is the pattern-by-pattern account of what
 that costs and what it buys.

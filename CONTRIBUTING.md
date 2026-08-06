@@ -5,8 +5,8 @@ rfish is a **safe-Rust port of [Stockfish][stockfish]** aiming at a bit-exact 1:
 
 ## Building
 
-See the [README](README.md#build): install stable Rust and run `cargo xtask build`. There
-are no other dependencies.
+See the [README](README.md#build): `rustup` installs the nightly `rust-toolchain.toml` pins
+by itself, then run `cargo xtask build`. There are no other dependencies.
 
 ## The one rule that outranks the rest
 
