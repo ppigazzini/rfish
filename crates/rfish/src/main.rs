@@ -13,6 +13,7 @@ use std::io::{self, BufWriter, Write};
 mod bench;
 mod debug_log;
 mod options;
+mod speedtest;
 mod uci;
 
 fn main() {
