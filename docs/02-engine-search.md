@@ -163,6 +163,43 @@ The search **never prints**. It reports through the `InfoSink` trait, which the 
 implements as UCI `info` lines and a test implements as a no-op. That is what keeps the
 engine crate free of the transport.
 
+Three things are reported: a completed iteration (`depth_finished`), a root with no legal
+moves (`no_moves`), and **the root move now being searched** (`current_move`). The third is
+the one the port nearly lost. Upstream reaches its reporter from inside the node body
+through `main_manager()->updates`, a global; safe Rust has none, so the reporter has to
+travel down the recursion — and rfish had declared the hook, written the `nodes >
+NODES_LIMIT_OUTPUT` guard at the root, and left the body of that guard EMPTY, under a
+comment saying the shell would report it. Nothing did. The whole
+`info depth N currmove X currmovenumber M` line was missing from the port, and no gate could
+see it: the line is printed only past ten million nodes, which no golden, fixture or bench
+reaches.
+
+**How it travels is a measurement, not a taste.** Upstream's announcement sits under
+`if (rootNode && ...)`, and `rootNode` is a template constant — so the block, the global it
+names and the cost of reaching it are all deleted from every instantiation but the root's.
+Carrying a live pointer down rfish's recursion instead is not free, and `perf-budget`
+priced two ways of doing it against a `bench` the change cannot move by a single node:
+
+| how the reporter reaches the root | instructions | delta |
+|---|---|---|
+| a `SearchCtx { tt, sink }` replacing the table parameter | 1,506,248,448 | +0.0281% |
+| the same, with the table hoisted into a local | 1,506,439,589 | +0.0408% |
+| `N::Announcer`: the sink at `Root`, `()` everywhere else | 1,505,856,945 | **+0.0021%** |
+
+The tolerance is 0.005%, so the first two are gates-red and the third is not. `Announces`
+is a second associated type beside `NodeKind::Quiescent`, and its zero-sized arm is the
+whole point: Rust passes no register and no stack slot for `()`, and `Announce for ()` is
+an empty body, so a non-root node emits exactly the code it emitted before. It is a second
+trait rather than a field on `NodeKind` because `NodeKind` lives in the board zone and the
+sink lives in the search zone — the search may name the board's types, and not the reverse.
+
+Hoisting the table into a local measuring **worse** than reading it through the context is
+worth keeping in mind before the next such reformulation: it is the same shape as the
+`--profile profiling` trap, an argument about loads that the instrument did not agree with.
+
+`qsearch` takes the table alone and no announcer. Quiescence has no root, so there is
+nothing there to announce.
+
 `check_limits` runs every 1024 nodes rather than every node: reading a clock is a syscall on
 some platforms, and at a few million nodes per second the granularity is well under a
 millisecond either way.

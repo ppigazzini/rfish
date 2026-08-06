@@ -128,8 +128,9 @@ fn multicut_correction_bonus(value: Value, static_eval: Value, singular_depth: i
 pub trait InfoSink {
     /// One `info` line's worth of search progress.
     fn depth_finished(&mut self, report: &DepthReport<'_>);
-    /// A `currmove` update. The default does nothing: it is optional in the protocol and
-    /// most callers do not want it.
+    /// A `currmove` update: the root move now being searched, and its number in the root
+    /// list. The default does nothing, because a caller that only wants completed
+    /// iterations should not have to say so.
     fn current_move(&mut self, _mv: &str, _number: usize, _depth: i32) {}
     /// The report for a root with NO legal moves.
     ///
@@ -146,6 +147,58 @@ pub struct SilentSink;
 
 impl InfoSink for SilentSink {
     fn depth_finished(&mut self, _report: &DepthReport<'_>) {}
+}
+
+/// How a node hands out the root move it is about to search.
+///
+/// **This exists to cost nothing below the root, and that was measured rather than
+/// assumed.** Upstream announces from inside the node body by naming a global
+/// (`main_manager()->updates`) under `if (rootNode && ...)`, where `rootNode` is a template
+/// constant -- so the whole thing is deleted from every instantiation but the root's, and
+/// non-root nodes pay zero. Safe Rust has no global to name, so the reporter has to travel
+/// down the recursion, and travelling as a live pointer is NOT free: threading one through
+/// [`SearchWorker::node`] measured **+0.028%** on `perf-budget`, 423k instructions over a
+/// 163k-node profile, against a tolerance of 0.005%. Hoisting it into a local was worse
+/// still, at +0.041%.
+///
+/// So the pointer travels only where it can be used. [`Root`] carries the sink; every other
+/// kind carries `()`, whose `announce` is empty and which is zero-sized -- Rust passes no
+/// register and no stack slot for it, and the call inlines to nothing. That is upstream's
+/// `constexpr` elision, spelled in the type system.
+trait Announce {
+    fn announce(&mut self, mv: &str, number: usize, depth: i32);
+}
+
+impl Announce for () {
+    #[inline(always)]
+    fn announce(&mut self, _mv: &str, _number: usize, _depth: i32) {}
+}
+
+impl Announce for &mut dyn InfoSink {
+    #[inline(always)]
+    fn announce(&mut self, mv: &str, number: usize, depth: i32) {
+        (**self).current_move(mv, number, depth);
+    }
+}
+
+/// Which announcer a node kind carries.
+///
+/// A second trait rather than a field on [`NodeKind`], because `NodeKind` lives in the board
+/// zone and the sink lives here: the search may name the board's types, and not the reverse.
+trait Announces: NodeKind {
+    type Announcer<'a>: Announce;
+}
+
+impl Announces for Root {
+    type Announcer<'a> = &'a mut dyn InfoSink;
+}
+
+impl Announces for Pv {
+    type Announcer<'a> = ();
+}
+
+impl Announces for NonPv {
+    type Announcer<'a> = ();
 }
 
 /// Everything one completed iteration has to report.
@@ -388,6 +441,17 @@ impl SearchWorker {
     /// Tell this worker how many threads share the root, for the instability term.
     pub fn set_thread_count(&mut self, n: usize) {
         self.thread_count = n.max(1);
+    }
+
+    /// Whether this worker announces the root move it is about to search.
+    ///
+    /// Both clauses are upstream's, and each is load-bearing on its own: `is_mainthread()`
+    /// keeps N searches from interleaving into one stream of `currmove` lines, and the node
+    /// count keeps a fast iteration from emitting thousands of them a second. The caller
+    /// tests `N::ROOT` first, so nothing below the root pays for this.
+    #[inline]
+    fn announces_root_moves(&self) -> bool {
+        self.id == 0 && self.nodes > NODES_LIMIT_OUTPUT
     }
 
     /// Reset the histories and the reduction table. Called on `ucinewgame`, never mid-game.
@@ -1033,8 +1097,18 @@ impl SearchWorker {
                         (self.root_depth - failed_high_cnt - 3 * (search_again_counter + 1) / 4)
                             .max(1);
                     self.root_delta = beta - alpha;
-                    best_value =
-                        self.node::<Root>(alpha, beta, adjusted_depth, Ply::ROOT, Expect::All, tt);
+                    // Reborrowed rather than moved, so `sink` is free again for the report
+                    // below: the root holds it for exactly as long as it is inside the
+                    // search.
+                    best_value = self.node::<Root>(
+                        alpha,
+                        beta,
+                        adjusted_depth,
+                        Ply::ROOT,
+                        Expect::All,
+                        tt,
+                        &mut *sink,
+                    );
 
                     // Stable, because every score but the first and the new best is set to
                     // -INFINITE and the order of the rest must be preserved.
@@ -1323,7 +1397,7 @@ impl SearchWorker {
     /// drops the PV-only and root-only bookkeeping from the zero-window instantiation,
     /// which is the overwhelming majority of nodes.
     #[allow(clippy::too_many_lines)]
-    fn node<N: NodeKind>(
+    fn node<N: Announces>(
         &mut self,
         mut alpha: Value,
         mut beta: Value,
@@ -1331,6 +1405,7 @@ impl SearchWorker {
         ply: Ply,
         cut_node: Expect,
         tt: &TranspositionTable,
+        mut announce: N::Announcer<'_>,
     ) -> Value {
         let all_node = !(N::PV || cut_node.is_cut());
 
@@ -1680,8 +1755,15 @@ impl SearchWorker {
                 // "pass" a genuinely good option and the assumption fails.
                 let r = 7 + depth / 3 + ((self.stack[si.index()].static_eval - beta) / 256).max(0);
                 self.do_null_move(si);
-                let null_value =
-                    -self.node::<NonPv>(-beta, -beta + 1, depth - r, ply.next(), Expect::All, tt);
+                let null_value = -self.node::<NonPv>(
+                    -beta,
+                    -beta + 1,
+                    depth - r,
+                    ply.next(),
+                    Expect::All,
+                    tt,
+                    (),
+                );
                 self.undo_null_move();
 
                 if null_value >= beta && !is_win(null_value) {
@@ -1693,7 +1775,7 @@ impl SearchWorker {
                     // search, with null moves disabled below so the verification cannot
                     // lean on the very assumption it is checking.
                     self.nmp_min_ply = ply.offset(3 * (depth - r) / 4);
-                    let v = self.node::<NonPv>(beta - 1, beta, depth - r, ply, Expect::All, tt);
+                    let v = self.node::<NonPv>(beta - 1, beta, depth - r, ply, Expect::All, tt, ());
                     self.nmp_min_ply = Ply::ROOT;
                     if v >= beta {
                         return null_value;
@@ -1748,6 +1830,7 @@ impl SearchWorker {
                             ply.next(),
                             cut_node.flipped(),
                             tt,
+                            (),
                         );
                     }
                     self.undo_move(mv);
@@ -1816,8 +1899,21 @@ impl SearchWorker {
             move_count += 1;
             self.stack[si.index()].move_count = move_count;
 
-            if N::ROOT && self.id == 0 && self.nodes > NODES_LIMIT_OUTPUT {
-                // Reported through the sink by the shell; the search itself never prints.
+            // Announce the root move about to be searched. Rendered here rather than
+            // handed over as a `Move`, because notation is the shell's business only once
+            // it knows whether the game is Chess960 -- and that is a property of THIS
+            // position, which the sink does not hold.
+            //
+            // The node count is the gate upstream put here on purpose: a GUI shown a
+            // `currmove` for every root move of every iteration is shown thousands of
+            // lines in the first second, and Fritz 19 hangs on it. Past 10M nodes an
+            // iteration is slow enough that the operator wants to know where it is.
+            if N::ROOT && self.announces_root_moves() {
+                let announced = move_to_uci(&self.pos, mv);
+                // `move_count + pv_index`, not `move_count`: under `MultiPV` the moves
+                // already settled in earlier slots are skipped rather than counted, so the
+                // number a GUI is shown would restart at one for every slot.
+                announce.announce(&announced, move_count as usize + self.pv_index, depth);
             }
             if N::PV {
                 self.stack[si.next().index()].pv_valid = false;
@@ -1942,6 +2038,7 @@ impl SearchWorker {
                     ply,
                     cut_node,
                     tt,
+                    (),
                 );
                 self.stack[si.index()].excluded_move = Move::NONE;
 
@@ -2065,7 +2162,8 @@ impl SearchWorker {
                 let d = (new_depth - r / 1024).min(new_depth + 2).max(1) + i32::from(N::PV);
 
                 self.stack[si.index()].reduction = new_depth - d;
-                value = -self.node::<NonPv>(-(alpha + 1), -alpha, d, ply.next(), Expect::Cut, tt);
+                value =
+                    -self.node::<NonPv>(-(alpha + 1), -alpha, d, ply.next(), Expect::Cut, tt, ());
                 self.stack[si.index()].reduction = 0;
 
                 if value > alpha {
@@ -2085,6 +2183,7 @@ impl SearchWorker {
                             ply.next(),
                             cut_node.flipped(),
                             tt,
+                            (),
                         );
                     }
 
@@ -2104,6 +2203,7 @@ impl SearchWorker {
                     ply.next(),
                     cut_node.flipped(),
                     tt,
+                    (),
                 );
             }
 
@@ -2123,7 +2223,7 @@ impl SearchWorker {
                     new_depth = new_depth.max(1);
                 }
 
-                value = -self.node::<Pv>(-beta, -alpha, new_depth, ply.next(), Expect::All, tt);
+                value = -self.node::<Pv>(-beta, -alpha, new_depth, ply.next(), Expect::All, tt, ());
             }
 
             // Step 19. Undo move
@@ -3231,6 +3331,102 @@ mod tests {
             TimeBudget::default(),
             &mut SilentSink,
         )
+    }
+
+    /// A sink that keeps the `currmove` announcements, and nothing else.
+    #[derive(Default)]
+    struct CurrMoveSink {
+        seen: Vec<(String, usize, i32)>,
+    }
+
+    impl InfoSink for CurrMoveSink {
+        fn depth_finished(&mut self, _report: &DepthReport<'_>) {}
+        fn current_move(&mut self, mv: &str, number: usize, depth: i32) {
+            self.seen.push((mv.to_string(), number, depth));
+        }
+    }
+
+    /// Drive one depth-1 iteration on thread 0 with the node counter PRESET, and collect
+    /// what the root announced.
+    ///
+    /// `iterative_deepening` rather than `search`, because `search` zeroes the counter on
+    /// the way in and the threshold this is about is ten million nodes -- forty seconds of
+    /// searching to reach honestly, for a line decided before the first root move.
+    /// Everything `search` sets up before it hands over is set up here instead.
+    ///
+    /// **Thread 0 only, and that is not an omission.** A helper ignores the depth limit by
+    /// design -- upstream's loop guard reads `mainThread &&` -- so a helper driven this way
+    /// searches until something stops it, which nothing here does. The `id` half of the
+    /// rule is asserted directly against [`SearchWorker::announces_root_moves`] instead.
+    fn announced_at(nodes: u64) -> Vec<(String, usize, i32)> {
+        let shared = SharedState::new();
+        shared.reset();
+        let tt = TranspositionTable::new(16);
+        let mut w = SearchWorker::new(0, Arc::clone(&shared));
+        w.set_thread_count(1);
+        w.clear();
+        w.pos = Position::from_fen(START_FEN, false).expect("valid");
+        w.limits = Limits { depth: Some(1), start: Some(Instant::now()), ..Limits::default() };
+        w.opts = SearchOptions { multi_pv: 1, ..SearchOptions::default() };
+        w.root_moves = generate_legal(&w.pos).iter().copied().map(RootMove::new).collect();
+        w.nodes = nodes;
+        let mut sink = CurrMoveSink::default();
+        w.iterative_deepening(&tt, &mut sink);
+        sink.seen
+    }
+
+    /// Upstream announces every root move it starts, once the search is long enough to be
+    /// worth watching. rfish declared the hook and called it from nowhere, so the whole
+    /// `info depth N currmove X currmovenumber M` line was missing from the port.
+    #[test]
+    fn the_root_announces_each_move_past_the_output_threshold() {
+        let seen = announced_at(NODES_LIMIT_OUTPUT + 1);
+        let legal = generate_legal(&Position::from_fen(START_FEN, false).expect("valid"));
+        assert_eq!(seen.len(), legal.len(), "one announcement per root move");
+        for (i, (mv, number, depth)) in seen.iter().enumerate() {
+            // Numbered from one, in the order searched, and carrying the depth of the node
+            // doing the searching -- not the iteration's nominal depth, which an aspiration
+            // re-search lowers.
+            assert_eq!(*number, i + 1, "root move {i} announced as number {number}");
+            assert_eq!(*depth, 1);
+            assert!(
+                legal.iter().any(|m| format!("{m:?}") == *mv),
+                "announced {mv}, which is not legal here"
+            );
+        }
+    }
+
+    /// The threshold at its boundary, which only a preset counter can reach.
+    ///
+    /// The comparison is `>`, so a worker sitting exactly ON the limit is still silent --
+    /// and at depth one the start position spends exactly one node per root move, so the
+    /// count crosses between the first move and the second. That makes the first move the
+    /// one and only silent one: `>=` here would announce all twenty.
+    #[test]
+    fn the_announcement_starts_one_node_past_the_threshold() {
+        let seen = announced_at(NODES_LIMIT_OUTPUT);
+        assert_eq!(seen.len(), 19, "the first root move is announced below the threshold");
+        assert_eq!(seen[0].1, 2, "the numbering counts root moves, not announcements");
+    }
+
+    /// Well below the threshold nothing is said at all. An engine that announced from node
+    /// one is the excessive-output case the constant exists to prevent.
+    #[test]
+    fn nothing_is_announced_below_the_output_threshold() {
+        assert!(announced_at(0).is_empty());
+    }
+
+    /// Only thread 0 announces. A pool whose helpers each announced their own root order
+    /// would interleave several searches into one stream of `currmove` lines.
+    #[test]
+    fn only_the_main_thread_announces() {
+        let shared = SharedState::new();
+        let mut w = SearchWorker::new(1, Arc::clone(&shared));
+        w.nodes = NODES_LIMIT_OUTPUT + 1;
+        assert!(!w.announces_root_moves());
+        let mut main = SearchWorker::new(0, shared);
+        main.nodes = NODES_LIMIT_OUTPUT + 1;
+        assert!(main.announces_root_moves());
     }
 
     #[test]
