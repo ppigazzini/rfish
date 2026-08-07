@@ -79,7 +79,10 @@ evidence.
 
 **Cut anything that does not help implement or verify.** Background a reader could get from
 Stockfish's own wiki belongs in [11-references.md](11-references.md) as a link. Length is not
-thoroughness; it is where rot hides.
+thoroughness; it is where rot hides. This binds a generated page exactly as it binds a
+hand-written one — match the length to what the change needs, and add no section that exists
+to look complete: a summary restating the section above it, a recap of what a gate prints, a
+next-steps list nobody asked for.
 
 ## Hot and cold
 
