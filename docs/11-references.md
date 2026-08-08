@@ -212,3 +212,21 @@ discharge the in-range arguments this port currently makes in doc-comments. None
   about chess, not about any engine.
 - **Syzygy tablebases** — <https://github.com/syzygy1/tb>. The table format and the naming
   convention the prober in `crates/rfish-engine/src/platform/syzygy/` recognises.
+
+## Terms
+
+Here because a page of external sources is where a reader looks for them, and because two of
+the three artifacts this repository handles are not covered by the same licence as its code.
+[README.md](../README.md) carries the statement; this is the index into it.
+
+- **GNU GPL v3** — <https://www.gnu.org/licenses/gpl-3.0.html>. rfish is a derivative of
+  Stockfish and inherits it. The text is [Copying.txt](../Copying.txt) and the attribution is
+  [AUTHORS](../AUTHORS), both taken from upstream unmodified — a port that reproduces
+  upstream's output line for line does not get to reword its attribution.
+- **ODbL** — <https://opendatacommons.org/licenses/odbl/odbl-10.txt>. The terms on the Leela
+  Chess Zero data the networks are trained on. It reaches this repository through the file
+  `cargo xtask net` downloads, not through any source file, which is why nothing in
+  `crates/` names it.
+- **The network itself is not in the tree.** It is fetched at build time and gitignored, so a
+  clone carries no weights and the licence question travels with the download rather than with
+  the checkout. [03-engine-eval.md](03-engine-eval.md) covers why it is a runtime input.
