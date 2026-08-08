@@ -1,8 +1,8 @@
 # Writing rules
 
-These govern the shipped set — `docs/`, `README.md`, `CONTRIBUTING.md`, `AGENTS.md` — and
-the comments in the source. They live here, in the set that ships, because a rule nobody can
-read is a rule nobody can follow.
+These govern the shipped set — `docs/`, `README.md`, `CONTRIBUTING.md`, `AGENTS.md` — the
+comments in the source, and the commit messages. They live here, in the set that ships,
+because a rule nobody can read is a rule nobody can follow.
 
 There is a second, **internal** surface this repository does not carry: the engineering
 contract, the operator prompt, the port map, user-requested analyses. **Do not converge the
@@ -147,6 +147,57 @@ does — and release builds here set `overflow-checks = false`, so every intende
 **No history, no meta.** Not "was a `Vec`", not "changed in the delta campaign", not "the
 following block does". A comment describes the code as it is, to someone who has never seen
 it.
+
+## Commit messages
+
+**The one surface where history is the subject rather than the contamination.** Every rule
+above says to keep the before-and-after out of shipped prose; this is where it goes, and it
+is the durable per-task record — the reply to a request is a summary of the commit body, not
+the other way round.
+
+**Subject: a conventional type, an optional scope, and the claim. 72 characters.** The types
+in use here are `feat`, `fix`, `perf`, `refactor` and `docs`, and the scope is the zone or
+module (`fix(syzygy):`, `perf(nnue):`, `docs(types):`). Bare `docs:` is fine when the change
+is the whole set. State what is now true, not which area was touched: *"refuse a WDL score
+the file invented"* beats *"fix a tablebase bug"*.
+
+**Body wrapped at 80, carrying three things in this order:** what the change is and why it is
+right, the witness, then the gates.
+
+**The witness is what makes a body worth reading here.** A claim about behaviour is settled
+against the oracle, not argued from the standard — quote the two engines side by side. A
+claim about a gate is settled by mutation, so name the mutant and the row that went red. A
+claim about cost is callgrind before and after, attributed to a symbol, with the node count
+stated identical and **both tiers measured**, because a change that improves one and regresses
+the other moved code layout rather than removing work.
+
+**The gates block names the command and its EXIT CODE.** Not "should work", not a fragment
+piped through `tail` — that reads `0` from `tail` while the gate is red, and it has laundered
+red gates in both sibling ports. A behaviour-changing edit names `cargo xtask parity`; a
+kernel edit names `cargo xtask arch-determinism` and **the tiers it actually benched**, since
+a tier the runner could not execute is unbenched rather than checked. A performance figure
+carries its `--arch` tier and its instrument, or it is not a figure.
+
+**Record what was falsified, not only what landed.** The rows in
+[08-idiomatic-rust.md](08-idiomatic-rust.md) §11 and in
+[03-engine-eval.md](03-engine-eval.md)'s ledger come from commit bodies. An attempt that
+measured worse is a result; deleting it means the next person spends the same day on it.
+
+**One logical change per commit.** A commit touching three modules cannot be bisected when
+the node count moves.
+
+### What this repository does not use
+
+**No `Bench:` line, and no "No functional change".** Upstream ends every commit with one of
+the two and its `pre-push` hook enforces it, because there the distinction decides whether a
+change is tested on fishtest. **rfish does not run on fishtest**, and copying the phrase
+imports a promise nothing here checks: the anchor is a gate on this machine, so if the node
+count moved the body says what moved it and quotes `signature`, and if it did not, a `parity`
+exit 0 has already said so more precisely than any closing phrase could.
+
+**No `Co-authored-by`, and no generated-by or tool trailers.**
+
+**Do not `git push`.** Commit locally and stop unless asked.
 
 ## The gate, and what it cannot see
 
