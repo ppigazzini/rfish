@@ -100,6 +100,47 @@ A double push sets `ep_square` only when some enemy pawn can actually take. Upst
 the same, and the position **key** depends on it — a position that is functionally identical
 must hash identically.
 
+### `see_ge` — static exchange evaluation
+
+Answers one question and only one: **is the exchange sequence starting with this move worth at
+least `threshold`?** Play the cheapest attacker each time and stop as soon as the side to move
+can no longer beat the threshold. No king safety, no tactics away from the square.
+
+Two things about it are easy to port wrong:
+
+- **`swap` is a running MARGIN against the threshold, not a score.** It is the material the
+  side to move is ahead by if the exchange stops here, which is why the value it holds is an
+  `i32` difference rather than a `Value` — see [09-type-design.md](09-type-design.md) on what
+  subtracting two of an affine quantity produces.
+- **The special move types are answered by fiat, not by replay.** A promotion, an en-passant
+  capture or a castling move does not have a material effect a one-square swap-off models, so
+  each gets upstream's fixed answer. Replaying them instead is a divergence that costs
+  strength without failing a gate.
+
+The three early returns happen before any slider table is read, so the common cheap answers
+never touch the magics.
+
+## `cuckoo.rs` — the one move that would repeat
+
+The repetition counter answers "have I been here before". The search also needs "can I get
+**back** there in one move", to cut a line that the opponent can force into a draw, and
+answering that by generating moves would cost a movegen at every node.
+
+Marcel van Kervinck's construction makes it two table probes instead. Every reversible move's
+key delta — `psq[pc][s1] ^ psq[pc][s2] ^ side` — is precomputed into a cuckoo hash, so the
+question becomes a lookup on the XOR of two position keys. Two hash functions over disjoint
+bit ranges, and an insert that lands on an occupied slot **evicts the sitting tenant to its
+other slot** rather than chaining, which is what keeps the probe exact at two reads.
+
+`MOVE_COUNT` is asserted, not assumed: upstream asserts the same total and so does the test
+here. A miscount means the piece loop or the attack tables are wrong, and the symptom would
+otherwise be a missed draw many plies down, in one game out of many.
+
+The table is the one structure in this zone that **cannot** be `const`: it is keyed by slider
+attacks, and those come from magics searched at first use. It is a `LazyLock` for that reason
+and no other — see [00-architecture.md](00-architecture.md) on why nothing here has a startup
+hook.
+
 ## `movegen.rs` — the generators
 
 Every generator is PSEUDO-legal except `generate_legal`. `Position::legal` is the filter,
@@ -117,6 +158,28 @@ different order search different trees once move ordering is only partially dete
 `perft` and `perft_divide` live here. `tools/perft.table` is the reference battery and is
 deliberately **not** a golden: those counts are facts about chess, so a mismatch is always
 a bug here.
+
+## Chess960 is data, not a mode
+
+`UCI_Chess960` reaches the board as a flag on `Position::set`, and the design goal is that
+almost nothing branches on it. Three things carry the variant instead:
+
+- **The move encoding.** A castling move names the ROOK's square as `to`, in both dialects.
+  That is what lets a 960 castling — where the king may move zero squares, or the rook may end
+  up where the king started — fit the same 16 bits as every other move.
+- **`castling_rook_square` and `castling_path`.** The rook origin per right and the squares
+  that must be empty are precomputed per position, so the generator does a data lookup where a
+  naive port writes a special case.
+
+Only two places actually test the flag, and both are cases where the data cannot carry it:
+**castling legality**, because in 960 the rook's departure can unmask a rank attack on the
+king's destination and the standard-chess path check cannot see it, and **FEN output**, which
+must name the rook's file in Shredder form rather than `KQkq`. Move notation is a third, and
+it lives with the generators: standard chess names the king's destination, 960 names the
+rook's square.
+
+`perft` covers the 960 castling positions as its own battery, because a data lookup that is
+subtly wrong generates a legal-looking move set.
 
 ## The threat recording is here, and nothing consumes it
 
