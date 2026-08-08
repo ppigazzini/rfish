@@ -67,11 +67,17 @@ with what produced it, so the next reader can re-run it instead of trusting you.
 of date the day after it is written. The before-and-after belongs in the commit message,
 which is the durable per-task record. A doc states what is true **now**.
 
-The one exception is [08-idiomatic-rust.md](08-idiomatic-rust.md), which is a deliberate
-measurement ledger: §11 lists the dead ideas so they are not re-derived, and §§13–17 record
-what measured and what each shape was worth. A measurement is a fact about the tree, not a
-story about the week — write it as the rule a reader applies now, and let the number be the
-evidence.
+**Two ledgers are exempt, and only the parts that are ledgers.**
+[08-idiomatic-rust.md](08-idiomatic-rust.md) is one end to end: §11 lists the dead ideas so
+they are not re-derived, and §§13–18 record what measured and what each shape was worth.
+[03-engine-eval.md](03-engine-eval.md) is exempt only **below** its "The measurement ledger"
+heading; everything above that line describes the evaluation as it is and is bound by this
+rule like any other page. That split is the exemption's whole point — a ledger that grows
+upward through a description leaves a reader who wants to know how the thing works reading a
+campaign diary to find out.
+
+A measurement is a fact about the tree, not a story about the week. Write it as the rule a
+reader applies now, and let the number be the evidence.
 
 **One example beats three paragraphs**, and **pair every prohibition with an alternative**.
 "Do not reach for an intrinsic" leaves a reader stuck; "do not reach for an intrinsic — every

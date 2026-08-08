@@ -13,9 +13,9 @@ units", with no optimism blend and no fifty-move damping on top. Every position 
 which is what makes it a check on the feature indexing rather than on a list the port was
 written against.
 
-What is **not** done is upstream's per-move accumulator delta. See "The accumulator is
-updated by diffing feature sets" below, which also carries the measured gap to upstream and
-the list of attempts that failed to close it.
+What is **not** done is upstream's per-move accumulator delta. "The accumulator is updated by
+diffing feature sets" describes what stands in its place, and "The measurement ledger" at the
+end of this page carries the gap to upstream and every attempt that failed to close it.
 
 ## Shape
 
@@ -103,6 +103,174 @@ is read once and written once however many rows go into it. That is the shape of
 `update_accumulator_incremental`, and it is safe here for a reason worth stating — the
 accumulator is wrapping `i16` and the PSQT head `i32`, and both are associative and
 commutative under the additions applied, so collecting before applying cannot change a value.
+
+## From network output to a search value
+
+The forward pass returns two heads, and `eval::evaluate` turns them into the number the
+search compares against alpha and beta. Every constant below is upstream's, fitted against
+this network: changing one is a strength change, not a refactor.
+
+```rust
+let mut nnue = i64::from(out.psqt) + i64::from(out.positional);
+let complexity = i64::from((out.psqt - out.positional).abs());
+optimism += optimism * complexity / 476;
+nnue     -= nnue     * complexity / 18236;
+
+let material = 534 * pawns + non_pawn_material_total;
+let v = (nnue * (77871 + material) + optimism * (7191 + material)) / 77871;
+
+let v = v - (v * pos.rule50_count() / 199).get();
+v.clamp(VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1)
+```
+
+Each line is doing something specific, and none of them is a scale factor:
+
+- **Complexity is the disagreement between the two heads.** Where the material head and the
+  positional head are far apart the position is sharp, so the network is trusted less and the
+  search's own expectation is trusted more — which is why the same term amplifies `optimism`
+  and damps `nnue`.
+- **Optimism is the search's disposition, not the position's.** It arrives per colour from
+  the worker and is blended in proportionally to material. It is one of the things that make
+  Lazy-SMP threads explore differently from each other, so it belongs to
+  [04-multithreading.md](04-multithreading.md) as much as to this page.
+- **The fifty-move damping pulls the score toward zero as the halfmove clock runs.** An
+  advantage that cannot be converted before the rule draws the game is not worth its nominal
+  value. This one is applied to the classical fallback too, because it is a fact about the
+  game rather than about the network.
+- **The clamp keeps the value strictly inside the tablebase band.** An evaluation must never
+  be mistaken for a tablebase verdict or a mate; those are three distinct kinds of score and
+  [02-engine-search.md](02-engine-search.md) keeps them that way.
+
+**The two heads are summed here and nowhere else.** `Add<Value>` between them is deliberately
+absent, so the one place where two components become one score is written out rather than
+falling out of an operator — see [09-type-design.md](09-type-design.md).
+
+`cargo xtask nnue-check` compares the raw network output, **above** this blend. That is the
+right boundary for it: the blend is arithmetic on two integers this repository can read off
+the source, while the feature indexing behind `out` is where a port goes silently wrong.
+
+`is_material_draw` sits beside this and is not part of it — king against king and the lone
+minors are dead draws whatever any network says, so the search answers them without an
+evaluation at all.
+
+## The quantisation is the specification
+
+Everything is integer arithmetic on a fixed scale, and the shifts are where the scale
+changes rather than rounding conveniences:
+
+- The transformer's two halves are clamped to `[0, 255]` and multiplied pairwise, then
+  divided by 512. That pairwise product is what gives the first hidden layer a quadratic
+  term without a second matrix.
+- `ClippedReLU` is `clamp(x >> shift, 0, 127)`.
+- `SqrClippedReLU` is `min(127, x² >> (2·shift + 7))`. The extra seven bits stand in for a
+  division by 127 that would otherwise cost an instruction; **the trainer knows and
+  compensates**, which is why it cannot be "corrected".
+- A skip connection adds `fc_0[30] - fc_0[31]` straight to the output. Dropping it costs the
+  network its linear term.
+- The final scale is `fwd × 600 × 16 / (128 × 2⁶ × 2)`, in `i64`, truncating toward zero.
+
+## No intrinsics, and one nightly feature
+
+Upstream's kernels are hand-vectorised behind one `#if` per instruction set. Every
+`std::arch` intrinsic is an `unsafe fn`, so that route is closed here whatever it would buy.
+`std::simd` is not: it is safe, needs no `unsafe` block, and leaves `cargo xtask unsafe-lint`
+asserting exactly what it always did. That is what the dated nightly pin in
+`rust-toolchain.toml` was bought for, and `eval/nnue/layers.rs` and `eval/nnue/transformer.rs`
+are where it is spent.
+
+**Which kernels are written in it is a measurement, not a policy.** Where an ordinary loop
+over fixed-size arrays already emits upstream's instruction shape, it stays a loop and LLVM
+vectorises it under `-C target-cpu`; an explicit rewrite of one such fold cost +177M and was
+reverted. [08-idiomatic-rust.md](08-idiomatic-rust.md) §8 records what the constraint cost,
+§11 carries that reverted fold with the rest of the falsified list, and §12's vectorisation
+subsection records what actually governs the lowering here.
+
+The arithmetic implemented is upstream's **scalar fallback** either way — the one upstream
+keeps precisely so its vector paths have something to be bit-identical to. That is what
+makes `nnue-check` a meaningful comparison rather than a comparison of two approximations,
+and it is why `cargo xtask arch-determinism` exists: `std::simd` lowers differently per tier,
+so a saturation that behaves differently at one width is a divergence `signature` cannot see.
+
+## Loading the net, and the axis every gate subtracts
+
+**`cargo xtask perf-budget` subtracts a `quit`-only profile, so no number on this page above
+this line includes the net load.** It is not small: startup was **1,281M instructions against
+a 1,524M search**, so a `bench` spent nearly half its instructions before it searched a node.
+Measure it with the profile the budget subtracts:
+
+```sh
+cd resources && echo quit | valgrind --tool=callgrind --callgrind-out-file=/dev/null \
+    --cache-sim=no ../target/release/stockfish 2>&1 | grep "I *refs"
+/usr/bin/time -f "%e s  %M KB peak" sh -c 'echo quit | ./stockfish > /dev/null'
+```
+
+| | startup Ir | peak RSS |
+|---|---:|---:|
+| before | 1,281,194,773 | 253,344 KB |
+| the LEB128 decode, into the destination width | 1,156,853,329 | 190,208 KB |
+| **the magic search, sliced to its own guard** | **1,063,324,214** | 190,200 KB |
+
+**−17.0% and −63 MiB, and both blocks were the same defect** — a runtime-length slice reached
+by a composite index, which is [docs/08-idiomatic-rust.md](08-idiomatic-rust.md) §18.1's shape
+in its second and third zones.
+
+- `leb128_i16` decoded into a `vec![0i32; out.len()]` and narrowed afterwards. On the main
+  weight block that is 23,068,672 entries — 92 MiB, allocated and page-faulted to be read once.
+  It also tested `i == out.len()` once per BYTE where a value takes one or two, and reached the
+  destination through a bounds-tested `out[i]`. Walking `out.iter_mut()` and pulling bytes from
+  an iterator fixes all three.
+- `build_magics` indexed four runtime-length slices per iteration of a loop whose real work is
+  a multiply and a shift, and 70.2M of it was `core::slice::index`. Its own `idx >= size` guard
+  was already there — reslicing `table` and `epoch` to exactly `size` is what let LLVM use it.
+
+**What rfish cannot do here, and it is the constraint working as intended:** ../mcfish loads
+by `mmap` and records loading in a fifth of upstream's cycles because of it. `mmap` is behind
+an `unsafe fn`, every crate wrapping it is `unsafe` internally, and the engine crate has zero
+dependencies under `forbid(unsafe_code)`. The comparison rfish's decode has to win is against
+upstream's own `read_leb_128`, not against a memory map.
+
+Two things remain and both are blocked rather than undone: the compressed block is still
+materialised whole (streaming it needs a refill test per byte, and the falsified row in
+§18.10 is the measurement saying a per-byte refill costs more than the allocation), and
+`vec![0u8; n]` is the only safe way to get a buffer `read_exact` overwrites in full.
+
+## The net is a runtime input, never embedded
+
+`cargo xtask net` fetches it into `resources/`. The engine looks in the working directory,
+then `resources/`, then beside the executable — which is why every gate runs it from
+`resources/`.
+
+**A missing net is not an error**, but it is a different engine. `evaluate` falls back to
+[`classical`](../crates/rfish-engine/src/eval/classical.rs) and the engine says so on
+startup and in `eval`'s own output. A file that exists but fails to load is reported as the
+failure it is, rather than falling back silently.
+
+**Check for the `info string NNUE evaluation using …` line before believing any node
+count.** A measurement taken without a net is a measurement of a different engine, and the
+number looks entirely plausible.
+
+## The classical term is not a feature
+
+Do not tune it. Do not extend it. Do not let it acquire callers NNUE will not satisfy. It
+exists so the engine starts and plays without a 90 MiB download, and so every gate above the
+evaluation can run without one.
+
+Two properties it does have to hold, because the search depends on them: **antisymmetry** (a
+position and its colour-flipped mirror score the same from each mover's point of view — the
+tempo bonus is added *after* taking the mover's point of view for exactly this reason) and
+**material dominance**.
+
+## The measurement ledger
+
+Everything above this line describes the evaluation as it is. Everything below it is the
+record of what the accumulator cost and what moved it, kept for the same reason
+[08-idiomatic-rust.md](08-idiomatic-rust.md) keeps its own: a falsified idea that is not
+written down is re-derived, and a measurement is a fact about the tree rather than a story
+about the week. [12-writing.md](12-writing.md) names both pages where it forbids history in
+shipped prose.
+
+Read it before proposing a change to the accumulator. The rows are the numbers any further
+attempt has to beat, and the falsified ones are the attempts already made.
 
 ### One slot, not a stack — measured
 
@@ -1300,109 +1468,3 @@ branches than upstream and mispredicts more of them. Read traffic at 1.233 is th
 data-shaped lead, and `StackEntry` at 72 bytes against upstream's 56 is part of it — but the
 56-byte alternative was measured and was worse, so that row is a REDESIGN and not an edit.
 
-## The quantisation is the specification
-
-Everything is integer arithmetic on a fixed scale, and the shifts are where the scale
-changes rather than rounding conveniences:
-
-- The transformer's two halves are clamped to `[0, 255]` and multiplied pairwise, then
-  divided by 512. That pairwise product is what gives the first hidden layer a quadratic
-  term without a second matrix.
-- `ClippedReLU` is `clamp(x >> shift, 0, 127)`.
-- `SqrClippedReLU` is `min(127, x² >> (2·shift + 7))`. The extra seven bits stand in for a
-  division by 127 that would otherwise cost an instruction; **the trainer knows and
-  compensates**, which is why it cannot be "corrected".
-- A skip connection adds `fc_0[30] - fc_0[31]` straight to the output. Dropping it costs the
-  network its linear term.
-- The final scale is `fwd × 600 × 16 / (128 × 2⁶ × 2)`, in `i64`, truncating toward zero.
-
-## No intrinsics, and one nightly feature
-
-Upstream's kernels are hand-vectorised behind one `#if` per instruction set. Every
-`std::arch` intrinsic is an `unsafe fn`, so that route is closed here whatever it would buy.
-`std::simd` is not: it is safe, needs no `unsafe` block, and leaves `cargo xtask unsafe-lint`
-asserting exactly what it always did. That is what the dated nightly pin in
-`rust-toolchain.toml` was bought for, and `eval/nnue/layers.rs` and `eval/nnue/transformer.rs`
-are where it is spent.
-
-**Which kernels are written in it is a measurement, not a policy.** Where an ordinary loop
-over fixed-size arrays already emits upstream's instruction shape, it stays a loop and LLVM
-vectorises it under `-C target-cpu`; an explicit rewrite of one such fold cost +177M and was
-reverted. [08-idiomatic-rust.md](08-idiomatic-rust.md) §8 records what the constraint cost,
-§11 carries that reverted fold with the rest of the falsified list, and §12's vectorisation
-subsection records what actually governs the lowering here.
-
-The arithmetic implemented is upstream's **scalar fallback** either way — the one upstream
-keeps precisely so its vector paths have something to be bit-identical to. That is what
-makes `nnue-check` a meaningful comparison rather than a comparison of two approximations,
-and it is why `cargo xtask arch-determinism` exists: `std::simd` lowers differently per tier,
-so a saturation that behaves differently at one width is a divergence `signature` cannot see.
-
-## Loading the net, and the axis every gate subtracts
-
-**`cargo xtask perf-budget` subtracts a `quit`-only profile, so no number on this page above
-this line includes the net load.** It is not small: startup was **1,281M instructions against
-a 1,524M search**, so a `bench` spent nearly half its instructions before it searched a node.
-Measure it with the profile the budget subtracts:
-
-```sh
-cd resources && echo quit | valgrind --tool=callgrind --callgrind-out-file=/dev/null \
-    --cache-sim=no ../target/release/stockfish 2>&1 | grep "I *refs"
-/usr/bin/time -f "%e s  %M KB peak" sh -c 'echo quit | ./stockfish > /dev/null'
-```
-
-| | startup Ir | peak RSS |
-|---|---:|---:|
-| before | 1,281,194,773 | 253,344 KB |
-| the LEB128 decode, into the destination width | 1,156,853,329 | 190,208 KB |
-| **the magic search, sliced to its own guard** | **1,063,324,214** | 190,200 KB |
-
-**−17.0% and −63 MiB, and both blocks were the same defect** — a runtime-length slice reached
-by a composite index, which is [docs/08-idiomatic-rust.md](08-idiomatic-rust.md) §18.1's shape
-in its second and third zones.
-
-- `leb128_i16` decoded into a `vec![0i32; out.len()]` and narrowed afterwards. On the main
-  weight block that is 23,068,672 entries — 92 MiB, allocated and page-faulted to be read once.
-  It also tested `i == out.len()` once per BYTE where a value takes one or two, and reached the
-  destination through a bounds-tested `out[i]`. Walking `out.iter_mut()` and pulling bytes from
-  an iterator fixes all three.
-- `build_magics` indexed four runtime-length slices per iteration of a loop whose real work is
-  a multiply and a shift, and 70.2M of it was `core::slice::index`. Its own `idx >= size` guard
-  was already there — reslicing `table` and `epoch` to exactly `size` is what let LLVM use it.
-
-**What rfish cannot do here, and it is the constraint working as intended:** ../mcfish loads
-by `mmap` and records loading in a fifth of upstream's cycles because of it. `mmap` is behind
-an `unsafe fn`, every crate wrapping it is `unsafe` internally, and the engine crate has zero
-dependencies under `forbid(unsafe_code)`. The comparison rfish's decode has to win is against
-upstream's own `read_leb_128`, not against a memory map.
-
-Two things remain and both are blocked rather than undone: the compressed block is still
-materialised whole (streaming it needs a refill test per byte, and the falsified row in
-§18.10 is the measurement saying a per-byte refill costs more than the allocation), and
-`vec![0u8; n]` is the only safe way to get a buffer `read_exact` overwrites in full.
-
-## The net is a runtime input, never embedded
-
-`cargo xtask net` fetches it into `resources/`. The engine looks in the working directory,
-then `resources/`, then beside the executable — which is why every gate runs it from
-`resources/`.
-
-**A missing net is not an error**, but it is a different engine. `evaluate` falls back to
-[`classical`](../crates/rfish-engine/src/eval/classical.rs) and the engine says so on
-startup and in `eval`'s own output. A file that exists but fails to load is reported as the
-failure it is, rather than falling back silently.
-
-**Check for the `info string NNUE evaluation using …` line before believing any node
-count.** A measurement taken without a net is a measurement of a different engine, and the
-number looks entirely plausible.
-
-## The classical term is not a feature
-
-Do not tune it. Do not extend it. Do not let it acquire callers NNUE will not satisfy. It
-exists so the engine starts and plays without a 90 MiB download, and so every gate above the
-evaluation can run without one.
-
-Two properties it does have to hold, because the search depends on them: **antisymmetry** (a
-position and its colour-flipped mirror score the same from each mover's point of view — the
-tempo bonus is added *after* taking the mover's point of view for exactly this reason) and
-**material dominance**.
