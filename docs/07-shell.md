@@ -130,6 +130,29 @@ rendered by walking a copy so each move is named in the position it is played in
 
 `go perft N` is answered here and never reaches the search: it is a movegen command.
 
+## `debug_log.rs` — the transcript behind `Debug Log File`
+
+When a GUI and an engine disagree about what was said, the only settlement is a record of
+what crossed the pipe. Setting the option opens one, in upstream's format: every line the
+engine READ prefixed `>> `, every line it WROTE prefixed `<< `, interleaved in the order
+they happened.
+
+**It is a file-scope global behind a mutex, and that is the smaller construct rather than a
+shortcut.** The option can be switched on and off mid-session, by a `setoption` handled deep
+inside the command dispatch, while the thing being logged is the output stream that same
+dispatch is writing to. Threading a handle from the option down to the writer and back would
+put a borrow across the whole shell for a feature that is off by default.
+
+Every byte the engine writes passes through `TeeWriter`, which wraps the output stream in
+`uci::run` and in the argv path both. **With logging off the whole body is behind one
+`is_active()` test** — the line splitting, the lossy UTF-8 conversion and the file write all
+sit inside it — so the cost on the path that prints every `info` line is that test alone.
+It is a mutex acquisition rather than an atomic load, which is the price of letting the
+option own the file handle directly; measure before assuming it is free on a hotter path
+than this one.
+
+Golden: `Stockfish/src/misc.cpp`, `Logger` and `Tie`.
+
 ## A malformed command ENDS the process, as upstream's does
 
 Upstream treats a command it cannot use as fatal, and rfish now matches it exactly:
