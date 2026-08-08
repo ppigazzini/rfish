@@ -156,13 +156,45 @@ plainly because it is invisible: **the gate that does not exist is the point**.
       +------------+--> board <---+
 ```
 
-Every arrow runs one way. `board` reads nothing; `state` reads `board`; `eval` and `search`
-read both; `platform` reads all of them; the shell reads the engine. There is no cycle, and
-Rust's module system does not enforce that — a cycle between modules of one crate compiles
-fine — so it is a property a reviewer maintains, not one the compiler does.
-
-The consequence that matters: **perft is a complete test of the board zone**, because
+That is the **declared** direction: `board` reads nothing, `state` reads `board`, `eval` and
+`search` read both, `platform` reads all of them, and the shell reads the engine. The
+consequence that matters is that **perft is a complete test of the board zone**, because
 nothing below it can influence it.
+
+Rust does not enforce it. The crate boundary above is checked by `cargo build`; this graph is
+inside one crate, and a cycle between modules of one crate compiles fine. So the direction is
+a property a reviewer maintains — which makes the honest form of this section an inventory of
+what crosses it, not a claim that nothing does. Recompute it rather than trusting the list:
+
+```sh
+cd crates/rfish-engine/src && for z in board state eval search platform; do
+    printf '%-9s -> ' "$z"
+    grep -rhoE 'use crate::(board|state|eval|search|platform)' "$z"/ |
+        sort -u | sed 's/use crate:://' | tr '\n' ' '; echo
+done
+```
+
+Three edges cross the declared direction today, and they are not the same kind of thing:
+
+- **`board` reads `eval`, in tests only.** `board/threats.rs` checks its recorder against
+  `eval/nnue/features.rs`, the encoder that consumes what it records — the two have to agree
+  or the accumulator silently reuses a stale feature set, and a differential is the only
+  thing that can say so. Every one of these is inside a `#[cfg(test)]` block, so no shipped
+  build carries the edge. Keep it that way: the test is worth more than the arrow.
+- **`state` reads `search`, and that one is a real cycle.** `state/mod.rs` takes `ContKey`
+  and `CorrKey` from `search/history.rs` because a stack frame stores those plane indices,
+  while `search` reads `state` for `Limits` and the shared signals. The types are the
+  search's, the frame holding them is shared, and closing it means moving the plane index
+  types down into `state` or up into `search` along with the frame. **Debt, not design.**
+- **`search` reads `platform`.** `search/fuzz.rs` needs a `ThreadPool` to drive a whole
+  search, which is the point of the harness. It is declared `pub mod fuzz`, not
+  `#[cfg(test)] mod fuzz`, so unlike the first case this edge is compiled into every build.
+
+None of the three is load-bearing for the search. They are listed so that a fourth is
+noticed, because nothing here will notice it for you — the sibling C port runs a link-time
+`zone-check` and the golden runs `depcheck.sh` and `linkcheck.sh` against a baseline that
+expires in both directions; rfish has neither, and that gap is the reason this list is
+written out.
 
 ## Zero dependencies
 
