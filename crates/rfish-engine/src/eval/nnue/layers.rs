@@ -7,10 +7,14 @@
 //! # No intrinsics
 //!
 //! Upstream writes these as hand-vectorised kernels behind one `#if` per instruction set.
-//! `std::arch` intrinsics are `unsafe` and `std::simd` is nightly, so rfish writes the
-//! loops and lets LLVM vectorise them under `-C target-cpu`. The arithmetic below is
-//! upstream's SCALAR fallback, which upstream keeps precisely so that the vector paths have
-//! something to be bit-identical to.
+//! Every `std::arch` intrinsic is an `unsafe fn`, so that route is closed here. `std::simd`
+//! is not: it needs no `unsafe` block, which is why the dated nightly pin buys it without
+//! touching `forbid(unsafe_code)`. The kernels below are written in it where a measurement
+//! says it pays, and left as ordinary loops for LLVM to vectorise under `-C target-cpu`
+//! where it does not.
+//!
+//! The arithmetic is upstream's SCALAR fallback either way, which upstream keeps precisely
+//! so that the vector paths have something to be bit-identical to.
 //!
 //! Golden: `Stockfish/src/nnue/layers/affine_transform.h`, `clipped_relu.h`,
 //! `sqr_clipped_relu.h`.

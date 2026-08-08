@@ -1316,15 +1316,27 @@ changes rather than rounding conveniences:
   network its linear term.
 - The final scale is `fwd × 600 × 16 / (128 × 2⁶ × 2)`, in `i64`, truncating toward zero.
 
-## No intrinsics
+## No intrinsics, and one nightly feature
 
-Upstream's kernels are hand-vectorised behind one `#if` per instruction set. `std::arch`
-intrinsics are `unsafe` and `std::simd` is nightly, so rfish writes ordinary loops over
-fixed-size arrays and lets LLVM vectorise them under `-C target-cpu`.
+Upstream's kernels are hand-vectorised behind one `#if` per instruction set. Every
+`std::arch` intrinsic is an `unsafe fn`, so that route is closed here whatever it would buy.
+`std::simd` is not: it is safe, needs no `unsafe` block, and leaves `cargo xtask unsafe-lint`
+asserting exactly what it always did. That is what the dated nightly pin in
+`rust-toolchain.toml` was bought for, and `eval/nnue/layers.rs` and `eval/nnue/transformer.rs`
+are where it is spent.
 
-The arithmetic implemented is upstream's **scalar fallback** — which upstream keeps
-precisely so its vector paths have something to be bit-identical to. That is what makes
-`nnue-check` a meaningful comparison rather than a comparison of two approximations.
+**Which kernels are written in it is a measurement, not a policy.** Where an ordinary loop
+over fixed-size arrays already emits upstream's instruction shape, it stays a loop and LLVM
+vectorises it under `-C target-cpu`; an explicit rewrite of one such fold cost +177M and was
+reverted. [08-idiomatic-rust.md](08-idiomatic-rust.md) §8 records what the constraint cost,
+§11 carries that reverted fold with the rest of the falsified list, and §12's vectorisation
+subsection records what actually governs the lowering here.
+
+The arithmetic implemented is upstream's **scalar fallback** either way — the one upstream
+keeps precisely so its vector paths have something to be bit-identical to. That is what
+makes `nnue-check` a meaningful comparison rather than a comparison of two approximations,
+and it is why `cargo xtask arch-determinism` exists: `std::simd` lowers differently per tier,
+so a saturation that behaves differently at one width is a divergence `signature` cannot see.
 
 ## Loading the net, and the axis every gate subtracts
 

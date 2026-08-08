@@ -193,12 +193,25 @@ works because release wraps a bare `+` will pass `cargo xtask signature` and fai
 
 ## 8. SIMD: what the constraint actually cost
 
-Upstream's NNUE kernels are hand-written intrinsics behind `#if` per instruction set.
-`std::arch` intrinsics are `unsafe` in Rust; `std::simd` is nightly. Both are out.
+Upstream's NNUE kernels are hand-written intrinsics behind `#if` per instruction set. Every
+`std::arch` intrinsic is an `unsafe fn`, so that route is out and no crate wrapping one gets
+back in.
 
-What is in: **ordinary loops over fixed-size arrays**, which LLVM vectorises under
-`-C target-cpu`. `cargo xtask build --arch <tier>` sets it; the default build sets nothing,
-because the bench anchor has to be reproducible on a machine nobody here owns.
+`std::simd` is the other half of the answer and it is **not** an exception to the rule: it
+needs no `unsafe` block, so `forbid(unsafe_code)` is untouched and `cargo xtask unsafe-lint`
+still asserts the same property. What it costs is a **nightly** toolchain, pinned to a dated
+one in `rust-toolchain.toml` — and that pin was bought against a measurement rather than a
+preference. The kernels use it where a measurement says it pays
+(`crates/rfish-engine/src/eval/nnue/layers.rs`,
+`crates/rfish-engine/src/eval/nnue/transformer.rs`) and stay **ordinary loops over
+fixed-size arrays** where it does not, which is most places: LLVM vectorises those under
+`-C target-cpu`, and §11 carries the explicit rewrite that cost **+177M** by replacing a fold
+LLVM was already emitting well.
+
+`cargo xtask build --arch <tier>` sets the target CPU; the default build sets nothing,
+because the bench anchor has to be reproducible on a machine nobody here owns. That default
+is also why `cargo xtask arch-determinism` is a separate gate — `std::simd` lowers per tier,
+so `signature` alone tests the portable arm and cannot see an ISA-gated divergence.
 
 **The forward pass is bit-exact with upstream** — `cargo xtask nnue-check` proves it
 position by position. So the arithmetic cost nothing; only the speed did.
@@ -217,10 +230,16 @@ carried one taken while five cores were busy with something else. It was wrong b
 factor and read as authoritative. Do not add an absolute throughput number here that was not
 taken on a quiet box at a named `--arch` tier.
 
-**So the honest state is: the constraint has not yet been shown to cost anything on this
-axis.** The largest algorithmic difference is gone, so an intrinsics-versus-autovectorisation
-comparison is now a fair one to run. It has not been run. Do not cite this section as
-evidence either way until someone does.
+With that term gone the intrinsics-versus-autovectorisation comparison became a fair one, and
+it is the comparison the toolchain pin answers: §12's vectorisation subsection and §16.1
+record what governs the lowering here and why the sibling written against Zig's `@Vector`
+sits where it does. **The residual is an addressing and dispatch cost, not an arithmetic
+one** — §17 and §18 are the shapes that moved it, and
+[03-engine-eval.md](03-engine-eval.md) carries the per-tier ratio and what remains of the gap.
+
+So the constraint's cost on this axis is **measured, not open**. What is still open is how
+much of the remainder is reachable at all; do not cite this section for a number, cite the
+row in 03 that carries one.
 
 ---
 
