@@ -16,6 +16,117 @@ rfish/
     xtask/            the build driver and the gate battery
 ```
 
+## What each module owns
+
+One row per file, so a symbol can be found without a grep. Each zone's own page is the
+detail; this is the index into them.
+
+| Module | Owns |
+|---|---|
+| `board/types.rs` | the value domain: `Color`, `Square`, `Piece`, `Move`, `Value`, the key spaces |
+| `board/bitboard.rs`, `board/attacks.rs` | square sets, and the magic and leaper attack tables |
+| `board/zobrist.rs` | the hash words, built by a `const fn` at compile time |
+| `board/position.rs` | the board, `StateInfo`, `do_move`/`undo_move`, the keys, `see_ge` |
+| `board/movegen.rs` | the generators, `perft`, and UCI move notation |
+| `board/cuckoo.rs` | van Kervinck's tables: which one move would repeat a position |
+| `board/threats.rs` | the threat and pawn-pair features a move creates and destroys |
+| `state/mod.rs` | what crosses the zone boundary: `Limits`, `RootMove`, the shared signals |
+| `search/worker.rs` | `SearchWorker`, iterative deepening, alpha-beta, quiescence |
+| `search/tt.rs`, `search/history.rs` | the shared table, and the ordering and correction tables |
+| `search/movepick.rs` | the staged picker |
+| `search/timeman.rs`, `search/score.rs`, `search/skill.rs` | the budget, the reported score, the handicap |
+| `search/fuzz.rs` | the in-process random-walk soak over the whole spine |
+| `eval/nnue/` | the file format, the loader, the accumulator and the forward pass |
+| `eval/classical.rs` | the no-net fallback, and scaffolding with a deletion date |
+| `platform/threads.rs` | the worker set, the scoped search, the best-move vote |
+| `platform/numa.rs` | the topology, upstream's policies, and the distribution report |
+| `platform/syzygy/` | discovery, the pairs decoder, the index, and the WDL and DTZ probes |
+| `crates/rfish/src/uci.rs` | the transport: the reader thread, the command table, the info lines |
+| `crates/rfish/src/options.rs` | the option model and the `uci` handshake |
+| `crates/rfish/src/bench.rs`, `crates/rfish/src/speedtest.rs` | the anchor's benchmark, and the throughput report |
+| `crates/xtask/src/` | the build driver and every gate |
+
+## Startup
+
+**There is no initialisation order to get wrong, and that is a deliberate difference from
+upstream.** Upstream's `main` calls `Attacks::init()` before `Position::init()` because the
+second reads the tables the first fills, and getting it backwards does not crash — it reads
+zeroed attack sets and presents as a search bug. Here that ordering constraint does not
+exist to be violated:
+
+- **Zobrist words are a compile-time constant.** `board/zobrist.rs` builds them in a
+  `const fn` behind a plain `static`, so they exist before `main` and cannot be read half
+  written. The same is true of the leaper tables and the distance matrix in
+  `board/bitboard.rs`.
+- **Everything a `const fn` cannot express is a `LazyLock`, built on first read** — the
+  magic tables in `board/attacks.rs`, the cuckoo tables in `board/cuckoo.rs` (which are
+  keyed by slider attacks, so they cannot precede the magics), and the NNUE threat tables in
+  `eval/nnue/features.rs`. A caller cannot forget a hook that does not exist, and a second
+  thread cannot observe a half-built table.
+
+What **is** ordered is the network, because it is a runtime input the shell owns rather than
+engine state. Both entry paths load it before anything searches: `crates/rfish/src/main.rs`
+for the argv form, so `stockfish bench` does not silently measure the fallback, and
+`crates/rfish/src/uci.rs` for the interactive form, which also announces it. The binary
+resolves the file relative to the working directory, which is why every gate runs the engine
+from `resources/`.
+
+**Startup is not free, and no gate in `parity` can see it.** `cargo xtask perf-budget`
+subtracts a `quit`-only profile, so the net load and the magic search sit outside every
+number it reports. [03-engine-eval.md](03-engine-eval.md) carries that axis, how to measure
+it, and what a defect on it looked like.
+
+## How a search flows
+
+```mermaid
+flowchart TD
+    R["uci.rs — the reader thread: stop, ponderhit, quit"]
+    U["uci.rs — the command loop"]
+    G["uci.rs — cmd_go: parse_limits, then the pool"]
+    P["platform/threads.rs — ThreadPool::search"]
+    ID["search/worker.rs — iterative_deepening"]
+    AB["search/worker.rs — search (alpha-beta)"]
+    QS["search/worker.rs — qsearch"]
+    MP["search/movepick.rs — next_move"]
+    MG["board/movegen.rs — generate"]
+    PO["board/position.rs — do_move / undo_move"]
+    TT["search/tt.rs — probe / save"]
+    EV["eval/ — evaluate, then nnue/"]
+    TB["platform/syzygy/ — the WDL and DTZ probes"]
+    V["platform/threads.rs — elect: the best-move vote"]
+
+    R -->|signals| P
+    R -->|lines| U --> G --> P
+    P -->|per worker| ID --> AB
+    AB -->|depth <= 0| QS
+    AB -->|recurse| AB
+    AB --> MP --> MG
+    AB --> PO
+    AB --> TT
+    AB --> EV
+    AB -.->|SyzygyPath set| TB
+    QS --> MP
+    QS --> EV
+    P --> V
+```
+
+`cmd_go` parses the argument list into a `Limits` and hands it to `ThreadPool::search`,
+which converts the clock model once for the whole pool and then opens a
+`std::thread::scope`. Helpers are spawned into it; **the main worker searches on the calling
+thread**, so a single-threaded run involves no spawn at all. Each worker runs
+`iterative_deepening` over the same root, recursing through `search` into `qsearch` at depth
+zero. Ordering comes from the picker, leaf scores from the NNUE, and the move finally played
+is the one `elect` says the pool agrees on — see [04-multithreading.md](04-multithreading.md).
+
+The reader thread is the second edge into the pool and it is not decorative: it owns `stop`,
+`ponderhit` and the unbounded-search `quit`, because the command loop is inside the search
+while one is running and cannot read them.
+
+**The search allocates nothing per node.** Move lists are fixed arrays, and the stack, the
+histories and the accumulator scratch are owned by the worker and reused.
+[08-idiomatic-rust.md](08-idiomatic-rust.md) §9 records what three per-node allocations cost
+against upstream's zero, and why the obvious fix measured worse than the one that landed.
+
 ## The crate boundary is the zone check
 
 The engine crate reads no standard input, writes no standard output and parses no UCI. It
