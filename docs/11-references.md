@@ -41,8 +41,28 @@ nothing to take. The site that announces the move called nothing at all, and the
 a construct says nothing about what Rust pays. Take the idea, then price it here — the same
 sweep priced three ways of routing that reporter and two of them were gates-red.
 
+**A sibling's GATE is a hypothesis about what this tree does not INSTRUMENT**, which is a
+different question from whether the same defect is here. Both siblings independently built a
+gate diffing the root `currmove` line against the oracle, and rfish already printed that line
+and had fixed the bug they were gating — so on the subject line there was nothing to take.
+Asking the gate's question instead pointed at `async-check`: it drove `quit` into a search
+already running and never drove the shape every gate, harness and piping GUI actually uses,
+where the whole script arrives in one buffer. rfish hung on that input, exit 124, while both
+siblings exited 0. **The instrument is the finding more often than the code is.**
+
 **Probe against this tree, not against the subject line.** The commits worth recording are
-as often the ones NOT taken, with the reason, so the next sweep does not re-open them.
+as often the ones NOT taken, with the reason, so the next sweep does not re-open them. From
+the 2026-08-08 window (`mcfish 75a76202..187ddec0`, `zfish 37da78fb..d0549833`):
+
+| probed | verdict |
+|---|---|
+| `mcfish 233525f0`, comments naming files that no longer exist | **nothing here.** No comment names an absent `crates/**.rs`, and every upstream `*.cpp`/`*.h` cited in one exists at the pin |
+| `mcfish cd3603cd`, includes a file already had | **no analogue.** Rust has no include graph to duplicate; a redundant `use` is a compiler warning `clippy` already refuses |
+| `mcfish f757587d`, a `gives_check` argument `do_move` trusts | **no analogue.** rfish's prober calls `do_move`, which computes the checkers itself; `do_move_checked` is a separate entry point the tablebase path never takes, so there is no contract to pass `false` to |
+| `mcfish 1cede41d`, a gap list describing shipped subsystems | **already current here.** All four of rfish's "What is not here" sections name what has come OFF the list as well as what is on it |
+| `zfish 1f208d00`, docs-lint permitting a pinned anchor | **already stronger here.** `docs-lint` refuses ANY quoted signature rather than only a stale one |
+| `zfish 88b2cc42`, a module no page names | **taken** — the sweep found `debug_log` |
+| `zfish d0549833` / `mcfish 187ddec0`, a commit-format section | **already here.** All three sets had the same hole — a writing page deferring to the commit message twice without saying what one looks like — and all three closed it in this window |
 
 ## Rust
 
