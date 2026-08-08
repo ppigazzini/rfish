@@ -275,6 +275,15 @@ pub struct SharedState {
     /// The shell reads this to decide whether a `quit` has to interrupt the search or can
     /// wait for it: a `go depth 13` will finish on its own and a `go infinite` never will.
     pub searching_unbounded: AtomicBool,
+    /// Set when the reader has seen `quit`, whether or not a search was running yet.
+    ///
+    /// The reader cannot answer "does this quit have to interrupt something" on its own: it
+    /// sees the line before the main loop has dispatched the `go` in front of it, so
+    /// [`SharedState::searching_unbounded`] is still false for a search that is about to be
+    /// unbounded. Latching here and deciding in
+    /// [`SharedState::set_searching_unbounded`] makes the answer independent of which of the
+    /// two threads got there first.
+    pub quit_seen: AtomicBool,
 }
 
 impl SharedState {
@@ -363,8 +372,29 @@ impl SharedState {
     }
 
     /// Declare whether the search now starting can end by itself.
+    ///
+    /// **This is where a pending `quit` is answered**, because it is the first moment the
+    /// answer exists: a search that can end by itself is left alone so its result stays
+    /// deterministic, and one that cannot is stopped at once. Deciding in the reader instead
+    /// loses the race whenever `quit` sits in the same buffer as the `go` it follows — which
+    /// is how every gate, every harness and a piping GUI drive the engine.
     pub fn set_searching_unbounded(&self, yes: bool) {
         self.searching_unbounded.store(yes, Ordering::Relaxed);
+        if yes && self.quit_seen.load(Ordering::Relaxed) {
+            self.request_stop();
+        }
+    }
+
+    /// Record that `quit` has been read, and act on it if a search is already unbounded.
+    ///
+    /// Both halves are needed and neither subsumes the other: this one covers a `quit` that
+    /// arrives while the search runs, and the check in
+    /// [`SharedState::set_searching_unbounded`] covers one that arrives before it starts.
+    pub fn latch_quit(&self) {
+        self.quit_seen.store(true, Ordering::Relaxed);
+        if self.searching_unbounded() {
+            self.request_stop();
+        }
     }
 
     /// True when only an explicit stop can end the running search.

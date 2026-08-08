@@ -205,21 +205,46 @@ pub(crate) fn async_check() -> Result<Outcome, String> {
         }
     }
 
+    // 5. The same `quit`, arriving BEFORE the search starts. This is not a weaker version of
+    //    invariant 4 — it is the opposite race, and the engine answers it in a different
+    //    place. With no wait, the whole script sits in one buffer: the reader thread has read
+    //    `quit` before the main loop has dispatched the `go` in front of it, so anything that
+    //    decides by asking "is a search running" answers no and lets an infinite search run
+    //    forever. It is also the ONLY shape that matters in practice, because writing a
+    //    script and closing the pipe is how every gate, every harness and a piping GUI drive
+    //    this binary — invariant 4's two-second wait is the artificial one.
+    match drive_async_status(&engine, &cwd, &["position startpos", "go infinite"], 0, &[], 30)? {
+        Run::TimedOut => {
+            problems.push(
+                "quit before the search started: the engine did not exit within 30s".to_string(),
+            );
+        }
+        Run::Exited(_) => {
+            println!("  \x1b[32mok\x1b[0m quit read before the search started still exits");
+        }
+    }
+
     for p in &problems {
         eprintln!("  \x1b[31m{p}\x1b[0m");
     }
     println!(
-        "async-check: {} of 4 invariants hold on the interrupted-search path",
-        4 - problems.len()
+        "async-check: {} of 5 invariants hold on the interrupted-search path",
+        5 - problems.len()
     );
     Ok(Outcome::check(problems.is_empty(), format!("{} invariant(s) broken", problems.len())))
 }
 
-/// Drive the engine, WAITING between the opening script and the interrupting one.
+/// Drive the engine, optionally WAITING between the opening script and the interrupting one.
 ///
-/// The wait is the whole point: writing both halves at once and closing the pipe lets the
-/// engine read `stop` before the search has started, which is the case `tools/cases/` already
-/// covers and not the one this gate is for.
+/// The wait selects which race is under test, and both are. A non-zero wait puts the
+/// interruption inside a search that is already running; a zero wait leaves the whole script
+/// in one buffer, so the reader thread sees the interruption before the main loop has
+/// dispatched the `go` in front of it.
+///
+/// **`tools/cases/` covers neither.** A golden is a byte comparison, and an interrupted search
+/// ends wherever the clock got to, so there is nothing there to pin — and a case that opened an
+/// unbounded search would hang the runner rather than fail it. Believing otherwise is what left
+/// invariant 5 unwritten while the engine failed it.
 fn drive_async(
     engine: &Path,
     cwd: &Path,

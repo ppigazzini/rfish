@@ -172,3 +172,11 @@ Two things follow from it, and both had to move together:
   `quit` is how every gate and every measurement harness drives this binary, and aborting
   there would make a node count depend on scheduling. `go infinite` has no answer to wait
   for, so that one is stopped.
+
+  **The reader latches the `quit`; `SharedState::set_searching_unbounded` decides it.** That
+  split is the whole of the invariant, because the reader cannot answer the question: it sees
+  `quit` in the same buffer as the `go` in front of it, before the main loop has dispatched
+  that `go`, so a decision taken there asks whether a search is running and is told no. The
+  search declares itself unbounded and answers the pending quit in the same call. Both races
+  are gated — `async-check` invariant 4 sends the quit into a running search and invariant 5
+  sends it ahead of one, and only the second fails if the decision moves back to the reader.
