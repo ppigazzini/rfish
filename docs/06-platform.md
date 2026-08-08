@@ -1,7 +1,34 @@
 # The platform layer
 
-`crates/rfish-engine/src/platform/` — threads, and the Syzygy prober. That is all of it,
-and the shortness is the interesting part.
+`crates/rfish-engine/src/platform/` — the runtime that **hosts** the engine, rather than a
+layer beneath it. That direction is why this zone may read the board, the search and the
+evaluation while none of them may read it.
+
+## What is here
+
+Three modules, two of which have their own page because their subject is bigger than the
+platform question they answer:
+
+| Module | Owns | Detail |
+|---|---|---|
+| `threads.rs` | the worker set, the scoped search, the best-move vote | [04-multithreading.md](04-multithreading.md) |
+| `numa.rs` | the topology, upstream's three auto policies, the `NumaPolicy` syntax, the distribution | below |
+| `syzygy/` | discovery, the pairs decoder, the index computation, the WDL and DTZ probes | [05-tablebases.md](05-tablebases.md) |
+
+**`numa.rs` reads the machine out of the filesystem, and that is the whole trick.** Upstream
+discovers the same facts through `sched_getaffinity` and `GetNumaProcessorNodeEx`, which are
+FFI and therefore closed here; Linux publishes every one of them as text that is already in
+the format upstream parses — the process affinity in `/proc/self/status`, the online nodes
+and each node's `cpulist` under `/sys/devices/system/node/`, and the L3 sharing list under
+each CPU. Reading a file is safe, so the topology model costs neither an `unsafe` block nor a
+dependency. What it cannot do is the next step, and that is the subject of the rest of this
+page.
+
+**An option value that becomes an allocation is bounded where it is parsed, and `NumaPolicy`
+is the case that proves it matters.** It accepts a processor list; upstream bounds each range
+and not their sum, and a few hundred bytes of input reached gigabytes of resident memory here
+before the allocator gave up. `numa.rs` bounds the total. `Hash` and `Threads` are the other
+two of the three, and [07-shell.md](07-shell.md) owns them.
 
 ## What upstream has here that rfish does not
 
