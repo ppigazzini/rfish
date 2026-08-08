@@ -1299,7 +1299,10 @@ pub(crate) fn run(input: impl BufRead + Send + 'static, output: impl Write) -> b
             match trimmed {
                 "stop" => shared.request_stop(),
                 "ponderhit" => shared.ponder_hit(),
-                "quit" if shared.searching_unbounded() => shared.request_stop(),
+                // Latched rather than tested: at this instant the `go` in front of it may not
+                // have been dispatched, so there is no search to ask about yet.
+                // `set_searching_unbounded` answers it when the search declares itself.
+                "quit" => shared.latch_quit(),
                 // Cleared HERE, where the command is read, and not where the search starts:
                 // a `stop` behind it in the same buffer reaches this thread first, and
                 // clearing any later would drop it.
