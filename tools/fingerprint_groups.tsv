@@ -11,6 +11,21 @@
 # compiler change inlines one of these, fix the row -- prefer a callee too big to inline over
 # its caller -- and never delete the check.
 #
+# TWO ROWS HAVE ALREADY BEEN MOVED THAT WAY, both after a refactor in this tree rather than a
+# compiler change, and the weekly lane reported both as MISS on 2026-08-10:
+#
+#   do_move   `do_move_checked` became a one-line wrapper over `do_move_recording` when threat
+#             recording landed, and the search calls the recording form DIRECTLY. The wrapper
+#             inlines to nothing; the callee counts every make-move on every path and matches
+#             upstream exactly (163345).
+#   evaluate  `eval::evaluate` inlines into `SearchWorker::evaluate`, and that wrapper is
+#             itself inlined at THREE of its six call sites -- it reports 35771 against
+#             upstream's 62975, so a caller symbol cannot carry this row at all. The forward
+#             pass every static evaluation runs can: `LayerStack::propagate` is 62975, and it
+#             is a different symbol from the one `nnue_network` reads, so the two rows still
+#             fail independently. Put the row back on the entry if rustc ever stops inlining
+#             it -- an entry count is the claim this row would rather make.
+#
 # WHAT THIS IS FOR. Every other differential in this tree compares values: the bench anchor,
 # the goldens, nnue-check, upstream-nodes. Each passes over a state divergence that happens
 # not to move a number on the positions it drives. Two real defects were found by this and by
@@ -29,10 +44,10 @@
 movepick_next	MovePicker::next_move|MovePicker>::next_move
 search_node	Worker::search<|SearchWorker>::node::
 qsearch	Worker::qsearch<|SearchWorker>::qsearch
-evaluate	Eval::evaluate(|rfish_engine::eval::evaluate
+evaluate	Eval::evaluate(|nnue::LayerStack>::propagate
 nnue_network	AccumulatorStack::evaluate(|nnue::Network>::evaluate
 update_quiet	update_quiet_histories|SearchWorker>::update_quiet
-do_move	Position::do_move(|Position>::do_move_checked
+do_move	Position::do_move(|Position>::do_move_recording
 pseudo_legal	Position::pseudo_legal|Position>::pseudo_legal
 
 # NOT GATED, and the reason is measured rather than assumed.

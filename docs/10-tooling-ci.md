@@ -728,6 +728,17 @@ measurement: upstream reports `do_move` 163345 and `undo_move` 68736 over the sa
 every do_move in a search is undone, so 94609 of its undo_moves were inlined away. Gating
 them would assert that two compilers inline identically, which is not a fact about this port.
 
+**The same limit cuts on rfish's side, where a refactor trips it exactly like a compiler
+change would.** Two rows named entry points that stopped surviving as symbols, and the weekly
+lane reported both as MISS on 2026-08-10: `do_move_checked` became a one-line wrapper over
+`do_move_recording` when threat recording landed — and the search calls the recording form
+directly — while `eval::evaluate` inlines into `SearchWorker::evaluate`, which is itself
+inlined at three of its six call sites and so counts 35771 against upstream's 62975. Both rows
+now name a callee that survives whole: `do_move_recording` at 163345 and
+`LayerStack::propagate` at 62975, each EXACT. Prefer the callee when a row has to move, and
+re-derive the count before believing a wrapper — a caller symbol can undercount without ever
+reaching zero, and that is the one shape this gate cannot tell from a real divergence.
+
 A group whose pattern matches nothing on one side is a **MISS and fails**, never a zero — a
 symbol the compiler inlined away would otherwise read as agreement at zero-versus-zero
 forever. Both failure modes were proved rather than assumed: reinstating the ponder clone
