@@ -33,10 +33,13 @@ information between two moves that had both saturated.
 | Table | Indexed by | Clamp |
 |---|---|---|
 | `ButterflyHistory` | side to move, `from_to` | 7183 |
+| `LowPlyHistory` | ply, `from_to` | 7183 |
 | `CaptureHistory` | moving piece, destination, victim type | 10692 |
-| `ContinuationHistory` | (in check, capture) then parent's (piece, to) | 29952 |
+| `ContinuationHistory` | (in check, capture) then parent's (piece, to) | 30000 |
+| `ContinuationCorrectionHistory` | an ancestor's plane, then (piece, to) | 1024 |
 | `PawnHistory` | pawn-key row, piece, destination | 8192 |
 | `CorrectionHistory` (×4) | a key row, colour | 1024 |
+| `tt_move` | nothing — one counter, not a table | 8192 |
 
 The continuation planes start at **−40**, not zero: an untouched follow-up must sort below
 a move that has merely never worked. A plane of zeros would make "unknown" look as good as
@@ -152,12 +155,13 @@ The pruning set, in the order the node applies it:
 8. **Late move reductions**, with a re-search at full depth when the reduced search beats
    alpha.
 
-The static evaluation is **corrected** before any of it: four tables record how far the
-evaluation of positions sharing a pawn structure, a minor-piece configuration or a
-non-pawn material count has historically been from what the search found, and the node
-starts from the corrected value. Upstream also folds in a continuation-correction term keyed
-by the last two moves; rfish does not have that table, and its weight is absent rather than
-approximated.
+The static evaluation is **corrected** before any of it: five terms record how far the
+evaluation of positions like this one has historically been from what the search found, and
+the node starts from the corrected value. Four are keyed by a summary of the position — the
+pawn structure, the minor-piece configuration, and each side's non-pawn material. The fifth
+is keyed by the pair of moves that led here, and where there is no previous move to key on
+it falls back to a large constant rather than to zero: that constant is what the sum looks
+like when the other four have nothing to say.
 
 The search **never prints**. It reports through the `InfoSink` trait, which the shell
 implements as UCI `info` lines and a test implements as a no-op. That is what keeps the
