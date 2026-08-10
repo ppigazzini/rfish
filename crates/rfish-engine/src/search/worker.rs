@@ -1991,10 +1991,9 @@ impl SearchWorker {
                     lmr_depth += history / LMR_DIVISOR[d_index];
 
                     let futility_value = self.stack[si.index()].static_eval
-                        + 39
-                        + 127 * i32::from(best_move.is_none())
                         + 119 * lmr_depth
-                        + 90 * i32::from(self.stack[si.index()].static_eval > alpha);
+                        + 90 * i32::from(self.stack[si.index()].static_eval > alpha)
+                        + 164;
 
                     if !in_check && lmr_depth < 12 && futility_value <= alpha {
                         if best_value <= futility_value
