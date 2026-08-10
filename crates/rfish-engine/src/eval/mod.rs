@@ -118,7 +118,7 @@ fn nnue_value(
 
     let material =
         534 * i64::from(pos.count_both(PieceType::Pawn)) + i64::from(pos.non_pawn_material_total());
-    Value::new(((nnue * (77871 + material) + optimism * (7191 + material)) / 77871) as i32)
+    Value::new(((nnue * (91000 + material) + optimism * 7675) / 91000) as i32)
 }
 
 /// True when neither side has enough material to force mate.

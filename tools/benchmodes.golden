@@ -59,7 +59,7 @@ Nodes searched  : 2039
 info string Network replica 1: Local memory.
 
 Position: 1/1 (8/8/8/4k3/8/8/4P3/4K3 w - - 0 1)
-info depth 1 seldepth 2 multipv 1 score cp 4 nodes 7 tbhits 0 pv e1d2
+info depth 1 seldepth 2 multipv 1 score cp 5 nodes 7 tbhits 0 pv e1d2
 bestmove e1d2
 
 ===========================
