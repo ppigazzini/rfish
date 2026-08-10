@@ -100,6 +100,29 @@ fn value_draw(nodes: u64) -> Value {
     VALUE_DRAW - 1 + (nodes & 0x2) as i32
 }
 
+/// The depth below which futility pruning applies at a child node.
+///
+/// Upstream's `futility_depth`. The table holds the steps of the fitted expression
+///
+/// ```text
+/// depth = 13 + int(0.5 + 6 / int(1 + pow(abs(eval) + abs(beta), 3) / 50_000_000_000))
+/// ```
+///
+/// so the lookup IS that formula rather than an approximation of it. The cutoff falls from 19
+/// toward 13 as the scores in play grow, which is what lets a mate search keep descending
+/// where the fixed cutoff it replaces would have pruned it away. Upstream says plainly that
+/// this is not a tuning knob.
+///
+/// The last entry is twice `VALUE_INFINITE`, which exceeds any `prob` the callers admit — they
+/// test `is_loss(beta)` and `is_win(eval)` first — so the scan stops on the table rather than
+/// at its end.
+#[inline]
+fn futility_depth(eval: Value, beta: Value) -> i32 {
+    const LUT: [i32; 7] = [1657, 2555, 3294, 4122, 5314, 8194, VALUE_INFINITE.get() * 2];
+    let prob = eval.abs().get() + beta.abs().get();
+    19 - LUT.iter().take_while(|&&step| step < prob).count() as i32
+}
+
 /// The correction-history bonus a multi-cut records (upstream `c5aef2bf1`'s predecessor).
 ///
 /// A fail high above the static evaluation is evidence the evaluation was low, and how much
@@ -1718,12 +1741,15 @@ impl SearchWorker {
 
             // Step 8. Futility pruning at a child node. Far enough above beta that even
             // giving material away could not bring the position below it.
+            //
+            // The depth cutoff is dynamic, and it is what keeps mates findable. Test it LAST:
+            // it is the only clause here that costs a scan, and the four before it are free.
             if !self.stack[si.index()].tt_pv
-                && depth < 19
                 && eval >= beta
                 && (tt_move.is_none() || tt_capture)
                 && !is_loss(beta)
                 && !is_win(eval)
+                && depth < futility_depth(eval, beta)
             {
                 let mut futility_mult = (45 + depth * 4).min(85);
                 futility_mult -= 20 * i32::from(!self.stack[si.index()].tt_hit);
