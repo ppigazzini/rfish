@@ -24,13 +24,13 @@ g1h3: 1
 Nodes searched: 20
 
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 1 nodes 20 tbhits 0 pv d2d4
+info depth 1 seldepth 2 multipv 1 score cp 15 nodes 20 tbhits 0 pv d2d4
 bestmove d2d4
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 1 nodes 20 tbhits 0 pv d2d4
+info depth 1 seldepth 2 multipv 1 score cp 15 nodes 20 tbhits 0 pv d2d4
 bestmove d2d4
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 1 nodes 20 tbhits 0 pv d2d4
+info depth 1 seldepth 2 multipv 1 score cp 15 nodes 20 tbhits 0 pv d2d4
 bestmove d2d4
 
 

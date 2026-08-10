@@ -117,7 +117,7 @@ optimism += optimism * complexity / 476;
 nnue     -= nnue     * complexity / 18236;
 
 let material = 534 * pawns + non_pawn_material_total;
-let v = (nnue * (77871 + material) + optimism * (7191 + material)) / 77871;
+let v = (nnue * (91000 + material) + optimism * 7675) / 91000;
 
 let v = v - (v * pos.rule50_count() / 199).get();
 v.clamp(VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1)
@@ -130,9 +130,10 @@ Each line is doing something specific, and none of them is a scale factor:
   search's own expectation is trusted more — which is why the same term amplifies `optimism`
   and damps `nnue`.
 - **Optimism is the search's disposition, not the position's.** It arrives per colour from
-  the worker and is blended in proportionally to material. It is one of the things that make
-  Lazy-SMP threads explore differently from each other, so it belongs to
-  [04-multithreading.md](04-multithreading.md) as much as to this page.
+  the worker and is blended in at a fixed weight, while only the network's own term scales
+  with material. It is one of the things that make Lazy-SMP threads explore differently from
+  each other, so it belongs to [04-multithreading.md](04-multithreading.md) as much as to
+  this page.
 - **The fifty-move damping pulls the score toward zero as the halfmove clock runs.** An
   advantage that cannot be converted before the rule draws the game is not worth its nominal
   value. This one is applied to the classical fallback too, because it is a fact about the

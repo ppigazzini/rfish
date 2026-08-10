@@ -60,5 +60,5 @@ NNUE network contributions (Normalized, Black to move)
 
 NNUE evaluation          +22 (side to move, internal units)
 NNUE evaluation        -0.06 (white side)
-Final evaluation      -0.08 (white side) [with scaled NNUE, ...]
+Final evaluation      -0.07 (white side) [with scaled NNUE, ...]
 
