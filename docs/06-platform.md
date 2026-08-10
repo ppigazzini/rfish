@@ -46,6 +46,19 @@ constraint, and it is recorded as one rather than papered over. It has not been 
 Syzygy prober reads with positioned file reads instead; see
 [05-tablebases.md](05-tablebases.md).
 
+**Cross-process shared network weights.** Upstream's `src/shm.h` and `src/shm_unix.h` let
+several engine processes on one box map a single copy of the network, so N concurrent games
+cost one 109 MiB blob instead of N. rfish has no counterpart and will not grow one. The
+benefit is multi-process only — upstream's own single-process check measured near
+equivalence, and a 1–2% slowdown where large pages are unavailable — while the cost is a
+syscall set `std` does not expose at any point: `memfd_create`, `mmap`, `AF_UNIX` datagram
+fd-passing over `SCM_RIGHTS`, `flock`, `poll` and `SIGPIPE` disposition. Every route to them
+is FFI, which is `unsafe` or a dependency. It is also downstream of NUMA replication, which
+is blocked below for the same reason, so there is no second replica here to share in the
+first place. The absence is visible in exactly one byte of output: rfish prints
+`info string Network replica 1: Local memory.` where upstream prints `Shared memory.`, and
+`golden-audit` filters that line by name rather than pretending the two agree.
+
 **A thread pool.** `std::thread::scope` lends each worker a `&mut` for exactly the duration
 of the search. There is no pool to own, no join to forget, and no lifetime to assert by
 hand. See [04-multithreading.md](04-multithreading.md).
