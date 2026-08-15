@@ -94,6 +94,29 @@ move overhead are all multiplied into node counts, and the search is measured ag
 searched. The `time` a GUI is told stays real milliseconds — it asked how long the engine
 thought, not how the engine chose to count.
 
+**A clock is bounded where it ENTERS, at `Limits::MAX_CLOCK_MS`.** UCI puts no range on
+`wtime`, and upstream reads one into a signed 64-bit `TimePoint`, so
+`go wtime 4e18 winc 4e18` reaches the horizon below
+
+```text
+time + inc * (mtg - 1) - move_overhead * (2 + mtg)
+```
+
+with `mtg` at 50, and `4e18 * 49` is twenty times what an `i64` holds. Upstream's arithmetic
+is undefined there; a release build of this port would WRAP and budget the move from a
+negative horizon, so what a user sees is a move played instantly rather than a crash, and the
+gate profile's overflow checks turn the same line into a panic. The clamp is 1e12 ms —
+thirty-one years, far above any real control and far below where the horizon, the `nodestime`
+conversion at up to 10000 nodes per millisecond and the `Move Overhead` product can leave the
+type. `../zfish` bounds the same input at the same value, so the two ports agree on what a
+clock is.
+
+It is **symmetric**, and that is not tidiness: a negative clock is a real state — a GUI whose
+engine has overstepped sends one, and the manager budgets from it deliberately — so folding
+it to zero would take the unmanaged path and search on. The horizon itself saturates as well,
+so no CALLER can panic the engine and not merely no UCI line; saturating is identical to `+`
+and `*` for every value in range, so no gated number moves.
+
 ## `skill.rs` — playing below full strength
 
 A weakened engine must not simply search less deeply. That produces an opponent which

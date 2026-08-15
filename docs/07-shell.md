@@ -106,6 +106,31 @@ just the first, and echoes an empty user invocation. Parsing each argument indep
 would accept the 8 and the 5, which is a different run. The report prints the typed
 invocation and the filled one side by side precisely so that difference is visible.
 
+**The first two arguments become engine OPTIONS, and are clamped into the ranges they feed.**
+`threads` is emitted as `setoption name Threads` and `tt_size` as `setoption name Hash`, so
+passing them through as typed has two consequences and the quiet one is worse:
+`speedtest 4 99999999` asks for a hash outside `Hash`'s declared range, the `setoption` is
+refused, and the run proceeds on whatever `Hash` was already set — then reports a throughput
+as if it had been measured at the size the operator asked for. Upstream's own defect is that
+one, reached through an overflow this port already saturated; the silent proceed survived the
+overflow being fixed. A wrong number reported as a measurement is the defect here.
+
+**The thread ceiling is the host's core count, NOT the option's maximum of 1024, and that
+distinction is the fix.** Clamping into the DECLARED range is the obvious design and it is
+wrong: it turns an instant refusal into a legal request for 1024 workers, about 16 GB
+resident on this box — worse than the bug, because it succeeds. `../zfish` reached that
+design, caught it before landing, and settled on the core count. A speedtest measures
+throughput, and more workers than cores does not measure more throughput. A non-positive
+duration, which would make every `go movetime` argument zero or negative and measure nothing,
+is raised to one second.
+
+The clamp applies AFTER the echo is built, so the report still prints what the operator
+typed beside what actually ran — a report that silently rewrote the invocation would hide
+the clamp, which is the whole point of printing both. And because `setup` is a pure function
+with no `Options` to consult, it carries its own copy of `Hash`'s bounds; a unit test welds
+the copy to the option table, because a copy with nothing holding it to the original goes
+stale silently.
+
 **Everything it prints goes to standard error**, as upstream does: a GUI reading standard
 output must not be sent a report it cannot parse, and the progress counter overwrites its
 own line with `\r`. That is also why no golden holds it — the gate is the schedule's own

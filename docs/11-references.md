@@ -7,7 +7,11 @@ something here or to the live tree.
 
 - **Stockfish** — <https://github.com/official-stockfish/Stockfish>. The golden. The commit
   rfish targets is pinned in `tools/upstream/UPSTREAM_BASE`; read it there, never from
-  prose.
+  prose. **The clone's checked-out branch is not the golden and does not have to be.** Every
+  differential gate extracts the pinned commit with `git archive`, which reads the object
+  store and touches neither that repository's working tree nor its index — so `../Stockfish`
+  can sit on `refish` or on any other branch while `sync-status` and the oracle both still
+  answer about the pin.
 - **The Stockfish wiki** — <https://official-stockfish.github.io/docs/stockfish-wiki/>.
   Authoritative for UCI option semantics, `bench` conventions and the NNUE file format.
 - **Fishtest** — <https://tests.stockfishchess.org>. Where a strength claim is settled, and
@@ -26,6 +30,15 @@ re-make, and both are proven against upstream. Where a structural question has a
 answer in one of them, that answer is worth reading before inventing another.
 
 They are **not** goldens. The differential reference is always upstream.
+
+A third sibling is not a port at all:
+
+- **refish** (`../Stockfish`, branch `refish`) — a refactoring branch of upstream's own C++,
+  with a working-notes area carrying a twenty-defect register of bugs found in upstream
+  `master`, a speedup log and an issue list. It is the only sibling whose findings are about
+  the GOLDEN rather than about a port, so a defect it records is one rfish may have inherited
+  by being faithful — which is a different question from the one the two ports answer, and it
+  is why its register is swept entry by entry rather than skimmed for ideas.
 
 ### How to sweep them
 
@@ -63,6 +76,36 @@ the 2026-08-08 window (`mcfish 75a76202..187ddec0`, `zfish 37da78fb..d0549833`):
 | `zfish 1f208d00`, docs-lint permitting a pinned anchor | **already stronger here.** `docs-lint` refuses ANY quoted signature rather than only a stale one |
 | `zfish 88b2cc42`, a module no page names | **taken** — the sweep found `debug_log` |
 | `zfish d0549833` / `mcfish 187ddec0`, a commit-format section | **already here.** All three sets had the same hole — a writing page deferring to the commit message twice without saying what one looks like — and all three closed it in this window |
+
+**A sibling's DEFECT REGISTER is swept per SITE, not per entry.** The 2026-08-15 sweep of
+`../Stockfish`'s `refish` branch — 199 commits, its twenty-defect register, its speedup log
+and its issue list — reported "all twenty closed or not applicable here" and was wrong twice,
+in the same shape both times: **the class was closed at the site the register names and open
+at a second site in another zone.** The clock overflow was filed under the `speedtest` entry,
+whose arithmetic rfish already saturated, so the clock itself was never tried — and it
+panicked on the first attempt. The net-block length was filed under `read_header`, which rfish
+bounds at `1 << 16`, while the LEB128 block header one function away believed a raw `u32` and
+would reserve four gibibytes. Read a register entry as naming a CLASS and a place it was
+found, then grep the class.
+
+| probed | verdict |
+|---|---|
+| the twenty-defect register, entries 3, 4, 11, 15 | **nothing here.** `setoption`/`export_net` during `go infinite` exit 0 with one bestmove, a 12-byte net is refused, `speedtest` already saturated |
+| entries 5, 8, 9, 16–20, the tablebase parser | **nothing here**, and measured rather than read: eight of the register's fixtures were rebuilt from its own byte lists against the identical 3-man corpus and all eight exit 0 with a legal bestmove |
+| entry 12 `hash_bytes`, entry 7 `shm`, entries 1/2/10 | **no analogue.** rfish reads `u8`, has no shared memory, and cannot read uninitialised memory or write to a failed allocation |
+| entry 13, `nodestime` making `movetime` mean nodes | **deliberately not taken.** `worker.rs` reproduces upstream's unit crossing under a comment saying so; the goldens depend on it |
+| entry 14, every worker clearing the shared continuation history | **no analogue.** `Histories` is per-worker here, which the pin's own sync commit records as a standing divergence |
+| entry 6, a mismatched-colour clock | **open, and a behaviour question rather than a defect.** Upstream searches unbounded off indeterminate memory; rfish is defined-but-different and returns at once. There is no correct answer to be bit-exact to |
+| its LATENT row on `syzygy_extend_pv` | **taken.** It could not reproduce it for want of tablebases; rfish ships a 3-man set, `timed_out` is dead without a clock and the draw guard is dead under `Syzygy50MoveRule false`, so mate was the only exit |
+| `f3057516` fill a history bank by the run, `P1` an atomic forbidding a bulk fill | **already done.** The innermost `fill` is a wide store and carries a comment saying why; rfish's histories are plain `i16`, so P1's prohibition does not exist |
+| `b43a60c9` / `E10`, clang vectorising move scoring into gathers | **does not reproduce.** 15 `vpgather` at `avx512icl`, all in `TableRegistry::file_counts` and `Skill::pick_best`; none on a per-node path. `../zfish` censused 272 and reached the same verdict |
+| `006eb707` / `E12`, `putPiece` as a template parameter | **already done.** `update_piece_threats` is `#[inline(always)]` with no surviving symbol, so refish's own tell — the callee is still a real symbol — fails here |
+| `P4`, an `int` index forcing a sign extension per use | **not attempted**, on the rule refish declines it by and this tree shares: a type is free while a value is carried and costs where many are live in one large function |
+| its whole rig-hardening series — `2fc949a3`, `b94001a3`, `2e8d17f7`, `86f63764`, `1ae7a170`, `a115486e`, `34c265b7` | **already stronger here.** `compared_something` is applied across the suite, a blank golden is refused in BOTH modes, a tier that fails to build propagates, and the deadline polls `try_wait` with the reader on its own thread |
+| `15f06b6a` + `c57c57b5`, the tablebase decode's length walk and per-length tables | **real, and unmeasurable here.** The identical walk is at `pairs.rs:200`, but on the heaviest probing workload a 3-man corpus can produce `decompress` is 8.8M Ir — **0.11%** — against the 2,096M their 4-man corpus gives it. Below every instrument this tree has |
+| `90d8dcb9`, decoding a weight from an eight-byte window | **REFUTED by measurement, twice.** See [08-idiomatic-rust.md](08-idiomatic-rust.md) §11 |
+| its `malformed.sh` fixture set, as a deterministic test here | **built, and DROPPED.** It passed and could not be made to fail: five mutations, including removing a bounded read outright, all stayed green, because rfish refuses those files structurally a layer or two before the bounds they target. A test with no detection power is the defect the meta-gates exist to refuse. `../zfish` derived its fixture offsets from its own loader instead, which is the part worth retrying |
+| `d4324d9e` + `f1318daa` codegen equivalence, `9c26b4d6` a budget with no stored golden | **taken**, as `codegen-equiv` and `budget-ab` — see [10-tooling-ci.md](10-tooling-ci.md) |
 
 ## Rust
 
