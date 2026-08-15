@@ -155,6 +155,55 @@ pub(crate) fn node_total(output: &str) -> Result<u64, String> {
         .map_err(|e| format!("the node total does not parse: {e}"))
 }
 
+/// Every tracked `.rs` file that differs from `base`.
+///
+/// Tracked only, and Rust only: an untracked scratch file cannot reach the build, and a
+/// changed `.md` cannot reach the codegen. Counting either would turn the refusal above into
+/// a comparison of a tree with itself wearing a hat.
+pub(crate) fn tracked_rust_diff(base: &str) -> Result<Vec<String>, String> {
+    let out = Command::new("git")
+        .current_dir(crate::workspace_root())
+        .args(["diff", "--name-only", base, "--", "*.rs", "Cargo.toml", "Cargo.lock"])
+        .output()
+        .map_err(|e| format!("git diff: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git diff against {base} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect())
+}
+
+/// Check `base` out into a detached worktree at `at`, replacing any left behind.
+///
+/// **A detached worktree, never a checkout here.** A step that moves the working tree is a
+/// step that can lose the work it was asked to judge, and `git stash` is repo-wide across
+/// worktrees. Detaching at an explicit ref is also what stops AGENTS.md's trap — a worktree
+/// starts where its BRANCH last was, which is rarely where the caller meant.
+pub(crate) fn worktree_at(base: &str, at: &std::path::Path) -> Result<(), String> {
+    worktree_remove(at);
+    crate::run(
+        Command::new("git")
+            .current_dir(crate::workspace_root())
+            .args(["worktree", "add", "--detach", "--quiet"])
+            .arg(at)
+            .arg(base),
+    )
+}
+
+/// Remove a worktree, ignoring the case where there is none.
+///
+/// Called before an add as well as after a run: a step killed mid-measurement leaves one
+/// behind, and a stale worktree at a stale ref is a baseline nobody chose.
+pub(crate) fn worktree_remove(at: &std::path::Path) {
+    let _ = Command::new("git")
+        .current_dir(crate::workspace_root())
+        .args(["worktree", "remove", "--force"])
+        .arg(at)
+        .output();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -404,6 +404,96 @@ The golden is **gitignored and per-machine**: the count is a property of the too
 the libc as well as of the code. Record your own, and re-record after a toolchain bump, a
 net change or a deliberate perf commit — a budget raised to fit the tree gates nothing.
 
+### `budget-ab` — the same budget, with no stored golden
+
+`perf-budget`'s golden is per-machine, so it binds on the box that derived it and nowhere
+else: a fresh clone has no row, and CI has none it could trust. `budget-ab` builds **both
+sides** instead, so the toolchain, the tier, the net and the workload cancel by construction
+and there is nothing to store.
+
+```sh
+cargo xtask budget-ab --base HEAD~1 --tier avx2     # this change, against its parent
+```
+
+It builds `--base` from a **detached worktree** under `target/budget-ab/` — never by moving
+this checkout, which would risk the work it was asked to judge — counts both sides the way
+`perf-budget` does, and holds the delta to the same 0.005%.
+
+Two refusals rather than a number:
+
+- **A clean checkout is refused, at exit 2.** The step compares the WORKING TREE against a
+  ref, so with nothing changed both sides are one build and the delta is zero by
+  construction. A zero that was never in doubt reads exactly like a change that cost nothing.
+- **Unequal node counts are refused.** A smaller count is a smaller workload; dividing one by
+  the other would report a different search as a cheaper one.
+
+Interleaving is deliberately absent and buys nothing here: callgrind counts instructions
+RETIRED and is deterministic, so the two sides do not compete for a thermal state the way
+`perf`'s wall-clock A/B does.
+
+Verified both directions on this box, `--rounds 1` at `avx2`, 172,793 nodes on both sides:
+
+| | search Ir | |
+|---|---|---|
+| A/A floor — only `crates/xtask` changed, which cannot reach the engine binary | 1,512,267,902 → 1,512,267,911 | **+9, +0.0000%** |
+| `Position::key` forced out of line | 1,512,267,844 → 1,513,680,447 | **+1,412,603, +0.0934%**, exit 1 |
+
+The floor is nine instructions in 1.5e9, and the mutation is nineteen times the tolerance —
+the same shape `perf-budget`'s own calibration has, without a row to keep.
+
+### `codegen-equiv` — the gate for a "no functional change" claim
+
+Every other instrument here answers a question about BEHAVIOUR, and all of them stay green
+when a rewrite keeps the behaviour and costs instructions. `perf-budget` and `budget-ab` see
+that, but only above a tolerance and only on a tier callgrind can execute. Neither says the
+thing a refactor actually claims, which is that **the compiler emitted what it emitted
+before**.
+
+```sh
+cargo xtask codegen-equiv --base HEAD~1 --tier avx2
+```
+
+It builds both sides at `--profile profiling` — release codegen with the symbol table kept —
+disassembles `.text`, and compares symbol by symbol. A genuine rewording reports every symbol
+identical; anything that moved a bound, changed an inlining decision or handed the register
+allocator a different problem names the symbols it moved.
+
+Four normalisations, and each is a place where identical code prints differently once
+something before it changes size:
+
+- **the crate disambiguator**, `Cs<hash>_` in a v0-mangled name. It is derived from crate
+  metadata including the manifest PATH, and the baseline builds in a worktree at a different
+  path — left alone, every Rust symbol reads as renamed;
+- **branch and call targets**, which print an absolute address beside the symbol. The symbol
+  is the content; the address is where it landed;
+- **rip-relative operands**, which print a displacement plus a resolved comment. Again the
+  comment names the datum and the displacement is where the datum landed;
+- **trailing alignment padding**, which is not codegen. A function whose body is untouched
+  still ends on a different run of `nop`s once anything before it changes length. This is
+  `f1318daa`'s correction to the original, and without it every symbol downstream of a real
+  change reports as changed — which is every symbol.
+
+A small immediate is deliberately NOT collapsed: five hex digits is the floor, because a
+changed constant is exactly the kind of change this gate exists to catch.
+
+Verified both directions at `avx2`, over **1029 symbols**, with the two sides built in
+different directories:
+
+| | result |
+|---|---|
+| only `crates/xtask` changed | 1029 of 1029 byte-identical, exit 0 |
+| the capture-scoring weight `7` → `8` in `MovePicker` | one symbol named — `MovePicker::init_captures`, 115 → 114 instructions — exit 1 |
+
+The positive control is the load-bearing one: 1029 symbols matching across two build
+directories is what proves the normalisations have no false positives.
+
+**What it cannot say.** Identical code is not identical behaviour when the change is in
+DATA — a different constant in a table, a different net, a different `static` — none of
+which is in `.text`. `signature` remains the gate that proves the engine.
+
+Both steps are **local and excused from `parity`** for the same reason: inside `parity`, where
+a clean checkout makes the two sides one tree, they have nothing to compare.
+
 ## Running the engine
 
 **Always from `resources/`.** The engine looks for its net relative to the working

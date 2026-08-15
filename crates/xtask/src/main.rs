@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+mod codegen;
 mod devsweep;
 mod fuzz;
 mod gates;
@@ -88,6 +89,8 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "perf-budget-update" => perf::perf_budget(args, true),
         "upstream-nodes" => perf::upstream_nodes(args),
         "fingerprint" => perf::fingerprint(args),
+        "codegen-equiv" => codegen::codegen_equiv(args),
+        "budget-ab" => perf::budget_ab(args),
         "fuzz" => fuzz::fuzz(args),
         "lane-coverage" => meta::lane_coverage(),
         "fixture-coverage" => meta::fixture_coverage(),
@@ -120,6 +123,13 @@ cargo xtask <step> — the rfish build driver
                           --write RE-DERIVES from the oracle: this is the regenerator,
                           because a golden written from rfish is a photograph of rfish
     upstream-nodes        node-for-node vs the oracle on RANDOM positions
+    budget-ab [--tier T] [--base REF] [--rounds N]
+                          the instruction budget with NO stored golden: build the WORKING
+                          TREE and REF, count both, compare. Refuses unequal node counts
+    codegen-equiv [--tier T] [--base REF]
+                          the gate for a no-functional-change claim: disassemble the WORKING TREE
+                          and REF and compare symbol by symbol. Refuses a clean checkout,
+                          where it would be comparing a tree with itself
     fingerprint [--tier T]  assert rfish CALLS what upstream calls, as often, under
                           callgrind; catches a state divergence no value gate can see
     test                  the unit and property suite
