@@ -32,11 +32,11 @@ use crate::{capture, have, resources_dir, run, workspace_root};
 /// rustc and upstream's Makefile spell the same machine differently, and a comparison of
 /// `-C target-cpu=haswell` against `ARCH=x86-64-avx512icl` measures the ISA rather than the
 /// engines. Naming the pair keeps that mistake out of the command line.
-struct Tier {
+pub(crate) struct Tier {
     /// What this repository calls the tier.
-    name: &'static str,
+    pub(crate) name: &'static str,
     /// The `-C target-cpu` rustc takes.
-    rustc: &'static str,
+    pub(crate) rustc: &'static str,
     /// The `ARCH=` upstream's Makefile takes.
     upstream: &'static str,
     /// The `target_feature`s a host must report before `native` may select this tier.
@@ -182,6 +182,14 @@ pub(crate) fn enumerated_tiers() -> Result<Vec<TierRun>, String> {
 /// Resolve `--tier`, defaulting to the matched-ISA tier both ports have always quoted.
 fn tier_of(args: &[&str]) -> Result<&'static Tier, String> {
     resolve_tier(arg_value(args, "--tier").unwrap_or("avx2"))
+}
+
+/// [`tier_of`], for a step in another module.
+///
+/// The tier belongs here because the tier TABLE does: a second enumeration elsewhere is a
+/// second thing to keep in step with the first, and `--tier` must mean one thing everywhere.
+pub(crate) fn tier_for(args: &[&str]) -> Result<&'static Tier, String> {
+    tier_of(args)
 }
 
 /// A tier NAME to a tier — resolving `native` to the highest one this host can run.
@@ -724,6 +732,110 @@ fn callgrind_search_ir(bin: &Path, cwd: &Path) -> Result<(u64, u64), String> {
     let nodes = node_total(&bench_out)?;
     let total = callgrind_total(&out)?;
     Ok((total.saturating_sub(startup_ir(bin, cwd)?), nodes))
+}
+
+/// The instruction budget as an A/B against a git ref, with NO stored golden.
+///
+/// **The half `perf-budget` cannot do.** That step holds an ABSOLUTE count against a row in
+/// `tools/instr_budget.golden`, and the count is a property of the toolchain as much as of
+/// the code — so the golden is per-machine, gitignored, and has to be re-derived by hand
+/// after every nightly bump. The consequence is that it binds nowhere except the box that
+/// derived it: a fresh clone has no row, and CI has no row it could trust.
+///
+/// Building both sides here removes the golden entirely. The toolchain, the tier, the net
+/// and the workload are shared by construction, so they cancel, and what is left is the
+/// change. Ported from `../Stockfish`'s `refish` branch `9c26b4d6`.
+///
+/// Interleaving is not needed and would buy nothing: callgrind counts instructions RETIRED
+/// and is deterministic, so the two sides do not compete for a thermal state the way the
+/// wall-clock A/B in `perf` does. What IS needed is the node-count equality below — a
+/// smaller count is a smaller workload, and dividing one by the other would report a
+/// different search as a cheaper one.
+pub(crate) fn budget_ab(args: &[&str]) -> Result<Outcome, String> {
+    let tier = tier_of(args)?;
+    if !tier.callgrind_safe {
+        return Err(format!(
+            "tier '{}' cannot be counted: callgrind implements no AVX-512 and SIGILLs on the \
+             first instruction it does not know",
+            tier.name
+        ));
+    }
+    if !have("valgrind") {
+        return Ok(Outcome::Skipped("valgrind is needed to count instructions".to_string()));
+    }
+    let base = arg_value(args, "--base").unwrap_or("HEAD");
+    let rounds: usize =
+        arg_value(args, "--rounds").and_then(|v| v.parse().ok()).unwrap_or(BUDGET_ROUNDS);
+
+    // The same refusal `codegen-equiv` makes, for the same reason: with a clean checkout the
+    // two sides are one tree, the delta is zero by construction, and a zero that was never
+    // in doubt reads exactly like a change that cost nothing.
+    let changed = crate::runner::tracked_rust_diff(base)?;
+    if changed.is_empty() {
+        return Ok(Outcome::Skipped(format!(
+            "nothing to measure: no tracked Rust source differs from {base}. This step counts \
+             the WORKING TREE against a ref, so on a clean checkout both sides are one build"
+        )));
+    }
+
+    let scratch = workspace_root().join("target/budget-ab");
+    std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+    let tree = scratch.join("base-tree");
+    crate::runner::worktree_at(base, &tree)?;
+
+    let flags = format!("-C target-cpu={}", tier.rustc);
+    println!("budget-ab: building {base} and the working tree at tier {}", tier.name);
+    let base_bin = build_release_at(&tree, &scratch.join("base-target"), &flags)?;
+    let head_bin = build_release_at(&workspace_root(), &scratch.join("head-target"), &flags)?;
+    crate::runner::worktree_remove(&tree);
+
+    // Both sides run from THIS repository's resources/, never from the worktree's: the net is
+    // a runtime input, and two sides reading two files would be two engines.
+    let (base_ir, base_nodes) = budget_ir(&base_bin, &resources_dir(), rounds)?;
+    let (head_ir, head_nodes) = budget_ir(&head_bin, &resources_dir(), rounds)?;
+
+    if base_nodes != head_nodes {
+        return Ok(Outcome::Fail(format!(
+            "the two sides searched different trees ({base} {base_nodes} nodes, working tree \
+             {head_nodes}), so there is no instruction comparison to make. Settle the node \
+             count with `signature` first"
+        )));
+    }
+
+    let delta = head_ir as i64 - base_ir as i64;
+    let pct = delta as f64 / base_ir as f64;
+    println!("budget-ab: {base_nodes} nodes on both sides, startup subtracted");
+    println!("  {base:>12}  {base_ir:>15}");
+    println!("  working tree  {head_ir:>15}  {delta:+} ({:+.4}%)", pct * 100.0);
+
+    if pct > BUDGET_TOLERANCE {
+        return Ok(Outcome::Fail(format!(
+            "the working tree retires {delta:+} instructions ({:+.4}%) over {base}, past the \
+             {:.4}% tolerance",
+            pct * 100.0,
+            BUDGET_TOLERANCE * 100.0
+        )));
+    }
+    println!(
+        "budget-ab: within the {:.4}% tolerance{}",
+        BUDGET_TOLERANCE * 100.0,
+        if delta < 0 { " -- and an improvement" } else { "" }
+    );
+    Ok(Outcome::Pass)
+}
+
+/// One `--release` build from `src` into its own target directory.
+fn build_release_at(src: &Path, target_dir: &Path, flags: &str) -> Result<PathBuf, String> {
+    run(Command::new(cargo())
+        .current_dir(src)
+        .env("RUSTFLAGS", flags)
+        .env("CARGO_TARGET_DIR", target_dir)
+        .args(["build", "--release", "--package", "rfish", "--bin", "stockfish"]))?;
+    let bin = target_dir.join("release").join(crate::runner::engine_file_name());
+    if !bin.is_file() {
+        return Err(format!("{} was not produced", bin.display()));
+    }
+    Ok(bin)
 }
 
 /// Where the per-tier instruction budgets live.

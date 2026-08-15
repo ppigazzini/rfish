@@ -40,6 +40,16 @@ const EXCUSED: &[(&str, &str)] = &[
          checkout with anything; run it when a gate is edited",
     ),
     (
+        "budget-ab",
+        "LOCAL -- like `codegen-equiv` it measures a WORKING TREE against a ref, and a clean \
+         checkout gives it nothing to compare",
+    ),
+    (
+        "codegen-equiv",
+        "LOCAL -- it proves a WORKING-TREE refactor against a git ref, and inside parity \
+         (where a clean checkout makes the two the same tree) it has nothing to compare",
+    ),
+    (
         "parity",
         "the aggregate. CI runs its members as separate jobs on purpose, so a red lane \
          names the gate that failed rather than the batch",
