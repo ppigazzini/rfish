@@ -112,6 +112,20 @@ impl Options {
         self.insert(name, OptionValue::Check { value: default, default });
     }
 
+    /// The declared `[min, max]` of a spin option, or `None` if it is not one.
+    ///
+    /// Exists so a value CLAMPED elsewhere can be tested against the range it will be
+    /// emitted into. `speedtest` builds its `setoption` lines as a pure function with no
+    /// `Options` to consult, so it carries its own copy of the `Hash` bounds — and a copy
+    /// with nothing holding it to the original is a copy that goes stale silently.
+    #[cfg(test)]
+    pub(crate) fn spin_range(&self, name: &str) -> Option<(i64, i64)> {
+        match self.map.get(name).map(|o| &o.value) {
+            Some(OptionValue::Spin { min, max, .. }) => Some((*min, *max)),
+            _ => None,
+        }
+    }
+
     fn add_spin(&mut self, name: &str, default: i64, min: i64, max: i64) {
         self.insert(name, OptionValue::Spin { value: default, default, min, max });
     }

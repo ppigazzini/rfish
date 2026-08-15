@@ -304,6 +304,14 @@ pub(crate) struct Setup {
     pub filled: String,
 }
 
+/// The `Hash` option's declared range, which is what `tt_size` is emitted into.
+///
+/// Duplicated from the option table rather than read from it because `setup` is a pure
+/// function with no engine to ask, and a unit test pins the two together.
+const HASH_MIN: i32 = 1;
+/// The `Hash` option's declared maximum, in mebibytes.
+const HASH_MAX: i32 = 33_554_432;
+
 /// Roughly half the hash is used by the time a sequence has been searched, at this size.
 const TT_SIZE_PER_THREAD: i32 = 128;
 
@@ -364,6 +372,27 @@ pub(crate) fn setup(args: &[&str], hardware_threads: usize) -> Setup {
         }
         None => DEFAULT_DURATION_S,
     };
+
+    // CLAMP INTO THE RANGES THESE FEED, and do it here rather than at the `setoption` line.
+    //
+    // Both numbers become engine options: `threads` is emitted as `setoption name Threads`
+    // and `tt_size` as `setoption name Hash`. Typed straight through, `speedtest 1024` asks
+    // for 1024 workers -- about 16 GB resident on this box -- and `speedtest 4 99999999` asks
+    // for a hash the option's range refuses, at which point the run SILENTLY proceeds on
+    // whatever `Hash` was already set and reports the result as if it had been measured at
+    // the size the operator asked for. A wrong number reported as a measurement is the defect
+    // here; the allocation is only the loudest instance of it.
+    //
+    // **The thread ceiling is the host's core count, NOT the option's maximum of 1024**, and
+    // that distinction is the whole fix. Clamping into the DECLARED range is what the sibling
+    // fix for this did, and it converts an instant refusal into a legal request for sixteen
+    // gigabytes -- worse than the bug, because it succeeds. A speedtest measures throughput,
+    // and more workers than cores does not measure more throughput.
+    let threads = threads.clamp(1, i32::try_from(hardware_threads).unwrap_or(i32::MAX).max(1));
+    let tt_size = tt_size.clamp(HASH_MIN, HASH_MAX);
+    // A non-positive duration makes `scale` non-positive and every `go movetime` argument
+    // zero or negative, so the run measures nothing and reports a throughput anyway.
+    let desired_time_s = desired_time_s.max(1);
 
     let filled = format!("{threads} {tt_size} {desired_time_s}");
 
@@ -445,6 +474,42 @@ mod tests {
         assert_eq!((s.threads, s.tt_size), (4, 512));
         assert_eq!(s.filled, "4 512 150");
         assert_eq!(s.original, "", "nothing the operator typed was accepted");
+    }
+
+    /// The two numbers `speedtest` turns into engine options, held to the ranges they feed.
+    ///
+    /// Asserted on the SETUP, which is a pure function: driving the engine with
+    /// `speedtest 1024` to see what it does is the reproducer that has taken this box down,
+    /// and the property is a property of the arithmetic rather than of the run.
+    #[test]
+    fn the_inputs_are_clamped_to_the_ranges_they_feed() {
+        // The thread ceiling is the host's cores, not the option's 1024: a clamp that
+        // produced a legal 1024 would succeed at asking for about 16 GB.
+        assert_eq!(setup(&["1024"], 8).threads, 8);
+        assert_eq!(setup(&["1024"], 2).threads, 2);
+        assert_eq!(setup(&["-5"], 8).threads, 1);
+        assert_eq!(setup(&["0"], 8).threads, 1);
+
+        // A hash outside the `Hash` option's range would be REFUSED by the option and the
+        // run would then proceed silently on whatever was already set.
+        assert_eq!(setup(&["4", "99999999"], 8).tt_size, HASH_MAX);
+        assert_eq!(setup(&["4", "-5"], 8).tt_size, HASH_MIN);
+
+        // A value inside every range is untouched, so a normal invocation is unchanged.
+        let s = setup(&["4", "256", "10"], 8);
+        assert_eq!((s.threads, s.tt_size), (4, 256));
+
+        // The echo is what the OPERATOR typed, never the clamped value -- upstream prints the
+        // invocation back, and a report that silently rewrites it hides the clamp.
+        assert_eq!(setup(&["1024"], 8).original, "1024");
+    }
+
+    /// The clamp above is only correct while it names the option's real range.
+    #[test]
+    fn the_hash_bounds_match_the_option_the_setup_feeds() {
+        let opts = crate::options::Options::default();
+        let (min, max) = opts.spin_range("Hash").expect("Hash is a spin option");
+        assert_eq!((HASH_MIN as i64, HASH_MAX as i64), (min, max));
     }
 
     #[test]
