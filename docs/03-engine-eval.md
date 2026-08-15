@@ -230,10 +230,36 @@ an `unsafe fn`, every crate wrapping it is `unsafe` internally, and the engine c
 dependencies under `forbid(unsafe_code)`. The comparison rfish's decode has to win is against
 upstream's own `read_leb_128`, not against a memory map.
 
-Two things remain and both are blocked rather than undone: the compressed block is still
-materialised whole (streaming it needs a refill test per byte, and the falsified row in
-§18.10 is the measurement saying a per-byte refill costs more than the allocation), and
-`vec![0u8; n]` is the only safe way to get a buffer `read_exact` overwrites in full.
+One thing remains and it is blocked rather than undone: the compressed block is still
+materialised whole, because streaming it needs a refill test per byte and the falsified row
+in §18.10 is the measurement saying a per-byte refill costs more than the allocation.
+
+**The block's declared length is a HINT, and the bound is the file.** It is a `u32` read
+straight out of the net, so a twenty-two byte file claiming `0xFFFFFFFF` used to reserve four
+gibibytes before discovering there was nothing to read into it — upstream's `network.cpp:304`
+defect at a second site, the description length one zone over having already been bounded at
+`1 << 16`. `take` stops at the declared count and `read_to_end` stops at end-of-input, so a
+short file is a short read and becomes `Truncated`. `MAX_BLOCK_HINT` caps what may be
+reserved up front at 64 MiB, which clears the largest block a shipped net carries — the
+feature transformer's 23,068,672 weights at about 1.28 bytes each — so the common case is
+still one allocation. It is a hint and not a maximum: a larger legitimate block still reads,
+growing as it goes, and a test pins that distinction so the bound cannot quietly become a
+maximum net size that fails the next architecture with the wrong error.
+
+It costs nothing. Same recipe both sides — profiling build at `avx2`, `isready` then `quit`
+under callgrind, run from `resources/`:
+
+| | startup Ir | peak RSS |
+|---|---:|---:|
+| `vec![0u8; byte_count]`, believing the header | 1,077,610,558 | 217,604 KB |
+| **bounded against the file** | **1,077,404,501** | 217,536–217,676 KB |
+
+**The RSS is unmoved, and that is the interesting half.** `vec![0u8; n]` at this size is
+`alloc_zeroed`, which takes its zeroes from fresh `mmap` pages rather than from a `memset`,
+so there was never a zeroing pass to save — an earlier reading of a 26 MiB drop compared a
+default-arch binary against an `avx2` one and is withdrawn. The −206,057 instructions are the
+allocation path, not the fill. A safety bound that reads as if it should cost something and
+measures at the null floor is worth recording as exactly that.
 
 ## The net is a runtime input, never embedded
 

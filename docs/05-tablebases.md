@@ -125,6 +125,29 @@ from depth 3 on — the shallow PVs were short enough that there was nothing lef
 `tools/cases/tbpv.uci` pins both, and `cargo xtask golden-audit` adjudicates it against
 upstream rather than against a previous run of rfish.
 
+**The extension is capped at `MAX_PLY`, and under one reachable configuration that cap is
+its only guard.** Step 2 walks the tables playing the shortest win until the line mates, and
+its three exits are not the three they look like:
+
+| exit | when it is dead |
+|---|---|
+| `while !(rule50 && pos.is_draw(..))` | `Syzygy50MoveRule false` reduces the whole guard to `while true` |
+| `if timed_out(&start)` | `timed_out` is `uses_clock && ...`, so `go infinite` makes it constantly false |
+| `if legal.is_empty()` — mate | the only one left, and it assumes the tables always rank a move that shortens the win |
+
+That last assumption is about FILE DATA, which is the same class this prober refuses
+everywhere else. A table ranking a repetition top loops here forever, pushing a move and a
+board state per iteration — and a hang is the defect class a UCI host cannot tell from a slow
+engine, arriving with unbounded memory attached because a `Vec` grows where upstream's
+fixed-capacity `PVMoves` would hit an assert `-DNDEBUG` deletes. `MAX_PLY` costs nothing
+where the loop terminates: it is the longest line the rest of the engine can represent, and a
+won 3-man ending mates in a small fraction of it.
+
+`../Stockfish`'s `refish` branch records this as a LATENT row — a real defect it could not
+reproduce, having no tablebases on that host. This repository ships a 3-man set, so the
+configuration is reachable here. The repetition check that row also names is deliberately NOT
+added: it would change which line is reported, and a bound is not a behaviour change.
+
 **The audit rewrites `SyzygyPath` for the oracle.** Every case runs from the engine's own
 directory, so a relative path resolves against the ORACLE's source tree — `src/syzygy/`,
 which holds C++ files and no tables. The oracle then finds nothing and the case reads as a
