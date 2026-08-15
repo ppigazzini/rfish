@@ -699,9 +699,12 @@ impl Engine {
             // Parsing everything at one width got both of those wrong, in opposite
             // directions: too wide for the five `int` fields, too narrow for `nodes`.
             let clock = |i: usize, key: &str| -> Result<i64, String> {
-                // `TimePoint` is a 64-bit signed count of milliseconds.
+                // `TimePoint` is a 64-bit signed count of milliseconds, and UCI puts no range
+                // on one -- so the CLAMP is the bound, applied where the value enters rather
+                // than where it would overflow. See `Limits::MAX_CLOCK_MS`.
                 args.get(i + 1)
                     .and_then(|s| s.parse::<i64>().ok())
+                    .map(Limits::clamp_clock)
                     .ok_or_else(|| format!("Invalid argument for '{key}'"))
             };
             let count = |i: usize, key: &str| -> Result<i32, String> {
@@ -1343,6 +1346,35 @@ mod tests {
             engine.handle(line, &mut out);
         }
         String::from_utf8(out).expect("the engine writes UTF-8")
+    }
+
+    /// A clock UCI permits and the time manager's arithmetic cannot hold.
+    ///
+    /// The bound belongs HERE, where the value enters, rather than at the multiplication
+    /// that would leave the type. Asserted on the parse rather than by driving the engine:
+    /// a reproducer that reaches option parsing is how this box has been taken down twice,
+    /// and a pure function says the same thing without the risk.
+    #[test]
+    fn an_out_of_range_clock_is_clamped_where_it_enters() {
+        let engine = Engine::new();
+        let huge = "4000000000000000000";
+        let l = engine
+            .parse_limits(&["wtime", huge, "winc", huge, "btime", huge, "binc", huge])
+            .expect("a huge clock parses");
+        for side in 0..2 {
+            assert_eq!(l.time[side], Some(Limits::MAX_CLOCK_MS as u64));
+            assert_eq!(l.inc[side], Limits::MAX_CLOCK_MS as u64);
+        }
+
+        // The SIGN survives: a negative clock is a real state -- a GUI whose engine has
+        // overstepped sends one -- and folding it to zero would take the unmanaged path.
+        let neg = engine.parse_limits(&["wtime", "-4000000000000000000"]).expect("parses");
+        assert_eq!(neg.time[0], Some((-Limits::MAX_CLOCK_MS) as u64));
+
+        // A clock inside the range is untouched, so no gated number moves.
+        let ok = engine.parse_limits(&["wtime", "60000", "winc", "1000"]).expect("parses");
+        assert_eq!(ok.time[0], Some(60_000));
+        assert_eq!(ok.inc[0], 1_000);
     }
 
     #[test]
