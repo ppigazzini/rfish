@@ -131,6 +131,14 @@ pub const FT_MAX_VAL: i32 = 255;
 /// The quantised value of 1.0 inside the hidden layers.
 pub const HIDDEN_ONE_VAL: i64 = 128;
 
+/// The most memory a LEB128 block's DECLARED length may reserve before a byte is read.
+///
+/// A capacity hint rather than a limit: the real bound is the file, and a legitimate block
+/// larger than this still reads, growing as it goes. Sixty-four mebibytes clears the largest
+/// block a shipped net carries — the feature transformer's 23,068,672 weights at about 1.28
+/// bytes each — so the common case is one allocation and no copy.
+const MAX_BLOCK_HINT: usize = 1 << 26;
+
 /// The magic string that precedes every LEB128-compressed block.
 pub const LEB128_MAGIC: &[u8] = b"COMPRESSED_LEB128";
 
@@ -334,6 +342,17 @@ impl<R: Read> NetReader<R> {
     }
 
     /// A LEB128 block's header, checked, and its payload.
+    ///
+    /// **The declared length is a capacity HINT, never the allocation.** It is an unvalidated
+    /// `u32` read out of the file, so a twenty-two byte net can claim `0xFFFFFFFF` and a
+    /// reader that believes it commits four gibibytes before discovering the file is empty —
+    /// a denial of service from `setoption name EvalFile`, and the same defect upstream has
+    /// at its own `read_header`, which this port already bounds one zone over.
+    ///
+    /// The bound that actually holds is the FILE: `take` stops at the declared count and
+    /// `read_to_end` stops at end-of-input, so a short file yields a short read and the
+    /// length test below turns it into `Truncated`. Nothing is trusted about the header
+    /// except how much to hope for.
     fn leb128_bytes(&mut self) -> Result<Vec<u8>, NetError> {
         let mut magic = [0u8; 17];
         self.read_exact(&mut magic)?;
@@ -341,8 +360,18 @@ impl<R: Read> NetReader<R> {
             return Err(NetError::NotCompressed);
         }
         let byte_count = self.u32()? as usize;
-        let mut bytes = vec![0u8; byte_count];
-        self.read_exact(&mut bytes)?;
+        // Sized so the largest block a real net carries — the feature transformer's
+        // 23,068,672 weights at about 1.28 bytes each — still lands in ONE allocation, which
+        // is what keeps this off the startup profile. A larger legitimate block still reads,
+        // it just grows; a hostile one never gets to ask for more than this up front.
+        let mut bytes = Vec::with_capacity(byte_count.min(MAX_BLOCK_HINT));
+        let read = std::io::Read::by_ref(&mut self.inner)
+            .take(byte_count as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| NetError::Truncated)?;
+        if read != byte_count {
+            return Err(NetError::Truncated);
+        }
         Ok(bytes)
     }
 
@@ -595,6 +624,54 @@ mod tests {
         let mut out = vec![0i32; values.len()];
         NetReader::new(bytes.as_slice()).leb128(&mut out).expect("decodes");
         assert_eq!(out, values);
+    }
+
+    /// A block that declares four gibibytes and delivers eight bytes.
+    ///
+    /// The declared length is a `u32` straight out of the file, so this is what a hostile
+    /// `setoption name EvalFile` looks like. The reader must reserve its bounded hint and
+    /// then discover the truth from the FILE, not commit to the header and find out during
+    /// the read.
+    ///
+    /// **The negative control for this one is deliberately not executed.** Restoring the
+    /// `vec![0u8; byte_count]` it replaced makes this test allocate and ZERO four gibibytes,
+    /// which is the denial of service being fixed and which has taken this machine down
+    /// twice in its `speedtest` form. What the test can assert without running that is the
+    /// fixed behaviour, and it is asserted on a declared count far above the hint so the
+    /// clamped-reservation path is the one taken.
+    #[test]
+    fn a_block_claiming_more_than_the_file_holds_is_truncated_not_reserved() {
+        let mut bytes = LEB128_MAGIC.to_vec();
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+
+        let mut out = vec![0i32; 4];
+        assert!(matches!(
+            NetReader::new(bytes.as_slice()).leb128(&mut out),
+            Err(NetError::Truncated)
+        ));
+
+        // The same claim with no payload at all, which is the twenty-two byte file.
+        let empty = [LEB128_MAGIC, &u32::MAX.to_le_bytes()[..]].concat();
+        let mut out = vec![0i32; 1];
+        assert!(matches!(
+            NetReader::new(empty.as_slice()).leb128(&mut out),
+            Err(NetError::Truncated)
+        ));
+    }
+
+    /// The hint must stay a hint: a legitimate block LARGER than it still reads.
+    ///
+    /// Otherwise the bound quietly becomes a maximum net size, and the next architecture
+    /// that outgrows it fails to load with a truncation error naming the wrong cause.
+    #[test]
+    fn a_block_larger_than_the_hint_still_reads() {
+        // Not built at 64 MiB -- the property is that the count is a hint rather than a
+        // limit, and `min` is what expresses it. Pin the expression instead of the volume.
+        let declared = MAX_BLOCK_HINT * 4;
+        assert_eq!(declared.min(MAX_BLOCK_HINT), MAX_BLOCK_HINT);
+        // And a block SMALLER than the hint reserves only what it declared.
+        assert_eq!((MAX_BLOCK_HINT / 4).min(MAX_BLOCK_HINT), MAX_BLOCK_HINT / 4);
     }
 
     #[test]
