@@ -120,11 +120,11 @@ impl TimeManagement {
         if self.use_nodes_time {
             if self.available_nodes < 0 {
                 // Once, at the start of the game.
-                self.available_nodes = npmsec * time;
+                self.available_nodes = npmsec.saturating_mul(time);
             }
             time = self.available_nodes;
-            inc *= npmsec;
-            move_overhead *= npmsec;
+            inc = inc.saturating_mul(npmsec);
+            move_overhead = move_overhead.saturating_mul(npmsec);
             limits.time[side] = Some(time as u64);
             limits.inc[side] = inc as u64;
             limits.npmsec = npmsec as u64;
@@ -145,8 +145,19 @@ impl TimeManagement {
         }
 
         // Used as a divisor below, so it must stay positive.
-        let time_left =
-            (time + inc * i64::from(mtg - 1) - move_overhead * i64::from(2 + mtg)).max(1);
+        //
+        // SATURATING, and that is a bound rather than a style. `wtime` and `winc` are parsed
+        // as a full `i64` of milliseconds — upstream's `TimePoint`, with no range on it — so
+        // `go wtime 4e18 winc 4e18` reaches `inc * 49` here, which is twenty times what the
+        // type holds. Upstream's C++ is undefined there; a release build of this port would
+        // WRAP and budget from a negative horizon, and the gate profile's overflow checks
+        // turn it into a panic reachable from one `go` line. Saturating is identical for
+        // every value in range, so no gated number moves, and the shell clamps the clock at
+        // its own boundary as well — see `Limits::MAX_CLOCK_MS`.
+        let time_left = time
+            .saturating_add(inc.saturating_mul(i64::from(mtg - 1)))
+            .saturating_sub(move_overhead.saturating_mul(i64::from(2 + mtg)))
+            .max(1);
 
         let (opt_scale, max_scale);
         if movestogo == 0 {
@@ -224,6 +235,29 @@ mod tests {
                 let b = budget(ms, inc, None, GamePly::new(20));
                 assert!(b.maximum().get() <= ms as i64, "budget {b:?} exceeds a {ms} ms clock");
                 assert!(b.optimum().get() <= b.maximum().get());
+            }
+        }
+    }
+
+    /// A clock a GUI can send and the arithmetic cannot hold.
+    ///
+    /// `wtime` and `winc` are parsed as a full unbounded `i64` of milliseconds, exactly as
+    /// upstream parses its `TimePoint` — so `go wtime 4e18 winc 4e18` reaches `time + inc *
+    /// (mtg - 1)` below with `mtg` at 50, and `4e18 * 49` is twenty times what an `i64`
+    /// holds. In release that WRAPS and the budget is computed from a negative `time_left`;
+    /// under the gate profile's `overflow-checks` it is a panic, which is what this asserts
+    /// against. Driven as a pure function rather than through the engine, because a
+    /// reproducer that reaches option parsing is how this box has been taken down twice.
+    #[test]
+    fn an_enormous_clock_does_not_overflow_the_horizon() {
+        let huge = 4_000_000_000_000_000_000u64;
+        for inc in [0u64, 1000, huge] {
+            for mtg in [None, Some(1u32), Some(50)] {
+                let b = budget(huge, inc, mtg, GamePly::new(20));
+                assert!(
+                    b.optimum().get() >= 1 && b.maximum().get() >= b.optimum().get(),
+                    "clock {huge} inc {inc} mtg {mtg:?} produced {b:?}"
+                );
             }
         }
     }

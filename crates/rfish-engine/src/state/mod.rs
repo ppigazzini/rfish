@@ -58,6 +58,43 @@ pub struct Limits {
 }
 
 impl Limits {
+    /// The widest clock, in milliseconds, that the shell will accept for `wtime`, `btime`,
+    /// `winc`, `binc` or `movetime`.
+    ///
+    /// **A bound where the value ENTERS, which is the only place it can be one.** UCI gives a
+    /// clock no range and upstream reads it into a signed 64-bit `TimePoint`, so a GUI — or a
+    /// fuzzer, or a typo — can send `go wtime 4000000000000000000 winc 4000000000000000000`
+    /// and reach `time + inc * 49` in the time manager, twenty times what the type holds.
+    /// Upstream's arithmetic is undefined there. `TimeManagement::init` saturates so the
+    /// engine cannot be panicked by any caller, and this clamps so the number the engine is
+    /// asked to reason about is one a clock could mean.
+    ///
+    /// Thirty-one years. It is far above any real control — the longest correspondence game
+    /// is days — and far below the point where the horizon, the `nodestime` conversion at up
+    /// to 10000 nodes per millisecond, and the `Move Overhead` product can leave the type.
+    /// `../zfish` bounds the same input at the same value, so the two ports agree on what a
+    /// clock is.
+    pub const MAX_CLOCK_MS: i64 = 1_000_000_000_000;
+
+    /// Clamp a parsed clock into [`Limits::MAX_CLOCK_MS`], keeping its SIGN.
+    ///
+    /// A negative clock is a real state rather than a malformed one — a GUI whose engine has
+    /// overstepped sends one, and the time manager budgets from it deliberately — so the
+    /// clamp is symmetric and never folds a negative clock to zero, which would take the
+    /// unmanaged path and search on.
+    #[must_use]
+    pub const fn clamp_clock(ms: i64) -> i64 {
+        // Written as two comparisons rather than `clamp`, which is not a const fn on this
+        // toolchain: `Ord` is not yet stable as a const trait.
+        if ms > Limits::MAX_CLOCK_MS {
+            Limits::MAX_CLOCK_MS
+        } else if ms < -Limits::MAX_CLOCK_MS {
+            -Limits::MAX_CLOCK_MS
+        } else {
+            ms
+        }
+    }
+
     /// True when nothing bounds the search but an explicit stop.
     #[must_use]
     pub fn is_unbounded(&self) -> bool {
