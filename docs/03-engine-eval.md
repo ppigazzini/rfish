@@ -210,10 +210,26 @@ cd resources && echo quit | valgrind --tool=callgrind --callgrind-out-file=/dev/
 | before | 1,281,194,773 | 253,344 KB |
 | the LEB128 decode, into the destination width | 1,156,853,329 | 190,208 KB |
 | **the magic search, sliced to its own guard** | **1,063,324,214** | 190,200 KB |
+| the slider's rays decided at compile time | **1,024,945,506** | 190,200 KB |
 
-**−17.0% and −63 MiB, and both blocks were the same defect** — a runtime-length slice reached
-by a composite index, which is [docs/08-idiomatic-rust.md](08-idiomatic-rust.md) §18.1's shape
-in its second and third zones.
+**−20.0% overall, and −63 MiB.** The first two rows were the same defect — a runtime-length
+slice reached by a composite index, which is
+[docs/08-idiomatic-rust.md](08-idiomatic-rust.md) §18.1's shape in its second and third zones.
+
+**The fourth row is the one that had no gate until it did.** Startup was measured, subtracted,
+printed and never judged, so nothing decided whether it could move; the axis added to
+`perf-budget` and `budget-ab` gates it now, and its FIRST run found this. `build_magics` took
+its four ray directions as an argument, so one non-generic instantiation served both the rook
+and the bishop and every ray step loaded a direction that both call sites pass as a `const`:
+−28,659,951 Ir at `avx2` and −27,929,385 at `sse41`, 2.72% and 2.94%, with the search figure
+flat and 172,793 nodes on both sides of both runs. Two tiers, same sign, same magnitude — the
+shape a deleted-work change has. `../Stockfish refish` files the pattern as P7 and its tell is
+what found it: **the callee survives in the profile as ONE symbol however literal every call
+site looks.**
+
+What is left on this axis, in order: the net reader at ~624M and the magic build at ~270M are
+87% of what remains, and 98.4M of the whole bench process is `memset` whose allocator is not
+yet established — see [11-references.md](11-references.md).
 
 - `leb128_i16` decoded into a `vec![0i32; out.len()]` and narrowed afterwards. On the main
   weight block that is 23,068,672 entries — 92 MiB, allocated and page-faulted to be read once.
