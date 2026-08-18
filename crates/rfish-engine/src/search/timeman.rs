@@ -154,9 +154,18 @@ impl TimeManagement {
         // turn it into a panic reachable from one `go` line. Saturating is identical for
         // every value in range, so no gated number moves, and the shell clamps the clock at
         // its own boundary as well — see `Limits::MAX_CLOCK_MS`.
+        //
+        // The two `mtg` terms are formed AT `i64`, not converted after. `mtg` is an `i32`
+        // and both edges of that type are reachable from one `go` line: a `movestogo` off
+        // the wire arrives unbounded — upstream accepts a negative one and searches — and
+        // the sub-second taper above casts `scaled_time * 0.05`, which a negative clock
+        // inside `MAX_CLOCK_MS` drives past `i32::MIN`, where Rust's float cast saturates.
+        // `mtg - 1` then panicked under the gate profile on both. Widening the subtraction
+        // costs nothing — the conversion happens either way — and is EXACTLY equal for
+        // every `i32`, so upstream's behaviour on both inputs is kept rather than corrected.
         let time_left = time
-            .saturating_add(inc.saturating_mul(i64::from(mtg - 1)))
-            .saturating_sub(move_overhead.saturating_mul(i64::from(2 + mtg)))
+            .saturating_add(inc.saturating_mul(i64::from(mtg) - 1))
+            .saturating_sub(move_overhead.saturating_mul(2 + i64::from(mtg)))
             .max(1);
 
         let (opt_scale, max_scale);
@@ -215,6 +224,34 @@ mod tests {
         let mut tm = TimeManagement::default();
         tm.init(&mut l, Color::White, ply, &SearchOptions::default());
         tm.budget()
+    }
+
+    /// A negative clock, and an extreme `movestogo`, reach the same subtraction.
+    ///
+    /// Pure functions both: the reproducer is one `go` line, and driving the binary with it
+    /// is the class of test that has taken this box down. Red before the widening — the
+    /// gate profile panicked at `mtg - 1`, where a release build wrapped and budgeted from
+    /// a horizon that means nothing.
+    #[test]
+    fn an_extreme_horizon_does_not_panic_the_time_manager() {
+        // `movestogo` is parsed as an `i32` and upstream accepts every value of one.
+        for mtg in [i32::MIN, -5, 0, 1, 50, i32::MAX] {
+            let b = budget(60_000, 0, Some(mtg as u32), GamePly::new(20));
+            assert!(b.optimum().get() >= 1, "mtg {mtg} budgeted {b:?}");
+        }
+
+        // A negative clock is a state `clamp_clock` deliberately keeps, and the sub-second
+        // taper turns a large one into an `mtg` at the bottom of the type.
+        for ms in [-100_000_000_000i64, -1_000, -1] {
+            let mut l = Limits {
+                time: [Some(ms as u64), Some(ms as u64)],
+                start: Some(Instant::now()),
+                ..Limits::default()
+            };
+            let mut tm = TimeManagement::default();
+            tm.init(&mut l, Color::White, GamePly::new(20), &SearchOptions::default());
+            assert!(tm.budget().optimum().get() >= 1, "clock {ms} budgeted nothing");
+        }
     }
 
     #[test]
