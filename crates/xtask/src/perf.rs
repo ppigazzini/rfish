@@ -791,8 +791,8 @@ pub(crate) fn budget_ab(args: &[&str]) -> Result<Outcome, String> {
 
     // Both sides run from THIS repository's resources/, never from the worktree's: the net is
     // a runtime input, and two sides reading two files would be two engines.
-    let (base_ir, base_nodes) = budget_ir(&base_bin, &resources_dir(), rounds)?;
-    let (head_ir, head_nodes) = budget_ir(&head_bin, &resources_dir(), rounds)?;
+    let (base_ir, base_nodes, base_startup) = budget_ir(&base_bin, &resources_dir(), rounds)?;
+    let (head_ir, head_nodes, head_startup) = budget_ir(&head_bin, &resources_dir(), rounds)?;
 
     if base_nodes != head_nodes {
         return Ok(Outcome::Fail(format!(
@@ -804,22 +804,49 @@ pub(crate) fn budget_ab(args: &[&str]) -> Result<Outcome, String> {
 
     let delta = head_ir as i64 - base_ir as i64;
     let pct = delta as f64 / base_ir as f64;
-    println!("budget-ab: {base_nodes} nodes on both sides, startup subtracted");
-    println!("  {base:>12}  {base_ir:>15}");
-    println!("  working tree  {head_ir:>15}  {delta:+} ({:+.4}%)", pct * 100.0);
+    let s_delta = head_startup as i64 - base_startup as i64;
+    let s_pct = s_delta as f64 / base_startup as f64;
 
+    // BOTH axes are printed before EITHER decides, so a run that fails on one still shows
+    // what the other did. A verdict that stops at the first failure is a verdict that hides
+    // the trade it was making.
+    println!("budget-ab: {base_nodes} nodes on both sides");
+    println!("  {:>14}  {:>15}  {:>15}", "", "search", "startup");
+    println!("  {base:>14}  {base_ir:>15}  {base_startup:>15}");
+    println!("  {:>14}  {head_ir:>15}  {head_startup:>15}", "working tree");
+    println!(
+        "  {:>14}  {:>15}  {:>15}",
+        "delta",
+        format!("{delta:+} ({:+.4}%)", pct * 100.0),
+        format!("{s_delta:+} ({:+.4}%)", s_pct * 100.0)
+    );
+
+    let mut failures = Vec::new();
     if pct > BUDGET_TOLERANCE {
-        return Ok(Outcome::Fail(format!(
-            "the working tree retires {delta:+} instructions ({:+.4}%) over {base}, past the \
-             {:.4}% tolerance",
+        failures.push(format!(
+            "search: {delta:+} instructions ({:+.4}%) past the {:.4}% tolerance",
             pct * 100.0,
             BUDGET_TOLERANCE * 100.0
+        ));
+    }
+    if s_pct > STARTUP_TOLERANCE {
+        failures.push(format!(
+            "startup: {s_delta:+} instructions ({:+.4}%) past the {:.4}% tolerance",
+            s_pct * 100.0,
+            STARTUP_TOLERANCE * 100.0
+        ));
+    }
+    if !failures.is_empty() {
+        return Ok(Outcome::Fail(format!(
+            "the working tree regressed against {base} — {}",
+            failures.join("; ")
         )));
     }
     println!(
-        "budget-ab: within the {:.4}% tolerance{}",
+        "budget-ab: within tolerance on both axes ({:.4}% search, {:.4}% startup){}",
         BUDGET_TOLERANCE * 100.0,
-        if delta < 0 { " -- and an improvement" } else { "" }
+        STARTUP_TOLERANCE * 100.0,
+        if delta < 0 && s_delta <= 0 { " -- and an improvement" } else { "" }
     );
     Ok(Outcome::Pass)
 }
@@ -854,6 +881,20 @@ const BUDGET_GOLDEN: &str = "tools/instr_budget.golden";
 /// Against a spread of ten instructions in 1.7e9 across a from-scratch rebuild, 0.005% is
 /// ~8000x the noise and ~11x under the mutation. `docs/10-tooling-ci.md` records the run.
 const BUDGET_TOLERANCE: f64 = 0.000_05;
+
+/// How far STARTUP may move, which is not the search's tolerance and must not be.
+///
+/// Startup is paid once per process and the search is paid for minutes, so a tenth of a
+/// percent in the loader is invisible to a player and the same tenth in the search is what
+/// `BUDGET_TOLERANCE` exists to refuse. A shared figure would either gate startup at a
+/// resolution nothing needs or open the search to a regression twenty times the one the
+/// mutation calibrated against.
+///
+/// It is not a large allowance in absolute terms: startup here is ~1.08e9 instructions —
+/// two thirds of the search's own count over the whole bench — so 1% is ~10.8M, well under
+/// the 17% of it that was defect when the axis was last read, and far above the spread of a
+/// rebuild.
+const STARTUP_TOLERANCE: f64 = 0.01;
 
 /// How many times the bench is profiled before the median is taken.
 ///
@@ -907,16 +948,16 @@ pub(crate) fn perf_budget(args: &[&str], update: bool) -> Result<Outcome, String
     cargo_build(&format!("-C target-cpu={}", tier.rustc), &dir, false)?;
     let bin = dir.join("release/stockfish");
 
-    let (ir, nodes) = budget_ir(&bin, &resources_dir(), rounds)?;
+    let (ir, nodes, startup) = budget_ir(&bin, &resources_dir(), rounds)?;
     println!(
-        "perf-budget: {ir} instructions over {nodes} nodes (bench {}, startup subtracted)",
+        "perf-budget: {ir} search + {startup} startup instructions over {nodes} nodes (bench {})",
         DIFF_BENCH.join(" ")
     );
 
     let path = workspace_root().join(BUDGET_GOLDEN);
     if update {
-        write_budget(&path, tier, nodes, ir)?;
-        println!("perf-budget: recorded {} {} {nodes} {ir}", tier.name, tier.rustc);
+        write_budget(&path, tier, nodes, ir, startup)?;
+        println!("perf-budget: recorded {} {} {nodes} {ir} {startup}", tier.name, tier.rustc);
         return Ok(Outcome::Pass);
     }
 
@@ -935,25 +976,47 @@ pub(crate) fn perf_budget(args: &[&str], update: bool) -> Result<Outcome, String
     }
     #[allow(clippy::cast_precision_loss)]
     let delta = (ir as f64 - row.ir as f64) / row.ir as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let s_delta = (startup as f64 - row.startup as f64) / row.startup as f64;
     println!(
-        "perf-budget: budget {}, delta {:+.4}% against a tolerance of {:+.4}%",
+        "perf-budget: search budget {}, delta {:+.4}% against {:.4}%",
         row.ir,
         delta * 100.0,
         BUDGET_TOLERANCE * 100.0
     );
-    if delta.abs() <= BUDGET_TOLERANCE {
+    println!(
+        "perf-budget: startup budget {}, delta {:+.4}% against {:.4}%",
+        row.startup,
+        s_delta * 100.0,
+        STARTUP_TOLERANCE * 100.0
+    );
+
+    // Both verdicts are computed and both are printed before either exits, so a run cannot
+    // report the search as clean while saying nothing about the axis it just measured.
+    let mut failures = Vec::new();
+    if delta.abs() > BUDGET_TOLERANCE {
+        failures.push(format!(
+            "search {} by {:.4}%, outside {:.4}%",
+            if delta > 0.0 { "REGRESSED" } else { "improved" },
+            delta.abs() * 100.0,
+            BUDGET_TOLERANCE * 100.0
+        ));
+    }
+    if s_delta.abs() > STARTUP_TOLERANCE {
+        failures.push(format!(
+            "startup {} by {:.4}%, outside {:.4}%",
+            if s_delta > 0.0 { "REGRESSED" } else { "improved" },
+            s_delta.abs() * 100.0,
+            STARTUP_TOLERANCE * 100.0
+        ));
+    }
+    if failures.is_empty() {
         return Ok(Outcome::Pass);
     }
     Ok(Outcome::Fail(format!(
-        "{} by {:.4}%, outside the {:.4}% tolerance. {}",
-        if delta > 0.0 { "REGRESSED" } else { "improved" },
-        delta.abs() * 100.0,
-        BUDGET_TOLERANCE * 100.0,
-        if delta > 0.0 {
-            "Find the cost before re-recording: a budget raised to fit the tree gates nothing"
-        } else {
-            "Re-record it with `perf-budget-update` once the win is understood"
-        }
+        "{}. Find the cost before re-recording: a budget raised to fit the tree gates nothing, \
+         and an improvement is re-recorded with `perf-budget-update` once it is understood",
+        failures.join("; ")
     )))
 }
 
@@ -961,15 +1024,21 @@ pub(crate) fn perf_budget(args: &[&str], update: bool) -> Result<Outcome, String
 struct Budget {
     nodes: u64,
     ir: u64,
+    startup: u64,
 }
 
-/// The median instruction count over `rounds`, with the workload held across all of them.
+/// The median SEARCH count over `rounds`, the workload it was taken over, and STARTUP.
+///
+/// Startup is returned rather than only subtracted. A gate that subtracts a cost is a gate
+/// that hides it: the net load and the magic-table build are ~1.08e9 instructions against a
+/// ~1.5e9 search, so nearly half a `bench` sat behind every green exit with nothing deciding
+/// whether it might move.
 ///
 /// **Every round is held to round one's node count.** ../zfish credits exactly this check
 /// with catching an ablation that searched 162 860 nodes while claiming 163 081, and the
 /// instruction delta read clean either way. A run whose workload moves is a rig fault, not a
 /// measurement, so it refuses rather than publishing the smaller median as an improvement.
-fn budget_ir(bin: &Path, cwd: &Path, rounds: usize) -> Result<(u64, u64), String> {
+fn budget_ir(bin: &Path, cwd: &Path, rounds: usize) -> Result<(u64, u64, u64), String> {
     if rounds == 0 {
         return Err("--rounds 0 measures nothing".to_string());
     }
@@ -1001,7 +1070,7 @@ fn budget_ir(bin: &Path, cwd: &Path, rounds: usize) -> Result<(u64, u64), String
         counts.push(total.saturating_sub(startup));
     }
     counts.sort_unstable();
-    Ok((counts[counts.len() / 2], first_nodes))
+    Ok((counts[counts.len() / 2], first_nodes, startup))
 }
 
 /// One profiled bench: the whole-process count, the node total, and the net it loaded.
@@ -1033,11 +1102,24 @@ fn read_budget(path: &Path, tier: &Tier) -> Result<Option<Budget>, String> {
             continue;
         }
         let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() != 4 {
+        if !matches!(f.len(), 4 | 5) {
             return Err(format!("malformed budget row: {line}"));
         }
+        // The TIER is decided before the width is judged. A row for another tier is another
+        // tier's problem, and refusing this read because of one would make a stale row for a
+        // tier nobody is measuring block every tier that is.
         if f[0] != tier.name {
             continue;
+        }
+        // A four-field row is the format from before startup was gated. It is REFUSED rather
+        // than read with a missing column defaulted: a startup budget of zero would pass
+        // every measurement, which is a gate that reports success for the reason it exists.
+        if f.len() == 4 {
+            return Err(format!(
+                "the budget row for tier '{}' predates the startup axis and carries no startup \
+                 column; re-record it with `cargo xtask perf-budget-update --tier {}`",
+                tier.name, tier.name
+            ));
         }
         // The key names the BINARY, not the tier alone. A row whose target-cpu is not the one
         // this tier resolves to today was measured on a different build.
@@ -1051,13 +1133,15 @@ fn read_budget(path: &Path, tier: &Tier) -> Result<Option<Budget>, String> {
         let nodes =
             f[2].parse().map_err(|e| format!("{line}: the node count does not parse: {e}"))?;
         let ir = f[3].parse().map_err(|e| format!("{line}: the count does not parse: {e}"))?;
-        return Ok(Some(Budget { nodes, ir }));
+        let startup =
+            f[4].parse().map_err(|e| format!("{line}: the startup count does not parse: {e}"))?;
+        return Ok(Some(Budget { nodes, ir, startup }));
     }
     Ok(None)
 }
 
 /// Replace this tier's row, leaving every other tier's alone.
-fn write_budget(path: &Path, tier: &Tier, nodes: u64, ir: u64) -> Result<(), String> {
+fn write_budget(path: &Path, tier: &Tier, nodes: u64, ir: u64, startup: u64) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     // The header is rewritten from the constant every time rather than carried forward: a
     // file written months ago would otherwise keep explaining the gate as it was then, and
@@ -1072,17 +1156,21 @@ fn write_budget(path: &Path, tier: &Tier, nodes: u64, ir: u64) -> Result<(), Str
             out.push('\n');
         }
     }
-    writeln!(out, "{} {} {nodes} {ir}", tier.name, tier.rustc)
+    writeln!(out, "{} {} {nodes} {ir} {startup}", tier.name, tier.rustc)
         .map_err(|e| format!("building the budget row: {e}"))?;
     std::fs::write(path, out).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// What a reader of the golden has to know before believing a row.
 const BUDGET_HEADER: &str = "\
-# Instructions retired over `bench 16 1 8`, startup subtracted, one row per TIER.
+# Instructions retired over `bench 16 1 8`, one row per TIER, on TWO axes.
 #
-# `<tier> <target-cpu> <nodes> <instructions>`, written by `cargo xtask perf-budget-update`
-# and checked by `cargo xtask perf-budget`.
+# `<tier> <target-cpu> <nodes> <search-instructions> <startup-instructions>`, written by
+# `cargo xtask perf-budget-update` and checked by `cargo xtask perf-budget`.
+#
+# The search count has startup subtracted and the startup count is what was subtracted --
+# the net load and the magic-table build, measured by a `quit`-only profile. They carry
+# DIFFERENT tolerances, because one is paid per process and the other per move.
 #
 # LOCAL AND PER-MACHINE -- .gitignore keeps this file out of the tree, because the count is
 # a property of the toolchain and the libc as well as of the code. It is NOT an anchor:
