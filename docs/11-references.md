@@ -132,6 +132,59 @@ the four lines above the line refish changed.
 | entry 22, a crafted LEB128 header hanging the loader | **already closed** at `c996043`, by the 2026-08-15 sweep's own second look |
 | `d657cfae`, gating the startup the budget only printed | **taken** — see [10-tooling-ci.md](10-tooling-ci.md). It closes a hole AGENTS.md carried as a trap row telling the reader to measure it by hand |
 | `9b6ebbab` a liveness gate, `ccdd41c1` thread scaling, `e5476414` shellcheck, `662c6675`/`3bb90d38` CI pins and citations, `5c00ff7d`/`6b36496a` include and friend direction | **not taken.** The first two are wall-clock instruments this repository already refuses to put in `parity`; the rest are C++-tree properties — an include graph, a `friend`, a bash suite — that `cargo` and `clippy` make unrepresentable here, and `sync-status` already answers the citation question for the one SHA that matters |
+**A sibling's GATE SUITE is swept the same way, and the useful half is the gate with no
+analogue rather than the gate that is better.** The 2026-08-18 sweep mapped all 28 of refish's
+shell gates, 7 Python harnesses and 5 C++ harnesses against this tree's 39 `xtask` steps.
+
+| probed, the gate suite | verdict |
+|---|---|
+| `reprosearch.sh` | **taken**, as `repro-search` — and it is UPSTREAM's own test, which this port had never ported. It asks the one question no gate here asked: what a COMPLETED search leaves for the next one. See [10-tooling-ci.md](10-tooling-ci.md) |
+| `perfbudget.sh`'s startup tolerance | **taken** at the previous sweep, and its first run found 28.7M — see the slider-ray commit |
+| `devcite.sh`, every cited SHA is an ANCESTOR of HEAD | **not taken, and the reason is that the shape does not transfer.** 48 SHAs are cited across `docs/` and `AGENTS.md` and **47 of them are SIBLING commits** — `../Stockfish`, `../zfish`, `../mcfish` — which resolve in another clone or in none. A reachability test against THIS repository would report 47 findings that are not defects, and a test against the sibling would skip whenever the sibling is absent, which is every CI run. What transfers is refish's own conclusion rather than its gate: **the durable form is a subject beside every SHA**, because the subject survives a rebase and is greppable. The pages here already write citations that way in the register above |
+| `zones.sh`, `depcheck.sh`, `linkcheck.sh`, `iwyu.sh`, `buildcoverage.sh` | **no analogue, and it is `cargo` that removes it.** Four of the five police an include graph and a build list; Rust has neither, a module absent from `mod.rs` does not compile, and the crate split makes `engine -> shell` unrepresentable. The one part that IS representable — layering WITHIN the engine crate, `board/` not reaching `search/` — is not gated here and is the honest residue of this row |
+| `shellcheck.sh` | **no analogue.** The gates here are Rust, so `clippy` in `parity` is the same lane and a broken gate fails to COMPILE |
+| `optiondefaults.sh` | **already stronger here.** The `uci` handshake golden pins every option's name, order, type, default and range byte for byte, where refish's gate compares a list |
+| `textequal.sh` | **already stronger here.** It compares the binary's text for a pure-motion claim; `codegen-equiv` compares the disassembly symbol by symbol and names which symbol moved |
+| `liveness.sh` | **mostly covered.** `async-check` already drives `stop`, `ponderhit` and `quit` into a RUNNING search and asserts the engine answers afterwards. What refish's version adds is a deadline on the answer, which `async-check` already carries at 30s |
+| `instrumented.py`, `match.sh`, `npsab.sh`, `npsthreads.sh`, `perfcounters.sh`, `perfdecomp.sh` | **covered or deliberately absent.** `tsan` and `fuzz` cover the sanitizer half; `perf` and `counters` cover the differential and the cache/branch axes; `match.sh` needs cutechess and a games budget this repository does not spend |
+| `malformed.sh`, `leb128.sh` | **built and DROPPED** at the 2026-08-15 sweep, with the reason recorded above: the fixtures could not be made to fail here |
+
+### Three findings from that sweep that are NOT changes
+
+**The transposition table's clear is instruction-cheap and latency-expensive, and no instrument
+here can judge the trade.** Upstream clears across every worker thread, each `memset`-ing a
+contiguous region, deliberately so the pages land on the right NUMA node. `clear` here is one
+thread storing `AtomicU64`s one at a time. The naive port is backwards: `rep stosb` retires
+about one instruction per BYTE, while a 64-bit store loop retires about one per eight, so
+adopting upstream's shape would make `perf-budget` RED while making the wall clock better —
+and at `Hash 1024` the current shape is a visible stall at `ucinewgame`. Rust can remove the
+atomic prohibition without weakening any ordering, because `AtomicU64::get_mut` proves
+exclusivity and `clear` has an owner at every call site; what it cannot do is decide the trade
+without a wall-clock instrument. **Left alone, and written down instead** — this is the
+"an instruction count cannot see a latency win" rule with its sign the other way round.
+
+**refish's `b04f3bec`, the worker histories cleared twice, is real here and measured too
+small.** `SearchWorker::new` ends in `clear()` and every caller then calls `pool.clear()`, so
+the tables are filled twice — and once more before that, because `Box::default()` zeroes what
+`clear` immediately overwrites. The whole of `Histories::clear`, summed over every call in a
+bench, is **2.7M Ir**; a redundant pass is at most half of that, against a change that would
+have to split the pool's construct-and-reset contract. Not taken, with the number rather than
+an argument.
+
+**98.4M instructions of the bench process are `__memset_avx2_unaligned_erms` — 3.8% — and what
+allocates them is NOT established.** It is not the histories (above) and it is not the net,
+whose large buffers are `alloc_zeroed` and take their zeroes from fresh mmap pages. The entry
+stops here rather than guessing, exactly as refish's own P6 entry stops at the 110 MiB it could
+not attribute. Size the allocations before writing anything.
+
+| probed, `SPEEDUP.md`'s deterministic-win patterns | verdict |
+|---|---|
+| **P7**, a runtime parameter that is a literal at every call site | **taken, and it was the sweep's largest result.** `build_magics` took its four ray directions as an argument, so one non-generic instantiation served both sliders and every ray step loaded a direction that could have been a constant. −28.7M at `avx2` and −27.9M at `sse41`, 2.7–2.9% of every startup, search flat on both. refish's tell is what found it: the callee survives in the profile as ONE symbol however literal the call sites look |
+| **P1**, an atomic forbidding a bulk operation | **one site left, and it is the TT clear above.** The histories are plain `i16` here, so the prohibition refish removed does not exist |
+| **P6**, zeroing a later full write makes dead | **not reachable in safe Rust.** Skipping an initialisation needs `Box::new_zeroed` and `assume_init`, and `unsafe` is the constraint this port exists to keep. The one place it would pay is the 98.4M above, which is unattributed |
+| **P2** aliasing barriers, **P3** a vectoriser gather, **P5** discarded work | **nothing found**, and P3 was censused at 272 gather sites by `../zfish` with the same verdict |
+| **P4**, an index whose type forces a sign extension | **still not attempted**, on the rule recorded at the previous sweep |
+
 | its `perf(...)` series on the accumulator and the tablebase decoder — `81254ddb`, `acef91aa`, `9769f5a2`, `a25d8fb4`, `1c384d46` | **not applicable.** Every one is a gcc pragma, a `restrict` scope or a pointer pinned for a compiler this port does not use. The two that are language-neutral — one load per pairing-tree step, resuming the length walk — are the same site the 2026-08-15 sweep measured at **0.11%** of a probing bench and below every instrument here |
 
 ## Rust
