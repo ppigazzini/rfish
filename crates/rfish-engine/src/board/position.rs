@@ -1267,14 +1267,24 @@ impl Position {
                 s = s.shift(step);
             }
 
-            if self.chess960 {
-                let occ = (self.occupied() ^ Bitboard::from_square(rook_from))
-                    | Bitboard::from_square(king_to);
-                return (sliders().rook(king_to, occ)
-                    & self.pieces_of2(!us, PieceType::Rook, PieceType::Queen))
-                .is_empty();
-            }
-            return true;
+            // The rook test runs on GEOMETRY, not on the `UCI_Chess960` option. Upstream
+            // gates it as `!chess960 || ...`, and the option is not evidence about the
+            // board: `set` does not require the castling field to agree with the pieces —
+            // for a `K`/`Q` token it walks in from the corner and adopts the first rook it
+            // meets — so `4k3/8/8/8/8/8/8/qR2K3 w Q` records a rook on b1 while the option
+            // still says standard, and the short-circuit then declared `e1c1` legal with
+            // the enemy queen on a1 screened by the castling rook alone. Playing it reaches
+            // a position whose king can be captured.
+            //
+            // Always running it changes nothing in standard geometry: a corner rook lies on
+            // no line between its own king and any slider — rank 1 has nothing beyond a1 or
+            // h1 — so the test was always going to pass there, and it is inside the castling
+            // arm, so no other move pays for it.
+            let occ = (self.occupied() ^ Bitboard::from_square(rook_from))
+                | Bitboard::from_square(king_to);
+            return (sliders().rook(king_to, occ)
+                & self.pieces_of2(!us, PieceType::Rook, PieceType::Queen))
+            .is_empty();
         }
 
         if self.piece_on(from).piece_type() == PieceType::King {
@@ -2121,6 +2131,37 @@ impl fmt::Display for Position {
 
 #[cfg(test)]
 mod tests {
+
+    /// A sloppy castling field records a 960 rook square under the standard dialect, and
+    /// the castle it enables must still be tested against the board.
+    ///
+    /// Red before the option gate came off: `e1c1` was generated, and playing it reaches a
+    /// position whose king can be captured.
+    #[test]
+    fn a_castle_screened_by_its_own_rook_is_illegal_in_either_dialect() {
+        // `Q` walks in from a1 and adopts the rook on b1, which is the only thing standing
+        // between the enemy queen on a1 and the king on e1.
+        for (fen, dialect) in
+            [("4k3/8/8/8/8/8/8/qR2K3 w Q - 0 1", false), ("4k3/8/8/8/8/8/8/qR2K3 w B - 0 1", true)]
+        {
+            let pos = super::Position::from_fen(fen, dialect).expect("valid");
+            let legal = crate::board::movegen::generate_legal(&pos);
+            assert!(
+                !legal.as_slice().iter().any(|m| m.move_type() == super::MoveType::Castling),
+                "{fen}: the castle leaves the king capturable"
+            );
+        }
+
+        // And the test the gate used to skip does not refuse an ordinary castle.
+        let pos = super::Position::from_fen("4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1", false)
+            .expect("valid");
+        let legal = crate::board::movegen::generate_legal(&pos);
+        assert_eq!(
+            legal.as_slice().iter().filter(|m| m.move_type() == super::MoveType::Castling).count(),
+            2,
+            "both corner castles are legal"
+        );
+    }
 
     #[test]
     fn flipping_twice_is_the_identity() {
