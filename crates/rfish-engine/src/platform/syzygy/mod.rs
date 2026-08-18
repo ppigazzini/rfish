@@ -395,9 +395,26 @@ impl TableRegistry {
         let mut out = Vec::new();
         for &mv in generate_legal(pos).as_slice() {
             work.do_move(mv);
-            let probed = self.probe_wdl(&work);
+            // The RULES decide a drawn position, not the table. Upstream opens the loop
+            // with this test and it was missing here, so a move that draws by repetition or
+            // by the halfmove clock was ranked and scored on the table's verdict — a win
+            // reported for a game that is already over.
+            //
+            // The test ignores `Syzygy50MoveRule`, which is upstream's, and is a defect
+            // there rather than a decision: with the option OFF, the setting whose meaning
+            // is that the clock does not end the game, every root move becomes a draw once
+            // the clock crosses 99 and `rank_root_moves` then stops probing under a won
+            // position. `root_probe` twenty lines above spells the same test as
+            // `(rule50 && is_draw) || is_repetition`. It is inherited deliberately: this
+            // port is bit-exact to the pin, and the overrun it caused upstream — the PV
+            // walk past the array — is already bounded here.
+            let probed = if work.is_draw(Ply::new(1)) {
+                Ok(Wdl::Draw)
+            } else {
+                self.probe_wdl(&work).map(Wdl::negate)
+            };
             work.undo_move(mv);
-            let wdl = probed.ok()?.negate();
+            let wdl = probed.ok()?;
 
             let rank = WDL_TO_RANK[(wdl as i32 + 2) as usize];
             // With the fifty-move rule off, a cursed win IS a win and a blessed loss IS a
@@ -619,6 +636,30 @@ mod tests {
                 assert_eq!(dtz, 0, "{fen}");
             }
         }
+    }
+
+    /// A root move that draws by the halfmove clock is ranked as a draw, not by the table.
+    ///
+    /// Upstream's `root_probe_wdl` opens with `if (pos.is_draw(1)) wdl = WDLDraw;` and this
+    /// port omitted it, so a table verdict was reported for a position the rules have
+    /// already drawn.
+    #[test]
+    fn a_drawn_root_move_is_ranked_drawn_in_the_wdl_fallback() {
+        let Some(dir) = table_dir() else { return };
+        let r = TableRegistry::discover(&dir);
+
+        // A won KQvK, and the same board one halfmove past the fifty-move rule.
+        let won = Position::from_fen("8/8/8/8/8/2k5/8/KQ6 w - - 0 1", false).expect("valid");
+        let drawn = Position::from_fen("8/8/8/8/8/2k5/8/KQ6 w - - 100 200", false).expect("valid");
+
+        let ranked = r.root_probe_wdl(&won, true).expect("the tables cover three men");
+        assert!(ranked.iter().any(|m| m.score > VALUE_DRAW), "a won root must rank as won");
+
+        let ranked = r.root_probe_wdl(&drawn, true).expect("the tables cover three men");
+        assert!(
+            ranked.iter().all(|m| m.score == VALUE_DRAW),
+            "every move from a position the clock has drawn is a draw"
+        );
     }
 
     /// A position with more pieces than any table covers must report failure rather than a
