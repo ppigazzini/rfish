@@ -943,6 +943,22 @@ impl Position {
         let cr =
             if king_side { CastlingRights::king_side(c) } else { CastlingRights::queen_side(c) };
 
+        // A right has ONE rook, and the mask carried two. `castling_rook_square[cr]` holds
+        // one square while `castling_rights_mask` keeps the bit on every square ever named
+        // for `cr`, so a castling field with two tokens on the same side — `w AB` — left the
+        // rook this call is about to discard holding a bit the position no longer uses. And
+        // `do_move` clears the rights of whatever square a piece LEAVES, so moving the
+        // discarded rook destroyed the right the surviving one owns: `AB` then `a1a2` lost
+        // the `B` right with the b1 rook still on b1. Only a malformed field reaches this —
+        // a well-formed one names each side once — and the consistency check cannot see it,
+        // because the mask is not among the fields it re-derives from the board.
+        if let Some(previous) = self.castling_rook_square[cr.index()].square()
+            && self.st.castling_rights.contains(cr)
+        {
+            self.castling_rights_mask[previous.index()] =
+                self.castling_rights_mask[previous.index()].without(cr);
+        }
+
         self.st.castling_rights = self.st.castling_rights.union(cr);
         self.castling_rights_mask[ksq.index()] = self.castling_rights_mask[ksq.index()].union(cr);
         self.castling_rights_mask[rook_from.index()] =
@@ -2160,6 +2176,33 @@ mod tests {
             legal.as_slice().iter().filter(|m| m.move_type() == super::MoveType::Castling).count(),
             2,
             "both corner castles are legal"
+        );
+    }
+
+    /// Two castling tokens on the same side leave ONE rook, and the other must not keep the
+    /// mask bit that `do_move` clears rights by.
+    ///
+    /// Red before the mask was cleared: moving the discarded a1 rook destroyed the right the
+    /// b1 rook owns, with b1 still on b1.
+    #[test]
+    fn a_replaced_castling_rook_does_not_carry_the_mask_away() {
+        let mut pos =
+            super::Position::from_fen("4k3/8/8/8/8/8/8/RR1K4 w AB - 0 1", true).expect("valid");
+        // `A` and `B` both resolve to the queen-side right; `B` is the one that survives.
+        let before = pos.st().castling_rights;
+        assert!(!before.is_empty(), "the field grants a right");
+
+        let a1a2 = crate::board::movegen::generate_legal(&pos)
+            .as_slice()
+            .iter()
+            .copied()
+            .find(|m| crate::board::movegen::move_to_uci(&pos, *m) == "a1a2")
+            .expect("the discarded rook can move");
+        pos.do_move(a1a2);
+        assert_eq!(
+            pos.st().castling_rights,
+            before,
+            "the surviving rook has not moved, so its right stands"
         );
     }
 
