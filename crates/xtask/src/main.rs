@@ -97,6 +97,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "negative-control" => meta::negative_control(args),
         "sync-status" => meta::sync_status(),
         "async-check" => meta::async_check(),
+        "repro-search" => meta::repro_search(),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
     }
@@ -154,6 +155,8 @@ cargo xtask <step> — the rfish build driver
     net-roundtrip         the net survives `export_net` byte for byte, so the format
                           reader and writer agree -- an ORDER stated twice, welded
     tb                    Syzygy discovery, and that an empty path changes nothing
+    repro-search          node counts repeat across `ucinewgame`, at twenty budgets --
+                          the question about what a COMPLETED search leaves for the next
     async-check           stop, ponderhit and quit on a RUNNING search. INVARIANTS, not
                           values: no golden can reach this path, because an interrupted
                           search ends wherever the clock got to

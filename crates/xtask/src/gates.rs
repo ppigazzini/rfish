@@ -1617,6 +1617,9 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         // The only instrument that reaches the interrupted-search path; cheap, so it runs
         // with the rest rather than waiting for someone to remember it.
         ("async-check", crate::meta::async_check),
+        // The other question about a search's aftermath: `async-check` asks what an
+        // INTERRUPTED one leaves, this asks what a COMPLETED one leaves for the next.
+        ("repro-search", crate::meta::repro_search),
         ("test", test),
         ("perft", perft),
         ("golden", || golden(false)),

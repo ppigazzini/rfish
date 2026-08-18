@@ -365,6 +365,47 @@ without it. The flag expires by itself: a runner that gains AVX-512 benches all 
 stops excusing anything. Full five-tier coverage is a LOCAL run on an AVX-512 box, which is
 the run to make after touching a kernel.
 
+### `repro-search` — what a COMPLETED search leaves for the next one
+
+Node counts repeat across `ucinewgame`, at twenty budgets.
+
+```sh
+cargo xtask repro-search
+```
+
+**Every other value gate reads the FIRST answer the process gives.** `signature` runs one
+bench, `perft` counts a tree, `golden` pins a transcript — none of them asks whether a search
+left anything behind. This runs the same two positions twice in one process with a
+`ucinewgame` between the rounds and requires the second round to reproduce the first node for
+node, so anything the reset misses shows as a divergence: a history table, a stack entry, a
+correction bank, a root-move field, a time-manager carry-over.
+
+It is **upstream's own `tests/reprosearch.sh`**, which this port had never taken, and the
+budget progression is upstream's — `100 * 3^i / 2^i` for i in 1..=20. The budgets are not
+round numbers at any step on purpose: each one stops the search at a different point.
+
+What it cannot see: whether those node counts are the RIGHT ones, which is `signature`'s
+question, and what a second thread would do to them. It runs at the default thread count, and
+a Lazy-SMP search is not node-reproducible — no gate can make it so.
+
+Upstream's version drives the engine through `expect` and, before that was repaired, a
+missing interpreter left `grep` matching nothing, `awk` rejecting nothing, and the script
+printing `reprosearch testing OK` having checked nothing at all. This one drives the binary
+the way every other gate here does, so there is no interpreter to be absent and no pipeline
+whose exit status belongs to its last stage — and a round that reports fewer than four
+searches is the failure it looks like rather than a vacuous pass.
+
+Seen to FAIL by mutation, and `negative-control` carries the row: with `ucinewgame` no longer
+clearing the worker histories, 33 of 40 searches diverge and it names each one —
+
+```text
+differs 332525 nodes, `position startpos`: 332529 nodes before ucinewgame, 332595 after
+repro-search: 7 of 40 searches reproduced across ucinewgame
+```
+
+The seven that still reproduce are the smallest budgets, where the histories have barely
+moved — which is the honest shape of the result rather than a weakness in the row.
+
 ### `perf-budget`
 
 **The regression nothing else sees.** `signature` proves the same NODE count and says

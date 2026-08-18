@@ -182,7 +182,8 @@ audit for — the compiler is the audit.
 
 ```sh
 cargo xtask parity           # fmt, clippy, unsafe-lint, docs-lint, lane-coverage,
-                             # fixture-coverage, async-check, test, perft, golden,
+                             # fixture-coverage, async-check, repro-search, test,
+                             # perft, golden,
                              # golden-audit, nnue-check, tb, signature
 cargo xtask signature        # just the anchor
 cargo xtask test             # unit and property suite, under the gate profile
