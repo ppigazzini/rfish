@@ -95,6 +95,35 @@ impl Limits {
         }
     }
 
+    /// The largest `mate` count the stop condition can carry, which is half the type.
+    ///
+    /// `go mate N` stops when `VALUE_MATE - |score| <= 2 * N`, so the DOUBLE is what has to
+    /// fit — and UCI puts no range on the number, exactly as it puts none on a clock.
+    /// Upstream reads it into an `int` and `2 * 2147483647` wraps to `-2`: the condition can
+    /// then never hold, and the search runs on past a mate it already has. A release build
+    /// of this port wrapped the same way and the gate profile panicked instead.
+    pub const MAX_MATE: i32 = i32::MAX / 2;
+
+    /// Clamp a parsed `mate` count into [`Limits::MAX_MATE`], keeping its SIGN.
+    ///
+    /// Symmetric for the reason [`Limits::clamp_clock`] is: `2 * i32::MIN` leaves the type
+    /// as surely as `2 * i32::MAX` does, and folding a negative count to zero would be a
+    /// larger change than the one being made — zero is how this field spells ABSENT, so it
+    /// would turn `go mate -5` from a bounded search into an unbounded one.
+    ///
+    /// Every count that means anything is far below the bound: a mate in 2^30 is not a mate
+    /// anyone is searching for, and `go mate 2` is untouched.
+    #[must_use]
+    pub const fn clamp_mate(n: i32) -> i32 {
+        if n > Limits::MAX_MATE {
+            Limits::MAX_MATE
+        } else if n < -Limits::MAX_MATE {
+            -Limits::MAX_MATE
+        } else {
+            n
+        }
+    }
+
     /// True when nothing bounds the search but an explicit stop.
     #[must_use]
     pub fn is_unbounded(&self) -> bool {
@@ -831,6 +860,26 @@ pub fn clock_index(c: Color) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `mate` count is bounded where it is parsed, and the bound is what doubles.
+    ///
+    /// A pure function, because reaching the stop condition it protects needs a search on a
+    /// real clock and the reproducer is one `go` line.
+    #[test]
+    fn a_mate_count_is_bounded_by_what_doubling_it_costs() {
+        // Every count that means anything passes through untouched.
+        for n in [-2, 0, 1, 2, 30, 1000] {
+            assert_eq!(Limits::clamp_mate(n), n);
+        }
+
+        // And no clamped count can leave the type when the stop condition doubles it.
+        for n in [i32::MIN, -1_000_000_000, 1_000_000_000, i32::MAX] {
+            let bounded = Limits::clamp_mate(n);
+            assert!(bounded.checked_mul(2).is_some(), "clamp_mate({n}) = {bounded} still doubles");
+            assert_eq!(bounded.signum(), n.signum(), "the clamp keeps the sign");
+        }
+        assert_eq!(Limits::clamp_mate(i32::MAX), Limits::MAX_MATE);
+    }
 
     #[test]
     fn an_empty_limits_is_unbounded() {

@@ -733,7 +733,9 @@ impl Engine {
                 "depth" => l.depth = Some(count(i, "depth")?),
                 "nodes" => l.nodes = Some(nodes(i, "nodes")?),
                 "movetime" => l.move_time = Some(clock(i, "movetime")? as u64),
-                "mate" => l.mate = Some(count(i, "mate")?),
+                // Bounded where it ENTERS, like the clocks above: the stop condition
+                // doubles it. See `Limits::MAX_MATE`.
+                "mate" => l.mate = Some(Limits::clamp_mate(count(i, "mate")?)),
                 // `perft` takes a value like every other key, and upstream's `is >> perft`
                 // sets failbit on a missing or unusable one just as `depth` does. It is
                 // parsed HERE rather than where it is acted on so that it is rejected on the
