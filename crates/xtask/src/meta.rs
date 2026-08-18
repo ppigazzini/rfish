@@ -112,6 +112,103 @@ pub(crate) fn lane_coverage() -> Result<Outcome, String> {
     ))
 }
 
+/// Node counts repeat across `ucinewgame`, at twenty node budgets.
+///
+/// **The question no other gate here asks: does a search LEAVE anything behind?** `signature`
+/// runs one bench, `perft` counts a tree, `golden` pins a transcript — every one of them
+/// reads the first answer the process gives. This runs the same two positions twice in one
+/// process with a `ucinewgame` between the rounds, and requires the second round to reproduce
+/// the first node for node. Anything a search writes and `ucinewgame` fails to reset shows up
+/// as a divergence: a history table, a stack entry, a correction bank, a root-move field, a
+/// time-manager carry-over.
+///
+/// This is upstream's own `tests/reprosearch.sh`, which this port had never taken. Its budget
+/// progression is upstream's too — `100 * 3^i / 2^i` for i in 1..=20 — and the reason it is
+/// not a round number at any step is to land the stop inside the search at as many different
+/// points as possible.
+///
+/// **What it cannot see.** Whether those node counts are the RIGHT ones, which is
+/// `signature`'s question, and what a second thread would do to them: it runs at the default
+/// thread count, so it establishes reproducibility for one worker only. A Lazy-SMP search is
+/// not node-reproducible and no gate can make it so.
+///
+/// Upstream's version drives the engine through `expect` and exits 2 when it is missing —
+/// and before that was fixed, a missing interpreter left `grep` matching nothing, `awk`
+/// rejecting nothing, and the script printing `reprosearch testing OK` having checked
+/// NOTHING. This one drives the binary the way every other gate here does, so there is no
+/// interpreter to be absent and no pipeline whose exit status belongs to the last stage.
+pub(crate) fn repro_search() -> Result<Outcome, String> {
+    // The two positions upstream uses: the start position and a short opening line, so the
+    // second search runs with a table the first one filled.
+    const POSITIONS: [&str; 2] = ["position startpos", "position startpos moves e2e4 e7e6"];
+
+    let engine = crate::runner::build_engine(crate::runner::GATE_PROFILE)?;
+
+    let mut checked = 0usize;
+    let mut problems = Vec::new();
+    for i in 1..=20u32 {
+        // Upstream's progression, at upstream's width. `3^20` needs more than 32 bits before
+        // the division brings it back down, so the arithmetic is done at i64 throughout.
+        let nodes = 100i64 * 3i64.pow(i) / 2i64.pow(i);
+
+        let mut script = Vec::new();
+        for round in 0..2 {
+            if round == 1 {
+                script.push("ucinewgame".to_string());
+            }
+            for pos in POSITIONS {
+                script.push(pos.to_string());
+                script.push(format!("go nodes {nodes}"));
+            }
+        }
+        let lines: Vec<&str> = script.iter().map(String::as_str).collect();
+        let out = crate::runner::drive(&engine, &lines)?;
+
+        // One search per `bestmove`, and its node total is the last `nodes N` it reported.
+        let mut totals = Vec::new();
+        let mut last: Option<u64> = None;
+        for line in out.lines() {
+            if let Some(n) = line
+                .split_whitespace()
+                .skip_while(|t| *t != "nodes")
+                .nth(1)
+                .and_then(|t| t.parse::<u64>().ok())
+            {
+                last = Some(n);
+            }
+            if line.starts_with("bestmove") {
+                totals.push(last.take());
+            }
+        }
+
+        // An empty read satisfies every comparison below, so it is the failure it looks
+        // like rather than a vacuous pass — the defect upstream's own version shipped with.
+        if totals.len() != 4 {
+            problems
+                .push(format!("{nodes} nodes: the engine answered {} of 4 searches", totals.len()));
+            continue;
+        }
+        for (slot, pos) in POSITIONS.iter().enumerate() {
+            match (totals[slot], totals[slot + 2]) {
+                (Some(first), Some(second)) if first == second => checked += 1,
+                (Some(first), Some(second)) => problems.push(format!(
+                    "{nodes} nodes, `{pos}`: {first} nodes before ucinewgame, {second} after"
+                )),
+                _ => problems.push(format!("{nodes} nodes, `{pos}`: a search reported no nodes")),
+            }
+        }
+    }
+
+    for p in &problems {
+        eprintln!("  \x1b[31mdiffers\x1b[0m {p}");
+    }
+    println!("repro-search: {checked} of 40 searches reproduced across ucinewgame");
+    Ok(Outcome::check(
+        problems.is_empty(),
+        format!("{} search(es) did not reproduce", problems.len()),
+    ))
+}
+
 /// The invariants that hold on an interrupted search, whatever the clock did.
 ///
 /// **No byte-golden can reach this path.** `tools/cases/` is driven by writing every line and
@@ -489,6 +586,17 @@ const MUTANTS: &[Mutant] = &[
         find: "pub const OUTPUT_SCALE: i64 = 16;",
         replace: "pub const OUTPUT_SCALE: i64 = 17;",
         gate: "nnue-check",
+    },
+    Mutant {
+        // Aimed at the one question this gate exists for: what a COMPLETED search leaves
+        // behind. `ucinewgame` stops resetting the histories, so the second round searches
+        // a tree the first round taught — a divergence no value gate can see, because every
+        // one of them reads the FIRST answer the process gives.
+        label: "ucinewgame no longer clears the worker histories",
+        file: "crates/rfish/src/uci.rs",
+        find: "        self.tt.clear();\n        self.pool.clear();",
+        replace: "        self.tt.clear();",
+        gate: "repro-search",
     },
     Mutant {
         // Aimed at the ONE invariant no golden can reach. The mutant is still bounded, but
