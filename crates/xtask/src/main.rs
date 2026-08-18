@@ -176,7 +176,8 @@ cargo xtask <step> — the rfish build driver
                                        tiers: sse41, avx2 (default), avx512, vnni512,
                                        avx512icl; `native` SELECTS one of them rather than
                                        compiling host-specific code
-    counters [--tier T] [--spine]      the cache and branch table against upstream: reads,
+    counters [--tier T] [--spine] [--syzygy]
+                                       the cache and branch table against upstream: reads,
                                        writes, D1 and icache misses, conditional and
                                        indirect branches and their mispredicts. Simulated,
                                        so DETERMINISTIC -- unlike the paired clock this one
