@@ -2169,8 +2169,8 @@ mod tests {
         }
 
         // And the test the gate used to skip does not refuse an ordinary castle.
-        let pos = super::Position::from_fen("4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1", false)
-            .expect("valid");
+        let pos =
+            super::Position::from_fen("4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1", false).expect("valid");
         let legal = crate::board::movegen::generate_legal(&pos);
         assert_eq!(
             legal.as_slice().iter().filter(|m| m.move_type() == super::MoveType::Castling).count(),
