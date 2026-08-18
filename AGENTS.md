@@ -174,7 +174,9 @@ cargo xtask parity           # the aggregate gate -- run before calling anything
 
 A new module must be declared in its zone's `mod.rs`. Rust will not compile a file nothing
 declares, so unlike the sibling C port there is no "written but not in the build" state to
-audit for — the compiler is the audit.
+audit for — the compiler is the audit. What the compiler does NOT audit is the direction
+between zones inside the engine crate: `cargo xtask zone-check` does, against a baseline that
+expires in both directions.
 
 ## Gates
 
@@ -182,7 +184,8 @@ audit for — the compiler is the audit.
 
 ```sh
 cargo xtask parity           # fmt, clippy, unsafe-lint, docs-lint, lane-coverage,
-                             # fixture-coverage, async-check, repro-search, test,
+                             # fixture-coverage, zone-check, async-check,
+                             # repro-search, test,
                              # perft, golden,
                              # golden-audit, nnue-check, tb, signature
 cargo xtask signature        # just the anchor

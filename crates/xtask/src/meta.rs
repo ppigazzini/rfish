@@ -112,6 +112,141 @@ pub(crate) fn lane_coverage() -> Result<Outcome, String> {
     ))
 }
 
+/// The zones of `rfish-engine`, in the order they are declared to depend.
+///
+/// `board` reads nothing, `state` reads `board`, `eval` and `search` read both, `platform`
+/// reads all of them. A module may name a zone BELOW it and not one at or above it.
+const ZONES: [&str; 5] = ["board", "state", "eval", "search", "platform"];
+
+/// One edge that crosses the declared direction, and why it is allowed to.
+struct CrossingEdge {
+    from: &'static str,
+    to: &'static str,
+    /// The file that carries it, relative to `crates/rfish-engine/src/`.
+    file: &'static str,
+    reason: &'static str,
+}
+
+/// The crossings this tree has, each with the reason it is not a defect.
+///
+/// **A baseline that expires in BOTH directions.** A crossing that is not here reddens the
+/// gate, and an entry here that no longer exists reddens it too — otherwise the list becomes
+/// a permanent excuse for work someone already did. `../Stockfish refish`'s `depcheck.sh`
+/// keeps its baselines the same way, and it is the half that makes them worth having.
+const CROSSINGS: &[CrossingEdge] = &[
+    CrossingEdge {
+        from: "board",
+        to: "eval",
+        file: "board/threats.rs",
+        reason: "TESTS ONLY: the threat recorder is checked against the encoder that consumes it, and a differential is the only thing that can say the two agree",
+    },
+    CrossingEdge {
+        from: "state",
+        to: "search",
+        file: "state/mod.rs",
+        reason: "a real cycle, and DEBT rather than design: a stack frame stores `ContKey` and `CorrKey`, whose types are the search's while the frame is shared",
+    },
+    CrossingEdge {
+        from: "search",
+        to: "platform",
+        file: "search/fuzz.rs",
+        reason: "the harness drives a whole search, which needs a `ThreadPool`; `pub mod fuzz`, so unlike the board edge this one is compiled into every build",
+    },
+    CrossingEdge {
+        from: "search",
+        to: "platform",
+        file: "search/worker.rs",
+        reason: "the worker holds a `TableRegistry` and names its types directly. Upstream inverts this edge with a seam and this port does not, so it is structural rather than incidental — and it is the one the hand-written inventory in docs/00-architecture.md did not carry until this gate found it",
+    },
+];
+
+/// No module names a zone at or above its own, except where a baseline says why.
+///
+/// **`cargo` cannot answer this.** The crate boundary is checked by the compiler, but this
+/// graph is inside ONE crate and a cycle between modules of one crate builds fine. So the
+/// direction was a property a reviewer maintained, and `docs/00-architecture.md` said so:
+/// it carried a hand-written inventory of what crosses, with the note that a fourth edge
+/// would be noticed by nobody. There was already a fourth.
+///
+/// **What it cannot see.** A `use` inside a block comment, and whether an edge is behind
+/// `#[cfg(test)]` — the baseline records which are, because deciding it needs a parser and
+/// the question the gate exists for is whether a FIFTH appears, not how the four are gated.
+pub(crate) fn zone_check() -> Result<Outcome, String> {
+    let root = workspace_root().join("crates/rfish-engine/src");
+    let rank = |z: &str| ZONES.iter().position(|c| *c == z);
+
+    let mut found: Vec<(String, String, String)> = Vec::new();
+    for zone in ZONES {
+        let mut files = Vec::new();
+        crate::gates::collect_rust(&root.join(zone), &mut files);
+        for file in files {
+            let text =
+                std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let rel = file
+                .strip_prefix(&root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            for line in text.lines() {
+                // A doc link is not a dependency. `state/mod.rs` names
+                // `crate::search::worker::SearchWorker` in its header comment, and counting
+                // that as an edge would put a phantom entry in the baseline for ever.
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for other in ZONES {
+                    if other != zone && line.contains(&format!("crate::{other}")) {
+                        let edge = (zone.to_string(), other.to_string(), rel.clone());
+                        if !found.contains(&edge) {
+                            found.push(edge);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // A crossing is an edge to a zone at or above the reader's own rank.
+    let mut crossings: Vec<&(String, String, String)> =
+        found.iter().filter(|(from, to, _)| rank(to) >= rank(from)).collect();
+    crossings.sort();
+
+    let mut problems = Vec::new();
+    for (from, to, file) in &crossings {
+        if !CROSSINGS.iter().any(|c| c.from == from && c.to == to && c.file == file) {
+            problems.push(format!(
+                "UNDECLARED {from} -> {to} in {file}: it names a zone at or above its own, and no baseline entry says why"
+            ));
+        }
+    }
+    for c in CROSSINGS {
+        if !crossings.iter().any(|(from, to, file)| c.from == from && c.to == to && c.file == file)
+        {
+            problems.push(format!(
+                "STALE the baseline still allows {} -> {} in {}, and that edge is gone.                  Delete the entry: a baseline that outlives its edge is an excuse",
+                c.from, c.to, c.file
+            ));
+        }
+    }
+
+    // The reasons are PRINTED, not merely stored. A baseline nobody reads is a list of
+    // exemptions that stops being questioned; printing it is what keeps each entry something
+    // a reader can disagree with.
+    for c in CROSSINGS {
+        println!(" {} -> {} in {}\n      {}", c.from, c.to, c.file, c.reason);
+    }
+    for p in &problems {
+        eprintln!(" \x1b[31m{p}\x1b[0m");
+    }
+    println!(
+        "zone-check: {} edges across {} zones, {} crossing, {} declared",
+        found.len(),
+        ZONES.len(),
+        crossings.len(),
+        CROSSINGS.len()
+    );
+    Ok(Outcome::check(problems.is_empty(), format!("{} zone problem(s)", problems.len())))
+}
+
 /// Node counts repeat across `ucinewgame`, at twenty node budgets.
 ///
 /// **The question no other gate here asks: does a search LEAVE anything behind?** `signature`
@@ -586,6 +721,15 @@ const MUTANTS: &[Mutant] = &[
         find: "pub const OUTPUT_SCALE: i64 = 16;",
         replace: "pub const OUTPUT_SCALE: i64 = 17;",
         gate: "nnue-check",
+    },
+    Mutant {
+        // The direction `cargo` cannot check. A `use` is enough: `board` is the zone nothing
+        // below it may influence, which is what makes perft a complete test of it.
+        label: "the board zone reads the search zone",
+        file: "crates/rfish-engine/src/board/bitboard.rs",
+        find: "use crate::board::types::",
+        replace: "use crate::search::tt::Bound as _Zone;\nuse crate::board::types::",
+        gate: "zone-check",
     },
     Mutant {
         // Aimed at the one question this gate exists for: what a COMPLETED search leaves
