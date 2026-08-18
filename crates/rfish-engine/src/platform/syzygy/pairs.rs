@@ -59,6 +59,11 @@ pub struct PairsData {
     /// `base64[l - min_sym_len]` is the lowest symbol of length `l`, right-padded to 64
     /// bits, so a symbol's length can be found by comparison alone.
     pub base64: Vec<u64>,
+    /// The bitstream's top [`LEN_TAB_MAX_BITS`] bits -> the `base64` index they decode to,
+    /// or [`NO_FAST_LEN`] where one bucket spans two lengths and the walk has to run.
+    pub len_tab: Vec<u8>,
+    /// 64 minus how many of the stream's top bits [`PairsData::len_tab`] is indexed by.
+    pub len_tab_shift: u32,
     /// How many values each symbol expands into, minus one.
     pub symlen: Vec<u8>,
     /// The piece order the encoding groups by.
@@ -69,6 +74,54 @@ pub struct PairsData {
     pub group_len: [i32; TB_PIECES + 1],
     /// Offsets into the DTZ remap table, one per WDL outcome.
     pub map_idx: [u16; 4],
+}
+
+/// How many of the bitstream's leading bits the length table is indexed by, at most.
+///
+/// The table is `1 << min(max_sym_len, this)` bytes, sized to the TABLE rather than to the
+/// cap: a small alphabet gets a small table and touches fewer cache lines for it. Uncapped it
+/// would want `1 << 63` entries.
+const LEN_TAB_MAX_BITS: u32 = 12;
+
+/// The length table's "this bucket spans two lengths; walk it". Cannot collide with a real
+/// answer, which is an index into `base64` and so below 64.
+const NO_FAST_LEN: u8 = 0xFF;
+
+/// The `base64` index of the symbol at the head of `buf` — the walk the length table replaces.
+///
+/// Bounded by the table: the padding makes `base64` a total order for a WELL-FORMED payload,
+/// so the search always stops. Corrupt bits need not, and running off the end of a `Vec` is
+/// the panic the whole bounding pass in this file is about.
+#[inline(always)]
+fn walk_len(base64: &[u64], buf: u64) -> usize {
+    let mut len = 0usize;
+    while len + 1 < base64.len() && buf < base64[len] {
+        len += 1;
+    }
+    len
+}
+
+/// Fill [`PairsData::len_tab`] from a finished `base64`.
+///
+/// **Every entry is VERIFIED rather than derived.** The argument for the table is that a code
+/// no longer than K bits owns a whole number of buckets of the stream's top K bits, because
+/// `base64` is right-padded to 64 — so one load answers what the walk searched for. Rather
+/// than trust that argument against a file from a mirror, each bucket is walked at BOTH ends
+/// and keeps its answer only when the two agree. A bucket that straddles a length boundary,
+/// on any table however malformed, says `NO_FAST_LEN` and reaches the walk, so the decode is
+/// exact by construction instead of by proof.
+fn build_len_tab(d: &mut PairsData) {
+    let bits = u32::from(d.max_sym_len).clamp(1, LEN_TAB_MAX_BITS);
+    d.len_tab_shift = 64 - bits;
+    d.len_tab = vec![NO_FAST_LEN; 1usize << bits];
+    let within = (1u64 << d.len_tab_shift) - 1;
+    for bucket in 0..d.len_tab.len() {
+        let lo = (bucket as u64) << d.len_tab_shift;
+        let len = walk_len(&d.base64, lo);
+        if len == walk_len(&d.base64, lo | within) && len < usize::from(NO_FAST_LEN) {
+            d.len_tab[bucket] = len as u8;
+        }
+    }
 }
 
 /// Read a little-endian `u16`.
@@ -192,13 +245,16 @@ pub fn decompress(d: &PairsData, bytes: &[u8], idx: u64) -> i32 {
 
     loop {
         // Every symbol of a given length is a consecutive integer, so the length is found
-        // by comparing the padded buffer against the lowest symbol of each length.
-        let mut len = 0usize;
-        // Bounded by the table: the padding makes `base64` a total order for a WELL-FORMED
-        // payload, so the search always stops. Corrupt bits need not, and running off the end
-        // of a `Vec` is the panic this whole pass is about.
-        while len + 1 < d.base64.len() && buf < d.base64[len] {
-            len += 1;
+        // by comparing the padded buffer against the lowest symbol of each length — and for
+        // every bucket whose whole span decodes to one length, ONE LOAD answers it. The walk
+        // this replaces was 1,648,117,166 instructions on the probing workload, 15.9% of it
+        // and the largest single line in the reader; it is a data-dependent loop, so it cost
+        // the branch predictor as well as the pipeline.
+        let mut len = usize::from(
+            d.len_tab.get((buf >> d.len_tab_shift) as usize).copied().unwrap_or(NO_FAST_LEN),
+        );
+        if len == usize::from(NO_FAST_LEN) {
+            len = walk_len(&d.base64, buf);
         }
         let shift = 64usize.saturating_sub(len + usize::from(d.min_sym_len));
         sym = (buf.wrapping_sub(d.base64[len]) >> shift) as usize;
@@ -363,6 +419,7 @@ pub fn set_sizes(d: &mut PairsData, bytes: &[u8], mut off: usize) -> Option<usiz
         let shift = 64usize.checked_sub(i + usize::from(d.min_sym_len)).filter(|&s| s < 64)?;
         d.base64[i] <<= shift;
     }
+    build_len_tab(d);
 
     off += n * 2;
     let sym_count = usize::from(u16_le(bytes, off));

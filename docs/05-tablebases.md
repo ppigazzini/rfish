@@ -207,6 +207,35 @@ signature is unaffected. That property has its own check in the gate.
 
 ## What the prober COSTS, and the gate that can see it
 
+**The symbol length is ONE LOAD, not a walk, and that was 12% of the prober.** The decode loop
+found each symbol's length by walking up `base64` until the padded bitstream word stopped being
+smaller — 1,648,117,166 instructions on the probing workload, **15.9% of it and the largest
+single line in the reader**, and a data-dependent loop, so it cost the branch predictor as well
+as the pipeline.
+
+A code no longer than K bits owns a whole number of buckets of the stream's top K bits, because
+`base64` is right-padded to 64, so a byte per bucket answers exactly what the walk searched
+for. K is the table's own `max_sym_len`, capped at 12: uncapped it would want `1 << 63` entries,
+and sizing it to the TABLE rather than to the cap keeps a small alphabet's table small and its
+cache lines few.
+
+**Every entry is VERIFIED rather than derived**, and that is this port's departure from the
+branch it came from. The alignment argument above is sound for a table a real writer produced;
+these files come from a mirror. So each bucket is walked at BOTH ends and keeps its answer only
+when the two agree — a bucket that straddles a length boundary, on any table however malformed,
+stores `NO_FAST_LEN` and reaches the walk. The decode is exact by construction rather than by
+proof, and a corrupt header costs speed instead of correctness.
+
+| | avx2 | sse41 |
+|---|---:|---:|
+| probing workload | **−1,119,491,009 (−12.05%)** | **−996,752,167 (−10.03%)** |
+| bench workload | +69 (+0.0000%) | — |
+
+313,744 nodes on both sides of every run, and `tb` reads 264 of 264 probes matching upstream
+before and after. The bench figure is the control: that workload never enters this zone, which
+is the whole reason the axis had to exist before the change could be judged.
+
+
 **No bench position enters this zone.** Every one of them has more men than the shipped
 three-man corpus covers, so the decoder, the index arithmetic and the parser are absent from
 `signature`, from `perf-budget` and from every other cost figure in the tree — a zone proven
