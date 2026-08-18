@@ -175,6 +175,23 @@ which is the case where mate is the only zeroing move and DTZ IS distance to mat
 moves are then sorted stably by rank, so moves the tables cannot separate keep their
 generated order.
 
+**A drawn root move is drawn, whatever the table says.** Both root probes open by testing the
+position the move reaches — `root_probe` as `(rule50 && is_draw) || is_repetition`,
+`root_probe_wdl` as a bare `is_draw`. The WDL fallback was missing that test entirely, a
+porting omission rather than a decision, so a move that draws by repetition or by the halfmove
+clock was ranked and scored on what the table says about the material, for a game the rules
+have already ended.
+
+The restored test **ignores `Syzygy50MoveRule`**, which is upstream's shape and a defect there
+rather than a choice: with the option OFF — the setting whose whole meaning is that the clock
+does not end the game — every root move becomes a draw once the clock crosses 99, and the
+ranking then switches the in-search probe off under a won position. It is inherited
+deliberately, because this port is bit-exact to the pin; `../Stockfish refish` reports the same
+finding against upstream, and the overrun it caused there — the PV walk past its array — is
+already bounded here. No gate can see this: `tb` compares WDL and DTZ probe by probe and
+nothing drives the root RANKING against the oracle, so the closest instrument is a unit test,
+and the fallback is only reachable with WDL-only tables, which the shipped 3-man corpus is not.
+
 Ranking the root also switches the in-search probe **off** for the rest of the move. Every
 move that survives the ranking preserves the result, so re-deriving from a file an answer
 already held is pure cost. The one exception is the case the ranking cannot finish: WDL

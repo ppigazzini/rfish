@@ -171,12 +171,31 @@ almost nothing branches on it. Three things carry the variant instead:
   that must be empty are precomputed per position, so the generator does a data lookup where a
   naive port writes a special case.
 
-Only two places actually test the flag, and both are cases where the data cannot carry it:
-**castling legality**, because in 960 the rook's departure can unmask a rank attack on the
-king's destination and the standard-chess path check cannot see it, and **FEN output**, which
-must name the rook's file in Shredder form rather than `KQkq`. Move notation is a third, and
-it lives with the generators: standard chess names the king's destination, 960 names the
-rook's square.
+Only ONE place still tests the flag, and it is the case where the data cannot carry it: **FEN
+output**, which must name the rook's file in Shredder form rather than `KQkq`. Move notation is
+a second, and it lives with the generators: standard chess names the king's destination, 960
+names the rook's square.
+
+**Castling legality used to be a third, and that was a defect.** `legal` ran its rook test —
+the one that asks whether the rook's departure unmasks a rank attack on the king's destination
+— only when the flag was set, which is upstream's own `return !chess960 || ...`. The option is
+not evidence about the board: `set` does not require the castling field to agree with the
+pieces, and for a `K`/`Q` token it walks in from the corner and adopts the first rook it meets.
+So `4k3/8/8/8/8/8/8/qR2K3 w Q` records a 960 rook square under the standard dialect, and the
+short-circuit declared `e1c1` legal with the enemy queen on a1 screened by the castling rook
+alone — nine moves where there are eight, and a played move whose king can be captured. The
+test now runs on the geometry always. It changes nothing in standard geometry, where a corner
+rook lies on no line between its own king and any slider, and it costs +0.0008% at `avx2` and
++0.0006% at `sse41` on an unmoved node count.
+
+**One right has one rook, and the mask kept two.** `set_castling_right` stores one square in
+`castling_rook_square[cr]` while `castling_rights_mask` carries the bit on every square ever
+named for that right, so a field with two tokens on the same side — `w AB` — left the rook the
+second call discards holding a bit the position no longer uses. `do_move` clears rights by the
+square a piece LEAVES, so moving the discarded rook destroyed the right the surviving one owns:
+`AB` then `a1a2` lost the `B` right with the b1 rook still on b1. Only a malformed field
+reaches it, and `assert_state_consistent` cannot see it — the mask is not among the fields it
+re-derives from the board.
 
 `perft` covers the 960 castling positions as its own battery, because a data lookup that is
 subtly wrong generates a legal-looking move set.

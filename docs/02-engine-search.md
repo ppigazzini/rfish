@@ -45,6 +45,29 @@ The continuation planes start at **−40**, not zero: an untouched follow-up mus
 a move that has merely never worked. A plane of zeros would make "unknown" look as good as
 "neutral".
 
+**The per-ply continuation bonus WRAPS, and the wrap is upstream's.**
+`bonus * weight * multiplier / 131_072` is three `i32`s: `weight` reaches 1040 and
+`multiplier` 126, so any `|bonus|` above ~16,400 leaves the type, and the fail-low caller
+reaches it — `scaled_bonus * 263 / 16384` passes 30,000 once the histories saturate. Upstream
+computes all three in `int`, a release build wraps, and the intended bonus is applied at
+nearly full magnitude with the OPPOSITE sign. `SearchWorker::continuation_delta` spells the
+wrap with `wrapping_mul` rather than inheriting it from the profile, because a release build
+wrapped silently while the gate profile PANICKED on the same input — the split that profile
+exists to catch. It is spelled at that one site and not in `Bonus`'s `Mul`, so every other
+bonus formula keeps the gate profile's detection.
+
+The width is reproduced, not repaired: widening to `i64` removes the sign flip and diverges
+from the golden on every input that overflows. The bench never reaches the wrap, so no gated
+number depends on it — a search on a real clock does, which is why no gate could have found
+it. `../Stockfish refish` measured six exact repairs in C++ and every one cost ~0.08%, because
+signed overflow is UB there: the compiler derives `|quotient| < 16384`, proves the clamp in
+`operator<<` dead and deletes it, and any repair that widens the provable range brings it
+back. Rust grants no such licence, so `apply_gravity` clamps either way and the repair that
+costs them 0.08% costs this port nothing — `codegen-equiv` reports all 1030 symbols
+byte-identical. The one divergence left cannot be closed: upstream's deleted clamp lets a
+wrapped bonus reach its tables raw, where this port clamps it, and there is no defined
+behaviour to be exact to.
+
 The tables are large and per-worker, and are boxed so a `SearchWorker` stays movable and a
 thread does not need a megabyte-deep stack.
 
@@ -116,6 +139,26 @@ engine has overstepped sends one, and the manager budgets from it deliberately �
 it to zero would take the unmanaged path and search on. The horizon itself saturates as well,
 so no CALLER can panic the engine and not merely no UCI line; saturating is identical to `+`
 and `*` for every value in range, so no gated number moves.
+
+**`mtg` is the term that had to be widened rather than bounded.** The two horizon products
+convert it to `i64`, and the subtraction used to happen BEFORE the conversion — at `i32`,
+where both edges of the type are reachable from one `go` line. `movestogo` arrives unbounded
+and upstream accepts a negative one; and the sub-second taper above casts
+`scaled_time * 0.05` to `i32`, which a negative clock inside `MAX_CLOCK_MS` drives past
+`i32::MIN`, where Rust's float cast saturates and C++'s conversion is undefined. So the clock
+ALONE reaches it, with no `movestogo` given. Forming both terms at `i64` is free — the
+conversion happens either way — and exactly equal for every `i32`, which is why `movestogo` is
+NOT clamped at the parser the way the clock and the mate count are: there is no arithmetic
+left with no room for it, and a clamp would change what `go movestogo -5` searches, which
+upstream defines and plays at depth 1.
+
+**`mate` IS clamped at the parser**, at `Limits::MAX_MATE` = `i32::MAX / 2`, because there the
+arithmetic is the stop condition itself: `go mate N` stops when
+`VALUE_MATE - |score| <= 2 * N`, so the DOUBLE is what has to fit. Upstream's `2 * 2147483647`
+wraps to `-2`, the condition can then never hold, and the search runs on past a mate it
+already has. The clamp keeps the sign for `clamp_clock`'s reason — `2 * i32::MIN` leaves the
+type as surely — and folding a negative count to zero would be the larger change, since zero
+is how the field spells ABSENT. The comparison saturates behind it as well.
 
 ## `skill.rs` — playing below full strength
 
