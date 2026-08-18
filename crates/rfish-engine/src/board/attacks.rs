@@ -63,15 +63,30 @@ const ROOK_DIRS: [Direction; 4] =
 const BISHOP_DIRS: [Direction; 4] =
     [Direction::NorthEast, Direction::SouthEast, Direction::SouthWest, Direction::NorthWest];
 
-/// Walk `dirs` out from `sq`, stopping on (and including) the first occupied square.
+/// The four ray directions of one slider, as a value the CALLER's instantiation decides.
+///
+/// A `const` parameter rather than an argument, because the array is a literal at every call
+/// site and the table build reads it inside its innermost loop. Taken as an argument, one
+/// non-generic `build_magics` served both sliders, so every ray step loaded a direction out
+/// of a runtime array that could have been a constant — the shape `../Stockfish refish`'s
+/// `SPEEDUP.md` calls P7, whose tell is that the callee survives in the profile as ONE
+/// symbol however literal the call sites look. `Direction` cannot be a const parameter
+/// itself without `adt_const_params`, so the slider is spelled as the `bool` that selects it.
+#[must_use]
+#[inline(always)]
+const fn dirs_of<const ROOK: bool>() -> [Direction; 4] {
+    if ROOK { ROOK_DIRS } else { BISHOP_DIRS }
+}
+
+/// Walk the slider's rays out from `sq`, stopping on (and including) the first occupied square.
 ///
 /// This is the definition the magic tables encode. It is also the fallback the tests
 /// check every magic lookup against: a magic table is a fast index into these answers, so
 /// a disagreement means the index is wrong, never that the geometry is.
 #[must_use]
-fn sliding_attacks(dirs: [Direction; 4], sq: Square, occupied: Bitboard) -> Bitboard {
+fn sliding_attacks<const ROOK: bool>(sq: Square, occupied: Bitboard) -> Bitboard {
     let mut attacks = Bitboard::EMPTY;
-    for d in dirs {
+    for d in dirs_of::<ROOK>() {
         let mut s = sq;
         while let Some(next) = s.try_shift(d) {
             // `try_shift` rejects a step that leaves the board; a step that stays in range
@@ -94,11 +109,11 @@ fn sliding_attacks(dirs: [Direction; 4], sq: Square, occupied: Bitboard) -> Bitb
 /// A blocker on the far edge blocks nothing beyond itself, so its bit carries no
 /// information and excluding it halves the table.
 #[must_use]
-fn relevant_mask(dirs: [Direction; 4], sq: Square) -> Bitboard {
+fn relevant_mask<const ROOK: bool>(sq: Square) -> Bitboard {
     let edges = ((super::bitboard::RANK_1 | super::bitboard::RANK_8)
         & !super::bitboard::rank_bb(sq))
         | ((super::bitboard::FILE_A | super::bitboard::FILE_H) & !super::bitboard::file_bb(sq));
-    sliding_attacks(dirs, sq, Bitboard::EMPTY) & !edges
+    sliding_attacks::<ROOK>(sq, Bitboard::EMPTY) & !edges
 }
 
 /// A xorshift64* generator, so table construction is deterministic.
@@ -180,8 +195,7 @@ impl core::fmt::Display for MagicError {
 }
 
 /// Build one slider's magics and fill its block of the shared attack table.
-fn build_magics(
-    dirs: [Direction; 4],
+fn build_magics<const ROOK: bool>(
     table: &mut [Bitboard],
 ) -> Result<[Magic; SQUARE_NB], MagicError> {
     let mut magics = [Magic::default(); SQUARE_NB];
@@ -192,7 +206,7 @@ fn build_magics(
     let mut attempt = 0u32;
 
     for sq in Square::all() {
-        let mask = relevant_mask(dirs, sq).bits();
+        let mask = relevant_mask::<ROOK>(sq).bits();
         let bits = mask.count_ones();
         let size = 1usize << bits;
 
@@ -201,7 +215,7 @@ fn build_magics(
         debug_assert_eq!(occupancies.len(), size);
         let references: Vec<Bitboard> = occupancies
             .iter()
-            .map(|&o| sliding_attacks(dirs, sq, Bitboard::from_bits(o)))
+            .map(|&o| sliding_attacks::<ROOK>(sq, Bitboard::from_bits(o)))
             .collect();
 
         let mut rng = Prng::new(MAGIC_SEEDS[sq.rank().index()]);
@@ -268,9 +282,9 @@ impl SliderTables {
         let mut rook_attacks = vec![Bitboard::EMPTY; ROOK_TABLE_SIZE];
         let mut bishop_attacks = vec![Bitboard::EMPTY; BISHOP_TABLE_SIZE];
         let rook_magics =
-            build_magics(ROOK_DIRS, &mut rook_attacks).expect("rook table size is 0x19000");
+            build_magics::<true>(&mut rook_attacks).expect("rook table size is 0x19000");
         let bishop_magics =
-            build_magics(BISHOP_DIRS, &mut bishop_attacks).expect("bishop table size is 0x1480");
+            build_magics::<false>(&mut bishop_attacks).expect("bishop table size is 0x1480");
 
         // `try_into` on a boxed slice of the right length is the safe equivalent of the
         // C++ `new Bitboard[N]` plus a pointer cast; it cannot silently accept a short
@@ -465,21 +479,25 @@ impl RayTables {
 
         for s1 in Square::all() {
             for s2 in Square::all() {
-                for dirs in [ROOK_DIRS, BISHOP_DIRS] {
-                    if sliding_attacks(dirs, s1, Bitboard::EMPTY).contains(s2) {
-                        line[s1.index()][s2.index()] = (sliding_attacks(dirs, s1, Bitboard::EMPTY)
-                            & sliding_attacks(dirs, s2, Bitboard::EMPTY))
-                            | s1
-                            | s2;
-                        between[s1.index()][s2.index()] =
-                            sliding_attacks(dirs, s1, Bitboard::from_square(s2))
-                                & sliding_attacks(dirs, s2, Bitboard::from_square(s1));
+                for rook in [true, false] {
+                    let rays = |s: Square, occ: Bitboard| {
+                        if rook {
+                            sliding_attacks::<true>(s, occ)
+                        } else {
+                            sliding_attacks::<false>(s, occ)
+                        }
+                    };
+                    let empty = Bitboard::EMPTY;
+                    if rays(s1, empty).contains(s2) {
+                        line[s1.index()][s2.index()] =
+                            (rays(s1, empty) & rays(s2, empty)) | s1 | s2;
+                        between[s1.index()][s2.index()] = rays(s1, Bitboard::from_square(s2))
+                            & rays(s2, Bitboard::from_square(s1));
                         // Upstream `attacks_bb(pt, s1, 0) & (attacks_bb(pt, s2, s1) | s2)`:
                         // everything s1 sees on an empty board, intersected with what s2
                         // sees once s1 blocks it -- which is the far side of s2, plus s2.
                         ray_pass[s1.index()][s2.index()] =
-                            sliding_attacks(dirs, s1, Bitboard::EMPTY)
-                                & (sliding_attacks(dirs, s2, Bitboard::from_square(s1)) | s2);
+                            rays(s1, empty) & (rays(s2, Bitboard::from_square(s1)) | s2);
                     }
                 }
                 // Upstream includes s2 unconditionally, so a knight check -- which shares
@@ -558,13 +576,20 @@ mod tests {
     #[test]
     fn magic_lookups_agree_with_the_ray_walk() {
         for sq in Square::all() {
-            for (dirs, lookup) in [
-                (ROOK_DIRS, rook_attacks as fn(Square, Bitboard) -> Bitboard),
-                (BISHOP_DIRS, bishop_attacks as fn(Square, Bitboard) -> Bitboard),
+            for (rook, lookup) in [
+                (true, rook_attacks as fn(Square, Bitboard) -> Bitboard),
+                (false, bishop_attacks as fn(Square, Bitboard) -> Bitboard),
             ] {
-                let mask = relevant_mask(dirs, sq).bits();
+                let mask =
+                    if rook { relevant_mask::<true>(sq) } else { relevant_mask::<false>(sq) }
+                        .bits();
                 for occ in subsets(mask) {
-                    let expected = sliding_attacks(dirs, sq, Bitboard::from_bits(occ));
+                    let occupied = Bitboard::from_bits(occ);
+                    let expected = if rook {
+                        sliding_attacks::<true>(sq, occupied)
+                    } else {
+                        sliding_attacks::<false>(sq, occupied)
+                    };
                     assert_eq!(
                         lookup(sq, Bitboard::from_bits(occ)),
                         expected,
@@ -580,7 +605,7 @@ mod tests {
     #[test]
     fn irrelevant_occupancy_is_ignored() {
         for sq in Square::all() {
-            let mask = relevant_mask(ROOK_DIRS, sq);
+            let mask = relevant_mask::<true>(sq);
             let noise = !mask & !Bitboard::from_square(sq);
             assert_eq!(rook_attacks(sq, Bitboard::EMPTY), rook_attacks(sq, noise & !mask));
         }
