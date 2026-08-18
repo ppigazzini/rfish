@@ -205,6 +205,23 @@ already established.
 With no path set the registry is empty, no probe fires, no ranking happens, and the bench
 signature is unaffected. That property has its own check in the gate.
 
+## What the prober COSTS, and the gate that can see it
+
+**No bench position enters this zone.** Every one of them has more men than the shipped
+three-man corpus covers, so the decoder, the index arithmetic and the parser are absent from
+`signature`, from `perf-budget` and from every other cost figure in the tree — a zone proven
+for its answers by `tb` and unmeasured for its cost.
+
+`cargo xtask perf-budget --syzygy` and `cargo xtask budget-ab --syzygy` bench
+`tools/cases/tb.fens` with `SyzygyPath` set instead: 313,744 nodes, 14,080 tbhits, and 29,600
+instructions per node against the bench workload's 8,750, because on this corpus the prober is
+the workload rather than a term in it. A run that loaded no tables is refused rather than
+reported. See [10-tooling-ci.md](10-tooling-ci.md).
+
+This is what the 2026-08-15 sweep's "real, and unmeasurable here" verdict on refish's
+length-walk commits was missing: the instrument, not the finding. Re-opening that question now
+needs a measurement rather than an argument.
+
 ## The parse is untrusted input, and is fuzzed as such
 
 A table file is a **binary blob from a mirror**, and every offset the decoder walks is
