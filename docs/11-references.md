@@ -107,6 +107,33 @@ found, then grep the class.
 | its `malformed.sh` fixture set, as a deterministic test here | **built, and DROPPED.** It passed and could not be made to fail: five mutations, including removing a bounded read outright, all stayed green, because rfish refuses those files structurally a layer or two before the bounds they target. A test with no detection power is the defect the meta-gates exist to refuse. `../zfish` derived its fixture offsets from its own loader instead, which is the part worth retrying |
 | `d4324d9e` + `f1318daa` codegen equivalence, `9c26b4d6` a budget with no stored golden | **taken**, as `codegen-equiv` and `budget-ab` — see [10-tooling-ci.md](10-tooling-ci.md) |
 
+**A register swept once is not a register swept.** The 2026-08-15 sweep read `refish`'s
+twenty-defect register — its FIRST campaign. A second campaign of fourteen was landed in the
+twelve commits after it, and eighty commits arrived in the three days that followed, so the
+2026-08-18 sweep found six live defects in a tree the previous one had reported clean. Five of
+the six are in the second campaign; the sixth is not in any register, because it is a
+divergence from the GOLDEN that only appeared when upstream's own text was read beside the
+sibling's fix. **Read the sibling's fix, then read what it is a fix TO** — the omission was in
+the four lines above the line refish changed.
+
+| probed, campaign 2 (entries 21–34) | verdict |
+|---|---|
+| `69c52a88` / entry 21, castling legality gated on the `UCI_Chess960` option | **taken.** Live here in the same shape, and `go perft 1` on `4k3/8/8/8/8/8/8/qR2K3 w Q` generated `e1c1` — nine moves where there are eight. See [01-engine-board.md](01-engine-board.md) |
+| `64e65bee` / entry 32, a duplicate castling right leaving a stale mask | **taken.** Live here; `w AB` then `a1a2` destroyed the right the b1 rook owns |
+| `6a9dd5c7` / entry 31, `movestogo` and `mate` reaching arithmetic with no room | **taken, and SPLIT.** `mate` is bounded at the parser because the stop condition doubles it; `movestogo` is not, because widening the horizon's subtraction to `i64` is free, exact and keeps upstream's behaviour. Their fix bounds the count and leaves the CAST that produces the same `mtg` from a negative clock — an arm live on both trees, and found here rather than read |
+| entry 27, the continuation-history bonus overflowing `int` | **taken, and it is the case where the port pays LESS than the branch.** Six exact repairs each cost them ~0.08%, because the UB is load-bearing for the codegen — see [02-engine-search.md](02-engine-search.md). Rust grants no such licence, so spelling the wrap is byte-identical codegen |
+| `07b8535a` / entry 24, `root_probe_wdl` ignoring `Syzygy50MoveRule` | **NOT taken, and it found something larger.** Upstream's own line — `if (pos.is_draw(1))` — was MISSING here altogether, so the fidelity gap was the whole test rather than the flag on it. Restored in upstream's exact form; their correction of the flag is an improvement on the golden and is inherited as a defect instead |
+| `9b163d49` / entry 23, a failed net load half-overwriting the live network | **no analogue.** `Network::load` returns a whole `Network` or an error, so there is no live object to read into and nothing to half-overwrite |
+| `96697e8a` / entry 29, a mis-sized table ending the process | **no analogue.** Nothing here maps a table or exits on one: `TbTable::new` returns an `Option` and every read is bounds-checked, so a truncated file is refused structurally |
+| `9aa8e560` / entry 34, DTZ files counted before the WDL gate | **already correct by construction.** `add` returns before it looks at the `.rtbz` when the `.rtbw` does not open, so the DTZ count is behind the gate already |
+| `6ba0a756` / entry 33, a numa policy that does not parse whole | **divergent, and neither theirs nor upstream's.** `str_to_size_t` accepts `0,1 2,3` as `{0,1,3}`; this port's `parse::<usize>()` refuses the piece and yields `{0,3}`; refish refuses the string. Left alone: it is a third answer on an input no operator sends, and changing it is a behaviour choice rather than a defect fix |
+| `060b4146` / entry 26, an unbounded cpu index, and `6d08acbf` / entry 28, an unbindable policy | **no analogue**, as the 2026-08-15 sweep found for the same class: there is no `CPU_ALLOC` here, the total is bounded, and there is no pinning to fail |
+| `46944a92` / entry 30, `std::exit` under a live tablebase probe | **no analogue.** Nothing unmaps a table, and the one `exit` on the shell's failure path is not reachable with workers inside a probe |
+| entry 22, a crafted LEB128 header hanging the loader | **already closed** at `c996043`, by the 2026-08-15 sweep's own second look |
+| `d657cfae`, gating the startup the budget only printed | **taken** — see [10-tooling-ci.md](10-tooling-ci.md). It closes a hole AGENTS.md carried as a trap row telling the reader to measure it by hand |
+| `9b6ebbab` a liveness gate, `ccdd41c1` thread scaling, `e5476414` shellcheck, `662c6675`/`3bb90d38` CI pins and citations, `5c00ff7d`/`6b36496a` include and friend direction | **not taken.** The first two are wall-clock instruments this repository already refuses to put in `parity`; the rest are C++-tree properties — an include graph, a `friend`, a bash suite — that `cargo` and `clippy` make unrepresentable here, and `sync-status` already answers the citation question for the one SHA that matters |
+| its `perf(...)` series on the accumulator and the tablebase decoder — `81254ddb`, `acef91aa`, `9769f5a2`, `a25d8fb4`, `1c384d46` | **not applicable.** Every one is a gcc pragma, a `restrict` scope or a pointer pinned for a compiler this port does not use. The two that are language-neutral — one load per pairing-tree step, resuming the length walk — are the same site the 2026-08-15 sweep measured at **0.11%** of a probing bench and below every instrument here |
+
 ## Rust
 
 - **The Rust Reference** — <https://doc.rust-lang.org/reference/>. Particularly the
