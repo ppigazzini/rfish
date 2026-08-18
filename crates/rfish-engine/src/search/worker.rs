@@ -1259,7 +1259,10 @@ impl SearchWorker {
             if let Some(mate) = self.limits.mate
                 && !self.shared.stopped()
                 && is_mate_or_mated(self.root_moves[0].score)
-                && VALUE_MATE - self.root_moves[0].score.abs() <= 2 * mate
+                // SATURATING, and the shell clamps the count at its own boundary as
+                // well -- `Limits::MAX_MATE`. Identical for every value inside that bound,
+                // so the two together mean no `go mate N` can panic the engine.
+                && VALUE_MATE - self.root_moves[0].score.abs() <= mate.saturating_mul(2)
             {
                 self.shared.request_stop();
             }
