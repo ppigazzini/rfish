@@ -671,6 +671,24 @@ impl SearchWorker {
 
     // -- move-ordering history ---------------------------------------------
 
+    /// The per-ply continuation bonus, at the width upstream computes it at.
+    ///
+    /// **The product WRAPS, and the wrap is upstream's.** `weight` reaches 1040 and `multiplier`
+    /// 126, so any `|bonus|` above ~16,400 puts `bonus * weight * multiplier` past `i32`, and the
+    /// fail-low caller reaches it: `scaled_bonus * 263 / 16384` passes 30,000 once the histories
+    /// saturate. Upstream computes all three in `int`, a release build wraps, and the intended
+    /// bonus is applied at nearly full magnitude with the OPPOSITE sign. Spelled here rather than
+    /// inherited from the profile, because the gate profile's overflow checks turn the same input
+    /// into a panic while release wraps silently — the exact split the profile exists to catch.
+    ///
+    /// The bench never reaches it, so no gated number depends on the wrap; a search on a real
+    /// clock does. Widening to `i64` would remove the sign flip and diverge from the golden on
+    /// every input that overflows, which is why the width is reproduced rather than repaired.
+    #[inline(always)]
+    fn continuation_delta(bonus: Bonus, weight: i32, multiplier: i32) -> Bonus {
+        Bonus::new(bonus.get().wrapping_mul(weight).wrapping_mul(multiplier) / 131_072)
+    }
+
     /// Reward or punish the follow-ups to the moves played one to six plies back.
     ///
     /// The multiplier grows with how many of those planes already rate this follow-up
@@ -701,8 +719,8 @@ impl SearchWorker {
                             positive_count += 1;
                         }
                         let multiplier = CMHC_MULTIPLIERS[positive_count];
-                        let delta =
-                            (bonus * $weight * multiplier / 131_072) + 73 * i32::from($i < 2);
+                        let delta = Self::continuation_delta(bonus, $weight, multiplier)
+                            + 73 * i32::from($i < 2);
                         histories.continuation.update(plane, pc, to, delta);
                     }
                 }
@@ -3350,6 +3368,35 @@ pub fn searching_side(pos: &Position) -> Color {
 
 #[cfg(test)]
 mod tests {
+
+    /// The continuation bonus wraps rather than trapping, at the width upstream uses.
+    ///
+    /// A pure function, deliberately: the input that reaches this is a real clock on a long
+    /// search, and driving the binary to it costs two minutes and proves nothing this does
+    /// not. Red before the wrap was spelled — the gate profile panicked on the multiply.
+    #[test]
+    fn the_continuation_bonus_wraps_the_way_upstream_does() {
+        // The largest bonus the fail-low caller can hand over: `scaled_bonus * 263 / 16384`
+        // once the histories have saturated.
+        let bonus = Bonus::new(31_978);
+        let (weight, multiplier) = (1040, 126);
+
+        let got = SearchWorker::continuation_delta(bonus, weight, multiplier).get();
+        let want = (i64::from(bonus.get()) * i64::from(weight) * i64::from(multiplier)) as i32;
+        assert_eq!(got, want / 131_072, "the i32 product, then the divide");
+
+        // The sign flip is the defect this reproduces rather than repairs: the intended
+        // bonus is positive and what the tables receive is not.
+        assert!(got < 0, "wrapped to {got}");
+
+        // Every value the bench reaches is below the wrap, which is why no gated number
+        // moves: the widened product and the wrapped one agree there.
+        for b in [-2210, -1563, 1334, 16_000] {
+            let narrow = SearchWorker::continuation_delta(Bonus::new(b), weight, multiplier).get();
+            let wide = (i64::from(b) * i64::from(weight) * i64::from(multiplier) / 131_072) as i32;
+            assert_eq!(narrow, wide, "bonus {b} fits and must not differ");
+        }
+    }
     use std::time::Instant;
 
     use super::*;
