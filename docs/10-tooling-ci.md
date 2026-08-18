@@ -506,6 +506,7 @@ the prober's ANSWERS against upstream and says nothing about what they cost.
 ```sh
 cargo xtask perf-budget --tier avx2 --syzygy          # against a recorded row
 cargo xtask budget-ab   --tier avx2 --syzygy          # against a git ref
+cargo xtask counters    --tier avx2 --syzygy          # cache and branches, against upstream
 ```
 
 The workload is `DIFF_BENCH`'s own hash, threads and depth over a different corpus — `bench 16
@@ -515,11 +516,21 @@ is which code the positions reach. It is **313,744 nodes and 14,080 tbhits**, an
 8,750, because on this corpus the prober IS the workload. Depth 12 buys a third more probing
 for four times the callgrind time, which is a gate nobody runs.
 
-Two properties it needs to be worth having:
+The corpus is stripped of its `#` header into `target/probe/` first, and both binaries are
+pointed at that: this port's `bench` skips comment lines and **upstream's does not** — it
+answers `CRITICAL ERROR: Invalid FEN. Invalid piece: #`. A differential axis whose workload
+only one side can run is not a differential axis.
+
+Three properties it needs to be worth having:
 
 - **A probing run that loaded no tables is REFUSED**, not reported. It reads as a plausible
   short bench and the prober never runs — the same failure as measuring an engine that fell
   back to the classical evaluation, and it is refused on the same terms.
+- **A run that did not read the CORPUS is refused too**, and that check exists because the
+  first version of this axis needed it: a wrong path left `bench` falling back to its built-in
+  list, with the tables still loaded, and produced a complete and entirely wrong measurement
+  that the tables check could not see. The gate now counts the positions searched against the
+  corpus's own line count.
 - **The row is keyed `<tier>+syzygy`.** A probing row and a bench row describe one binary
   answering two different questions, and a row that answered one must never be read as an
   answer to the other.
@@ -534,7 +545,35 @@ decoder — behaviour-neutral, and the bench never calls it:
 | `perf-budget --tier avx2 --syzygy` | **+0.9048%, FAIL, exit 1** |
 
 Two gates green and one red on the same tree is the whole argument for the axis. Taken from
-`../Stockfish refish`, which files the same gap as `T5` and closed it the same way.
+`../Stockfish refish`, which files the same gap as `T5` and closed it on both halves — the
+instruction axis and the counter axis — which is why `counters` takes the flag as well.
+
+**The first probing counters run, against upstream at the pin**, both PGO, 313,744 nodes on
+both sides:
+
+| | ratio |
+|---|---:|
+| instructions | 1.206 |
+| data reads | 1.467 |
+| data writes | 0.719 |
+| D1 read misses | 1.071 |
+| L1 icache misses | 1.641 |
+| conditional branches | 1.115 |
+| **conditional mispredicts** | **0.399** |
+| indirect mispredicts | 0.672 |
+
+rfish retires a fifth more instructions in this zone and mispredicts **sixty per cent fewer
+branches**, which is the length table above showing up on the axis it was expected to: upstream
+still walks. This is the first cache-and-branch reading this port has of the tablebase zone,
+and it is the axis `refish`'s own performance page calls its open question.
+
+**It also found a hole in this gate.** `verify_oracle` proved the upstream half was built at
+the pin and nothing proved rfish's own half was built from the tree in front of you — a PGO
+build is expensive, so it is naturally kept and reused. A stale one searched 316,793 nodes on
+the probing corpus where the current tree and upstream both search 313,744, and the differential
+caught it only because that workload made the divergence visible; on the bench workload it
+would have matched and every ratio would have described code nobody was looking at. `counters`
+now refuses a PGO build older than the newest source file.
 
 ### `budget-ab` — the same budget, with no stored golden
 

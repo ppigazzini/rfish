@@ -145,17 +145,36 @@ const PROBE_DEPTH: &str = "8";
 /// file: `bench` takes the fen source as an argument, but the path to the tables is not one.
 /// `../Stockfish refish` reaches the same axis as `perfbudget.sh --syzygy DIR` and files the
 /// gap it closed as `T5`.
-fn probe_script(root: &Path) -> Vec<String> {
-    vec![
+fn probe_script(root: &Path) -> Result<Vec<String>, String> {
+    let fens = probe_fens(root)?;
+    Ok(vec![
         format!("setoption name SyzygyPath value {}/resources/syzygy", root.display()),
-        format!(
-            "bench {} {} {PROBE_DEPTH} {}/tools/cases/tb.fens depth",
-            DIFF_BENCH[0],
-            DIFF_BENCH[1],
-            root.display()
-        ),
+        format!("bench {} {} {PROBE_DEPTH} {} depth", DIFF_BENCH[0], DIFF_BENCH[1], fens.display()),
         "quit".to_string(),
-    ]
+    ])
+}
+
+/// The probing corpus, with its header stripped, written where BOTH binaries can read it.
+///
+/// `tools/cases/tb.fens` opens with `#` comment lines, because the gates that read it are
+/// rfish's own and this port's bench skips them. **Upstream's does not**: its fen reader takes
+/// every line as a position and answers `CRITICAL ERROR: Invalid FEN. Invalid piece: #`. A
+/// differential axis whose workload only one side can run is not a differential axis, so the
+/// file is stripped into `target/` once per run and both sides are pointed at that.
+///
+/// The positions are unchanged, which the node count is what proves: this port read the same
+/// list before, having skipped the header itself.
+fn probe_fens(root: &Path) -> Result<PathBuf, String> {
+    let src = root.join("tools/cases/tb.fens");
+    let text = std::fs::read_to_string(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+    let kept: Vec<&str> =
+        text.lines().filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty()).collect();
+    let stripped = kept.join("\n") + "\n";
+    let dir = root.join("target/probe");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dest = dir.join("tb.fens");
+    std::fs::write(&dest, stripped).map_err(|e| format!("{}: {e}", dest.display()))?;
+    Ok(dest)
 }
 
 /// Hash, threads and depth for the TIMED differential, which needs a longer run.
@@ -474,6 +493,43 @@ fn stamp_oracle(dir: &Path, base: &str) -> Result<(), String> {
 /// callgrind does, so at `--tier native`, or on a box without valgrind, the wall-clock A/B ran
 /// against the wrong binary and reported a ratio with no warning at all. `../zfish` stamps its
 /// oracle by SHA for the same reason (`b96f9f24`).
+/// Refuse a measured binary older than the source it is supposed to be a build of.
+///
+/// **The oracle's identity was checked and this side's was not.** `verify_oracle` proves the
+/// upstream half was built at the pin; nothing proved the PGO half was built from the tree in
+/// front of you, and a PGO build is expensive enough that it is naturally kept and reused. A
+/// stale one produced 316,793 nodes on the probing corpus where the current tree and upstream
+/// both produce 313,744 — the differential caught it only because that workload made the
+/// divergence visible. On the bench workload the same stale binary matches, and every ratio
+/// would have been reported against code nobody was looking at.
+fn verify_fresh(bin: &Path, what: &str, rebuild: &str) -> Result<(), String> {
+    let built = std::fs::metadata(bin)
+        .and_then(|m| m.modified())
+        .map_err(|e| format!("{}: {e}", bin.display()))?;
+    let mut newest = None;
+    for zone in ["crates", "resources"] {
+        let mut files = Vec::new();
+        crate::gates::collect_rust(&workspace_root().join(zone), &mut files);
+        for f in files {
+            if let Ok(t) = std::fs::metadata(&f).and_then(|m| m.modified())
+                && newest.is_none_or(|n| t > n)
+            {
+                newest = Some(t);
+            }
+        }
+    }
+    if let Some(newest) = newest
+        && newest > built
+    {
+        return Err(format!(
+            "the {what} at {} is older than the sources it is meant to be a build of, so every \
+             ratio would describe code that is no longer here; {rebuild}",
+            bin.display()
+        ));
+    }
+    Ok(())
+}
+
 fn verify_oracle(dir: &Path, tier: &Tier) -> Result<(), String> {
     let want = upstream_base()?;
     let path = oracle_stamp_path(dir);
@@ -1144,7 +1200,7 @@ fn budget_round(
     let text = if probing {
         // The tables are an OPTION and the corpus is a file, so this workload arrives on
         // stdin where the default one is argv.
-        capture_piped(&mut cmd, &probe_script(&workspace_root()))?
+        capture_piped(&mut cmd, &probe_script(&workspace_root())?)?
     } else {
         cmd.arg("bench").args(DIFF_BENCH);
         capture_both(&mut cmd)?
@@ -1169,6 +1225,24 @@ fn budget_round(
                  prober never ran, and the count would be a bench that happens to be short. \
                  Run `cargo xtask tb-fetch`",
                 workspace_root().display()
+            ));
+        }
+        // And that the CORPUS was read, not merely that the tables were found. `bench` falls
+        // back to its built-in list when the fen source does not resolve, so a mistyped path
+        // produces a complete, plausible, entirely wrong measurement with the tables still
+        // loaded — which is exactly what a wrong path did produce here, and the tables check
+        // above was blind to it because they had loaded.
+        let searched = text.lines().filter(|l| l.starts_with("bestmove")).count();
+        let expected = probe_fens(&workspace_root())?;
+        let want = std::fs::read_to_string(&expected)
+            .map_err(|e| format!("{}: {e}", expected.display()))?
+            .lines()
+            .count();
+        if searched != want {
+            return Err(format!(
+                "the probing workload searched {searched} positions and the corpus holds \
+                 {want}: `bench` fell back to its built-in list, so this count is a different \
+                 workload wearing the right name"
             ));
         }
     }
@@ -1821,6 +1895,8 @@ const COUNTER_ROWS: [(&str, &str); 9] = [
 pub(crate) fn counters(args: &[&str]) -> Result<Outcome, String> {
     let tier = tier_of(args)?;
     let spine = has_flag(args, "--spine");
+    // The workload the bench list cannot reach. See `probe_script`.
+    let probing = has_flag(args, "--syzygy");
 
     if !tier.callgrind_safe {
         return Ok(Outcome::Skipped(format!(
@@ -1848,19 +1924,34 @@ pub(crate) fn counters(args: &[&str]) -> Result<Outcome, String> {
     }
     let their_dir = theirs.parent().map(Path::to_path_buf).unwrap_or_default();
     verify_oracle(&oracle_dir(tier, spine), tier)?;
+    verify_fresh(
+        &ours,
+        "PGO build",
+        &format!(
+            "rebuild it with `cargo xtask pgo --tier {}{}`",
+            tier.name,
+            if spine { " --spine" } else { "" }
+        ),
+    )?;
     if !spine {
         same_net(&ours, &resources_dir(), &theirs, &their_dir)?;
     }
 
     println!("tier {} ({} vs ARCH={})", tier.name, tier.rustc, tier.upstream);
+    // The workload is NAMED, because the probing axis and the bench axis produce tables of
+    // the same shape and a reader cannot tell them apart from the numbers.
     println!(
-        "\ncounters (cachegrind events, bench {}, startup subtracted, {} axis)",
-        DIFF_BENCH.join(" "),
+        "\ncounters (cachegrind events, {}, startup subtracted, {} axis)",
+        if probing {
+            format!("probing, depth {PROBE_DEPTH} over tools/cases/tb.fens")
+        } else {
+            format!("bench {}", DIFF_BENCH.join(" "))
+        },
         if spine { "SPINE" } else { "NNUE" }
     );
 
-    let (our_ev, our_nodes) = counter_events(&ours, &resources_dir())?;
-    let (their_ev, their_nodes) = counter_events(&theirs, &their_dir)?;
+    let (our_ev, our_nodes) = counter_events(&ours, &resources_dir(), probing)?;
+    let (their_ev, their_nodes) = counter_events(&theirs, &their_dir, probing)?;
     if our_nodes != their_nodes {
         return Err(format!(
             "node counts differ (rfish {our_nodes}, upstream {their_nodes}); different trees are \
@@ -1887,19 +1978,28 @@ pub(crate) fn counters(args: &[&str]) -> Result<Outcome, String> {
 }
 
 /// Every simulated event for one binary, startup subtracted, with the bench's node count.
-fn counter_events(bin: &Path, cwd: &Path) -> Result<(HashMap<String, u64>, u64), String> {
+fn counter_events(
+    bin: &Path,
+    cwd: &Path,
+    probing: bool,
+) -> Result<(HashMap<String, u64>, u64), String> {
     let out = std::env::temp_dir().join(format!("rfish-cgd-{}.out", scratch_key(bin)));
     let mut cmd = Command::new("valgrind");
     cmd.current_dir(cwd)
         .args(["--tool=callgrind", "--cache-sim=yes", "--branch-sim=yes"])
         .arg(format!("--callgrind-out-file={}", out.display()))
-        .arg(bin)
-        .arg("bench")
-        .args(DIFF_BENCH);
-    let bench_out = capture_both(&mut cmd)?;
+        .arg(bin);
+    // Both sides read the SAME corpus and the SAME tables: the paths in `probe_script` are
+    // absolute, and the oracle runs from its own directory because its net lives beside it.
+    let bench_out = if probing {
+        capture_piped(&mut cmd, &probe_script(&workspace_root())?)?
+    } else {
+        cmd.arg("bench").args(DIFF_BENCH);
+        capture_both(&mut cmd)?
+    };
     let nodes = node_total(&bench_out)?;
     let bench = callgrind_events(&out)?;
-    let start = counter_startup(bin, cwd)?;
+    let start = counter_startup(bin, cwd, probing)?;
 
     let mut net = HashMap::new();
     for (k, v) in bench {
@@ -1910,7 +2010,7 @@ fn counter_events(bin: &Path, cwd: &Path) -> Result<(HashMap<String, u64>, u64),
 }
 
 /// The same events over a `quit`-only run: the net parse, the magic tables, the zero-fill.
-fn counter_startup(bin: &Path, cwd: &Path) -> Result<HashMap<String, u64>, String> {
+fn counter_startup(bin: &Path, cwd: &Path, probing: bool) -> Result<HashMap<String, u64>, String> {
     let out = std::env::temp_dir().join(format!("rfish-cgd-quit-{}.out", scratch_key(bin)));
     let mut child = Command::new("valgrind")
         .current_dir(cwd)
@@ -1925,6 +2025,16 @@ fn counter_startup(bin: &Path, cwd: &Path) -> Result<HashMap<String, u64>, Strin
     {
         use std::io::Write;
         let stdin = child.stdin.as_mut().ok_or("valgrind child has no stdin")?;
+        // The probing axis subtracts table DISCOVERY as well as the net load, exactly as the
+        // instruction axis does, so what remains is the probing search.
+        if probing {
+            writeln!(
+                stdin,
+                "setoption name SyzygyPath value {}/resources/syzygy",
+                workspace_root().display()
+            )
+            .map_err(|e| format!("writing the syzygy path: {e}"))?;
+        }
         writeln!(stdin, "quit").map_err(|e| format!("writing quit: {e}"))?;
     }
     let status = child.wait().map_err(|e| format!("waiting for valgrind: {e}"))?;
