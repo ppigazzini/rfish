@@ -98,6 +98,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "sync-status" => meta::sync_status(),
         "async-check" => meta::async_check(),
         "repro-search" => meta::repro_search(),
+        "zone-check" => meta::zone_check(),
         "parity" => gates::parity(),
         other => Err(format!("unknown step '{other}'; run `cargo xtask help`")),
     }
@@ -155,6 +156,8 @@ cargo xtask <step> — the rfish build driver
     net-roundtrip         the net survives `export_net` byte for byte, so the format
                           reader and writer agree -- an ORDER stated twice, welded
     tb                    Syzygy discovery, and that an empty path changes nothing
+    zone-check            no engine module names a zone at or above its own, except
+                          where a baseline says why -- the direction `cargo` cannot check
     repro-search          node counts repeat across `ucinewgame`, at twenty budgets --
                           the question about what a COMPLETED search leaves for the next
     async-check           stop, ponderhit and quit on a RUNNING search. INVARIANTS, not

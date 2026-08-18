@@ -1580,7 +1580,7 @@ pub(crate) fn unsafe_lint() -> Result<Outcome, String> {
     Ok(Outcome::check(problems.is_empty(), format!("{} unsafe findings", problems.len())))
 }
 
-fn collect_rust(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+pub(crate) fn collect_rust(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -1613,6 +1613,8 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         // The gate on the gates. Structural, needs no engine and no oracle, so it sits with
         // the other cheap checks at the front where a mistake is reported in seconds.
         ("lane-coverage", crate::meta::lane_coverage),
+        // Structural, needs no engine: the intra-crate direction `cargo` cannot check.
+        ("zone-check", crate::meta::zone_check),
         ("fixture-coverage", crate::meta::fixture_coverage),
         // The only instrument that reaches the interrupted-search path; cheap, so it runs
         // with the rest rather than waiting for someone to remember it.

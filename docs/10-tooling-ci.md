@@ -365,6 +365,39 @@ without it. The flag expires by itself: a runner that gains AVX-512 benches all 
 stops excusing anything. Full five-tier coverage is a LOCAL run on an AVX-512 box, which is
 the run to make after touching a kernel.
 
+### `zone-check` — the direction `cargo` cannot check
+
+```sh
+cargo xtask zone-check
+```
+
+`rfish-engine`'s five zones have a declared dependency direction — `board` reads nothing,
+`state` reads `board`, `eval` and `search` read both, `platform` reads all of them — and the
+consequence that matters is that **perft is a complete test of the board zone**, because
+nothing below it can influence it. The crate boundary is checked by the compiler; this graph is
+inside ONE crate, where a cycle between modules builds fine.
+
+So it was a property a reviewer maintained, and
+[00-architecture.md](00-architecture.md) said so: it carried a hand-written inventory of what
+crosses, with the note that a fourth edge would be noticed by nobody. **There was already a
+fourth** — `search/worker.rs` names `platform::syzygy`'s types in five places, in every shipped
+build. The gate found it on its first run, which is the second time in this repository that
+writing the instrument was worth more than the finding it was aimed at.
+
+The baseline **expires in both directions**, which is the half that makes a baseline worth
+having: an undeclared crossing reddens the gate, and a declared crossing whose edge is gone
+reddens it too. Both seen to fail, and `negative-control` carries the first:
+
+```text
+UNDECLARED board -> search in board/bitboard.rs: it names a zone at or above its own, ...
+STALE search -> platform in search/harness.rs is in the baseline and the edge is gone. ...
+```
+
+Each entry's REASON is printed on every run, not merely stored. A baseline nobody reads stops
+being questioned; printing it is what keeps each entry something a reader can disagree with.
+`../Stockfish refish` keeps `depcheck.sh`'s baselines the same way and its `lanecheck.sh`
+prints excuses for the same reason.
+
 ### `repro-search` — what a COMPLETED search leaves for the next one
 
 Node counts repeat across `ucinewgame`, at twenty budgets.

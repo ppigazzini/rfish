@@ -162,9 +162,11 @@ consequence that matters is that **perft is a complete test of the board zone**,
 nothing below it can influence it.
 
 Rust does not enforce it. The crate boundary above is checked by `cargo build`; this graph is
-inside one crate, and a cycle between modules of one crate compiles fine. So the direction is
-a property a reviewer maintains — which makes the honest form of this section an inventory of
-what crosses it, not a claim that nothing does. Recompute it rather than trusting the list:
+inside one crate, and a cycle between modules of one crate compiles fine. **`cargo xtask
+zone-check` enforces it instead**, against a baseline that expires in both directions: an edge
+that is not declared reddens the gate, and a declared edge that no longer exists reddens it
+too, because a baseline outliving its edge is an excuse. Recompute it rather than trusting the
+list — the gate does exactly this, and the reasons below are what it prints:
 
 ```sh
 cd crates/rfish-engine/src && for z in board state eval search platform; do
@@ -174,7 +176,9 @@ cd crates/rfish-engine/src && for z in board state eval search platform; do
 done
 ```
 
-Three edges cross the declared direction today, and they are not the same kind of thing:
+**Four** edges cross the declared direction today, and they are not the same kind of thing.
+The fourth is the reason this section now has a gate under it: this page said three, and said
+in the same breath that a fourth would be noticed by nobody. One already existed.
 
 - **`board` reads `eval`, in tests only.** `board/threats.rs` checks its recorder against
   `eval/nnue/features.rs`, the encoder that consumes what it records — the two have to agree
@@ -190,11 +194,23 @@ Three edges cross the declared direction today, and they are not the same kind o
   search, which is the point of the harness. It is declared `pub mod fuzz`, not
   `#[cfg(test)] mod fuzz`, so unlike the first case this edge is compiled into every build.
 
-None of the three is load-bearing for the search. They are listed so that a fourth is
-noticed, because nothing here will notice it for you — the sibling C port runs a link-time
-`zone-check` and the golden runs `depcheck.sh` and `linkcheck.sh` against a baseline that
-expires in both directions; rfish has neither, and that gap is the reason this list is
-written out.
+- **`search` reads `platform` a second time, and this one is not a harness.** `search/worker.rs`
+  holds an `Option<Arc<TableRegistry>>` and names `platform::syzygy`'s types in five places, so
+  the search's own type depends on the platform zone in every shipped build. Upstream inverts
+  this edge with a seam — a small table of function pointers the host fills in — and this port
+  does not, which makes it **structural rather than incidental**: closing it is a design change
+  with a measurable cost, since the tablebase probe is the one seam that sits on the node path.
+  It is recorded rather than fixed, and it is the edge this page did not carry until
+  `zone-check` was written.
+
+None of the four is load-bearing for the search. The gate is what notices a fifth: the sibling
+C port runs a link-time zone check and the golden runs `depcheck.sh` and `linkcheck.sh` against
+a baseline that expires in both directions, and rfish now has the same property from
+`cargo xtask zone-check`, in `parity`.
+
+**What it cannot see**: a `use` inside a block comment, and whether an edge is behind
+`#[cfg(test)]` — the baseline records which are, because deciding that needs a parser and the
+question the gate exists for is whether a FIFTH appears, not how the four are gated.
 
 ## Zero dependencies
 
