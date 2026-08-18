@@ -462,6 +462,47 @@ The golden is **gitignored and per-machine**: the count is a property of the too
 the libc as well as of the code. Record your own, and re-record after a toolchain bump, a
 net change or a deliberate perf commit — a budget raised to fit the tree gates nothing.
 
+### The probing axis — `--syzygy`, the workload the bench list cannot reach
+
+**Every position in the bench list has more men than the shipped three-man corpus covers.**
+`TbTable::new`, `do_probe_table` and `decompress_pairs` are therefore absent from every figure
+on this page above this line: a zone of the port with its own decoder, its own index
+arithmetic and its own untrusted parser sat outside every cost gate in the tree. `tb` proves
+the prober's ANSWERS against upstream and says nothing about what they cost.
+
+```sh
+cargo xtask perf-budget --tier avx2 --syzygy          # against a recorded row
+cargo xtask budget-ab   --tier avx2 --syzygy          # against a git ref
+```
+
+The workload is `DIFF_BENCH`'s own hash, threads and depth over a different corpus — `bench 16
+1 8` on `tools/cases/tb.fens` with `SyzygyPath` set — so the only variable between the two axes
+is which code the positions reach. It is **313,744 nodes and 14,080 tbhits**, and it costs
+9.28 G instructions against the bench workload's 1.51 G: 29,600 instructions per node against
+8,750, because on this corpus the prober IS the workload. Depth 12 buys a third more probing
+for four times the callgrind time, which is a gate nobody runs.
+
+Two properties it needs to be worth having:
+
+- **A probing run that loaded no tables is REFUSED**, not reported. It reads as a plausible
+  short bench and the prober never runs — the same failure as measuring an engine that fell
+  back to the classical evaluation, and it is refused on the same terms.
+- **The row is keyed `<tier>+syzygy`.** A probing row and a bench row describe one binary
+  answering two different questions, and a row that answered one must never be read as an
+  answer to the other.
+
+**What it is for, demonstrated rather than argued.** With `#[inline(never)]` on the tablebase
+decoder — behaviour-neutral, and the bench never calls it:
+
+| gate | verdict |
+|---|---|
+| `signature` | the anchor, unmoved — **PASS** |
+| `perf-budget --tier avx2` | +0.0000%, **PASS** |
+| `perf-budget --tier avx2 --syzygy` | **+0.9048%, FAIL, exit 1** |
+
+Two gates green and one red on the same tree is the whole argument for the axis. Taken from
+`../Stockfish refish`, which files the same gap as `T5` and closed it the same way.
+
 ### `budget-ab` — the same budget, with no stored golden
 
 `perf-budget`'s golden is per-machine, so it binds on the box that derived it and nowhere

@@ -125,6 +125,39 @@ const TRAIN_BENCH: &str = "bench";
 /// minority of the profile — and startup is subtracted regardless.
 const DIFF_BENCH: [&str; 3] = ["16", "1", "8"];
 
+/// The probing workload is [`DIFF_BENCH`]'s own hash, threads and depth over a DIFFERENT
+/// corpus, so the only variable between the two axes is which code the positions reach.
+///
+/// Depth 8 over `tools/cases/tb.fens` is 313,744 nodes and **14,080 tbhits**; depth 12 is
+/// 1,385,510 nodes and 21,120 tbhits for four times the callgrind time — a third more
+/// probing, bought with a gate nobody will run.
+const PROBE_DEPTH: &str = "8";
+
+/// The script that turns a bench into one that PROBES.
+///
+/// **The bench list never enters the tablebase reader.** Every position in it has more men
+/// than the shipped three-man corpus covers, so `TbTable::new`, `do_probe_table` and
+/// `decompress_pairs` are absent from every figure the default workload produces — a whole
+/// zone of the port outside every cost gate in this file. `tb` proves the prober's ANSWERS
+/// against upstream and says nothing about what they cost.
+///
+/// Driven on stdin rather than argv because `SyzygyPath` is an option and the corpus is a
+/// file: `bench` takes the fen source as an argument, but the path to the tables is not one.
+/// `../Stockfish refish` reaches the same axis as `perfbudget.sh --syzygy DIR` and files the
+/// gap it closed as `T5`.
+fn probe_script(root: &Path) -> Vec<String> {
+    vec![
+        format!("setoption name SyzygyPath value {}/resources/syzygy", root.display()),
+        format!(
+            "bench {} {} {PROBE_DEPTH} {}/tools/cases/tb.fens depth",
+            DIFF_BENCH[0],
+            DIFF_BENCH[1],
+            root.display()
+        ),
+        "quit".to_string(),
+    ]
+}
+
 /// Hash, threads and depth for the TIMED differential, which needs a longer run.
 ///
 /// Deeper than [`DIFF_BENCH`] on purpose: at depth 8 a bench is a fraction of a second here,
@@ -731,7 +764,7 @@ fn callgrind_search_ir(bin: &Path, cwd: &Path) -> Result<(u64, u64), String> {
     let bench_out = capture_both(&mut cmd)?;
     let nodes = node_total(&bench_out)?;
     let total = callgrind_total(&out)?;
-    Ok((total.saturating_sub(startup_ir(bin, cwd)?), nodes))
+    Ok((total.saturating_sub(startup_ir(bin, cwd, false)?), nodes))
 }
 
 /// The instruction budget as an A/B against a git ref, with NO stored golden.
@@ -766,6 +799,8 @@ pub(crate) fn budget_ab(args: &[&str]) -> Result<Outcome, String> {
     let base = arg_value(args, "--base").unwrap_or("HEAD");
     let rounds: usize =
         arg_value(args, "--rounds").and_then(|v| v.parse().ok()).unwrap_or(BUDGET_ROUNDS);
+    // The workload the bench list cannot reach. See `probe_script`.
+    let probing = args.contains(&"--syzygy");
 
     // The same refusal `codegen-equiv` makes, for the same reason: with a clean checkout the
     // two sides are one tree, the delta is zero by construction, and a zero that was never
@@ -784,15 +819,21 @@ pub(crate) fn budget_ab(args: &[&str]) -> Result<Outcome, String> {
     crate::runner::worktree_at(base, &tree)?;
 
     let flags = format!("-C target-cpu={}", tier.rustc);
-    println!("budget-ab: building {base} and the working tree at tier {}", tier.name);
+    println!(
+        "budget-ab: building {base} and the working tree at tier {} ({})",
+        tier.name,
+        if probing { "probing workload" } else { "bench workload" }
+    );
     let base_bin = build_release_at(&tree, &scratch.join("base-target"), &flags)?;
     let head_bin = build_release_at(&workspace_root(), &scratch.join("head-target"), &flags)?;
     crate::runner::worktree_remove(&tree);
 
     // Both sides run from THIS repository's resources/, never from the worktree's: the net is
     // a runtime input, and two sides reading two files would be two engines.
-    let (base_ir, base_nodes, base_startup) = budget_ir(&base_bin, &resources_dir(), rounds)?;
-    let (head_ir, head_nodes, head_startup) = budget_ir(&head_bin, &resources_dir(), rounds)?;
+    let (base_ir, base_nodes, base_startup) =
+        budget_ir(&base_bin, &resources_dir(), rounds, probing)?;
+    let (head_ir, head_nodes, head_startup) =
+        budget_ir(&head_bin, &resources_dir(), rounds, probing)?;
 
     if base_nodes != head_nodes {
         return Ok(Outcome::Fail(format!(
@@ -940,6 +981,7 @@ pub(crate) fn perf_budget(args: &[&str], update: bool) -> Result<Outcome, String
     }
     let rounds: usize =
         arg_value(args, "--rounds").and_then(|v| v.parse().ok()).unwrap_or(BUDGET_ROUNDS);
+    let probing = args.contains(&"--syzygy");
 
     // Its own target directory, so this gate cannot leave a tier-built binary in
     // `target/release` for the next one to measure or ship by accident.
@@ -948,23 +990,32 @@ pub(crate) fn perf_budget(args: &[&str], update: bool) -> Result<Outcome, String
     cargo_build(&format!("-C target-cpu={}", tier.rustc), &dir, false)?;
     let bin = dir.join("release/stockfish");
 
-    let (ir, nodes, startup) = budget_ir(&bin, &resources_dir(), rounds)?;
+    let (ir, nodes, startup) = budget_ir(&bin, &resources_dir(), rounds, probing)?;
+    let workload = if probing {
+        format!("probing, depth {PROBE_DEPTH} over tools/cases/tb.fens")
+    } else {
+        format!("bench {}", DIFF_BENCH.join(" "))
+    };
     println!(
-        "perf-budget: {ir} search + {startup} startup instructions over {nodes} nodes (bench {})",
-        DIFF_BENCH.join(" ")
+        "perf-budget: {ir} search + {startup} startup instructions over {nodes} nodes ({workload})"
     );
 
+    // The WORKLOAD is part of the key, not a second file: a probing row and a bench row are
+    // two different questions about the same binary, and a row that answered one of them must
+    // never be read as an answer to the other.
+    let key = budget_key(tier, probing);
     let path = workspace_root().join(BUDGET_GOLDEN);
     if update {
-        write_budget(&path, tier, nodes, ir, startup)?;
-        println!("perf-budget: recorded {} {} {nodes} {ir} {startup}", tier.name, tier.rustc);
+        write_budget(&path, &key, tier, nodes, ir, startup)?;
+        println!("perf-budget: recorded {key} {} {nodes} {ir} {startup}", tier.rustc);
         return Ok(Outcome::Pass);
     }
 
-    let Some(row) = read_budget(&path, tier)? else {
+    let Some(row) = read_budget(&path, &key, tier)? else {
         return Ok(Outcome::Skipped(format!(
-            "no budget recorded for tier '{}'; run `cargo xtask perf-budget-update --tier {}`",
-            tier.name, tier.name
+            "no budget recorded for '{key}'; run `cargo xtask perf-budget-update --tier {}{}`",
+            tier.name,
+            if probing { " --syzygy" } else { "" }
         )));
     };
     if row.nodes != nodes {
@@ -1038,17 +1089,22 @@ struct Budget {
 /// with catching an ablation that searched 162 860 nodes while claiming 163 081, and the
 /// instruction delta read clean either way. A run whose workload moves is a rig fault, not a
 /// measurement, so it refuses rather than publishing the smaller median as an improvement.
-fn budget_ir(bin: &Path, cwd: &Path, rounds: usize) -> Result<(u64, u64, u64), String> {
+fn budget_ir(
+    bin: &Path,
+    cwd: &Path,
+    rounds: usize,
+    probing: bool,
+) -> Result<(u64, u64, u64), String> {
     if rounds == 0 {
         return Err("--rounds 0 measures nothing".to_string());
     }
     // Once, not per round: the same binary parses the same net every time, and this is the
     // half of the profile that is not the search.
-    let startup = startup_ir(bin, cwd)?;
+    let startup = startup_ir(bin, cwd, probing)?;
     let mut counts = Vec::with_capacity(rounds);
     let mut first_nodes = 0u64;
     for round in 1..=rounds {
-        let (total, nodes, net) = budget_round(bin, cwd)?;
+        let (total, nodes, net) = budget_round(bin, cwd, probing)?;
         // A measurement without a net is a measurement of a DIFFERENT ENGINE: the classical
         // fallback searches its own tree at its own cost, and reports a plausible number.
         if net.is_none() {
@@ -1074,25 +1130,62 @@ fn budget_ir(bin: &Path, cwd: &Path, rounds: usize) -> Result<(u64, u64, u64), S
 }
 
 /// One profiled bench: the whole-process count, the node total, and the net it loaded.
-fn budget_round(bin: &Path, cwd: &Path) -> Result<(u64, u64, Option<String>), String> {
+fn budget_round(
+    bin: &Path,
+    cwd: &Path,
+    probing: bool,
+) -> Result<(u64, u64, Option<String>), String> {
     let out = std::env::temp_dir().join(format!("rfish-cg-budget-{}.out", scratch_key(bin)));
     let mut cmd = Command::new("valgrind");
     cmd.current_dir(cwd)
         .args(["--tool=callgrind", "--cache-sim=no", "--branch-sim=no"])
         .arg(format!("--callgrind-out-file={}", out.display()))
-        .arg(bin)
-        .arg("bench")
-        .args(DIFF_BENCH);
-    let text = capture_both(&mut cmd)?;
+        .arg(bin);
+    let text = if probing {
+        // The tables are an OPTION and the corpus is a file, so this workload arrives on
+        // stdin where the default one is argv.
+        capture_piped(&mut cmd, &probe_script(&workspace_root()))?
+    } else {
+        cmd.arg("bench").args(DIFF_BENCH);
+        capture_both(&mut cmd)?
+    };
     let net = text
         .lines()
         .find_map(|l| l.split_once("NNUE evaluation using "))
         .map(|(_, name)| name.trim().to_string());
+    // A probing measurement with no tables loaded is a measurement of a DIFFERENT WORKLOAD,
+    // exactly as a measurement with no net is a measurement of a different engine. It reads
+    // as a plausible number and the prober never runs, so it is refused rather than reported.
+    if probing {
+        let found = text
+            .lines()
+            .find_map(|l| l.split_once("Found "))
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(0);
+        if found == 0 {
+            return Err(format!(
+                "the probing workload loaded no tablebase files from {}/resources/syzygy — the \
+                 prober never ran, and the count would be a bench that happens to be short. \
+                 Run `cargo xtask tb-fetch`",
+                workspace_root().display()
+            ));
+        }
+    }
     Ok((callgrind_total(&out)?, node_total(&text)?, net))
 }
 
+/// The key a budget row is filed under: the tier, plus the WORKLOAD when it is not the bench.
+///
+/// A probing row and a bench row describe the same binary answering two different questions,
+/// so they cannot share a key. Suffixing rather than adding a column keeps every row already
+/// recorded readable.
+fn budget_key(tier: &Tier, probing: bool) -> String {
+    if probing { format!("{}+syzygy", tier.name) } else { tier.name.to_string() }
+}
+
 /// The row for `tier`, or `None` when the file records none.
-fn read_budget(path: &Path, tier: &Tier) -> Result<Option<Budget>, String> {
+fn read_budget(path: &Path, key: &str, tier: &Tier) -> Result<Option<Budget>, String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Ok(None);
     };
@@ -1108,7 +1201,7 @@ fn read_budget(path: &Path, tier: &Tier) -> Result<Option<Budget>, String> {
         // The TIER is decided before the width is judged. A row for another tier is another
         // tier's problem, and refusing this read because of one would make a stale row for a
         // tier nobody is measuring block every tier that is.
-        if f[0] != tier.name {
+        if f[0] != key {
             continue;
         }
         // A four-field row is the format from before startup was gated. It is REFUSED rather
@@ -1116,9 +1209,9 @@ fn read_budget(path: &Path, tier: &Tier) -> Result<Option<Budget>, String> {
         // every measurement, which is a gate that reports success for the reason it exists.
         if f.len() == 4 {
             return Err(format!(
-                "the budget row for tier '{}' predates the startup axis and carries no startup \
+                "the budget row for '{key}' predates the startup axis and carries no startup \
                  column; re-record it with `cargo xtask perf-budget-update --tier {}`",
-                tier.name, tier.name
+                tier.name
             ));
         }
         // The key names the BINARY, not the tier alone. A row whose target-cpu is not the one
@@ -1141,7 +1234,14 @@ fn read_budget(path: &Path, tier: &Tier) -> Result<Option<Budget>, String> {
 }
 
 /// Replace this tier's row, leaving every other tier's alone.
-fn write_budget(path: &Path, tier: &Tier, nodes: u64, ir: u64, startup: u64) -> Result<(), String> {
+fn write_budget(
+    path: &Path,
+    key: &str,
+    tier: &Tier,
+    nodes: u64,
+    ir: u64,
+    startup: u64,
+) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     // The header is rewritten from the constant every time rather than carried forward: a
     // file written months ago would otherwise keep explaining the gate as it was then, and
@@ -1151,12 +1251,12 @@ fn write_budget(path: &Path, tier: &Tier, nodes: u64, ir: u64, startup: u64) -> 
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
         }
-        if line.split_whitespace().next().is_none_or(|t| t != tier.name) {
+        if line.split_whitespace().next().is_none_or(|t| t != key) {
             out.push_str(line);
             out.push('\n');
         }
     }
-    writeln!(out, "{} {} {nodes} {ir} {startup}", tier.name, tier.rustc)
+    writeln!(out, "{key} {} {nodes} {ir} {startup}", tier.rustc)
         .map_err(|e| format!("building the budget row: {e}"))?;
     std::fs::write(path, out).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -1198,6 +1298,32 @@ fn capture_both(cmd: &mut Command) -> Result<String, String> {
     Ok(text)
 }
 
+/// Run a command with `script` on its stdin, and return stdout AND stderr together.
+///
+/// The piped twin of [`capture_both`], for a workload that needs options set before it runs.
+fn capture_piped(cmd: &mut Command, script: &[String]) -> Result<String, String> {
+    use std::io::Write;
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{cmd:?}: {e}"))?;
+    {
+        let stdin = child.stdin.as_mut().ok_or("the child has no stdin")?;
+        for line in script {
+            writeln!(stdin, "{line}").map_err(|e| format!("writing {line:?}: {e}"))?;
+        }
+    }
+    let out = child.wait_with_output().map_err(|e| format!("{cmd:?}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("{cmd:?} exited with {}", out.status));
+    }
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    Ok(text)
+}
+
 /// A scratch filename unique to this binary and this process.
 fn scratch_key(bin: &Path) -> String {
     let name = bin.parent().and_then(Path::file_name).unwrap_or_default();
@@ -1205,7 +1331,7 @@ fn scratch_key(bin: &Path) -> String {
 }
 
 /// The instructions a `quit`-only run costs: the net parse, the magic tables, the zero-fill.
-fn startup_ir(bin: &Path, cwd: &Path) -> Result<u64, String> {
+fn startup_ir(bin: &Path, cwd: &Path, probing: bool) -> Result<u64, String> {
     let out = std::env::temp_dir().join(format!("rfish-cg-quit-{}.out", scratch_key(bin)));
     let mut child = Command::new("valgrind")
         .current_dir(cwd)
@@ -1219,6 +1345,16 @@ fn startup_ir(bin: &Path, cwd: &Path) -> Result<u64, String> {
     {
         use std::io::Write;
         let stdin = child.stdin.as_mut().ok_or("valgrind child has no stdin")?;
+        // The probing axis subtracts the table DISCOVERY as well as the net load, so what
+        // remains on that axis is the probing search and nothing that ran before it.
+        if probing {
+            writeln!(
+                stdin,
+                "setoption name SyzygyPath value {}/resources/syzygy",
+                workspace_root().display()
+            )
+            .map_err(|e| format!("writing the syzygy path: {e}"))?;
+        }
         writeln!(stdin, "quit").map_err(|e| format!("writing quit: {e}"))?;
     }
     let status = child.wait().map_err(|e| format!("waiting for valgrind: {e}"))?;

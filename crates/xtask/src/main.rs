@@ -124,7 +124,7 @@ cargo xtask <step> — the rfish build driver
                           --write RE-DERIVES from the oracle: this is the regenerator,
                           because a golden written from rfish is a photograph of rfish
     upstream-nodes        node-for-node vs the oracle on RANDOM positions
-    budget-ab [--tier T] [--base REF] [--rounds N]
+    budget-ab [--tier T] [--base REF] [--rounds N] [--syzygy]
                           the instruction budget with NO stored golden: build the WORKING
                           TREE and REF, count both, compare. Refuses unequal node counts
     codegen-equiv [--tier T] [--base REF]
@@ -178,11 +178,13 @@ cargo xtask <step> — the rfish build driver
                                        indirect branches and their mispredicts. Simulated,
                                        so DETERMINISTIC -- unlike the paired clock this one
                                        is worth reading on a loaded box
-    perf-budget [--tier T] [--rounds N]
+    perf-budget [--tier T] [--rounds N] [--syzygy]
                                        hold this tier's absolute instruction count to
                                        tools/instr_budget.golden -- the cost regression
                                        `signature` cannot see. Local, NOT in parity: the
-                                       count moves with the toolchain as well as the code
+                                       count moves with the toolchain as well as the code.
+                                       --syzygy benches a corpus the TABLES cover, which is
+                                       the only workload here that enters the prober at all
     perf-budget-update [--tier T]       re-record this tier's row. DANGEROUS on a red gate,
                                        exactly as signature-update is
 
