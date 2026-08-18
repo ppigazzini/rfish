@@ -258,8 +258,8 @@ the section below refuses:
   known bottlenecks, because an instrument is a hypothesis until something confirms it. rfish
   measures with **callgrind**, which counts retired instructions deterministically rather than
   sampling a hardware counter, so there is no counter to validate. What that leaves unchecked
-  is different and is stated where it belongs: `perf-budget` subtracts startup by measurement,
-  and the paired A/B reports its spread.
+  is different and is stated where it belongs: `perf-budget` measures startup separately and
+  now gates it on its own tolerance, and the paired A/B reports its spread.
 
 If either acquires a subject — a shell tool in `tools/`, a sampling profiler in the loop —
 it acquires a gate at the same time.
@@ -377,11 +377,25 @@ cargo xtask perf-budget-update --tier avx2   # re-record it
 ```
 
 It builds at the tier into `target/budget/<tier>` — never `target/release`, which
-`signature` rebuilds at the default arch — profiles `bench 16 1 8` under callgrind twice,
-subtracts startup, and holds the median to `tools/instr_budget.golden` within
-**0.005%**.
+`signature` rebuilds at the default arch — profiles `bench 16 1 8` under callgrind twice, and
+holds the median to `tools/instr_budget.golden` on **two axes**: the search within **0.005%**
+and **startup within 1%**.
 
-Four properties, each of which cost a sibling port a wrong verdict before it was fixed:
+Five properties, each of which cost a sibling port a wrong verdict before it was fixed:
+
+- **Startup is GATED, not merely subtracted.** It used to be measured, subtracted, printed and
+  then not judged — so the net load and the magic-table build could regress by any amount
+  behind a green exit. They are not small: 1,053,602,750 instructions here against a
+  1,512,297,444 search, **41% of the whole bench**, and the last time the axis was read by hand
+  17% of it was defect. A gate that subtracts a cost is a gate that hides it. The two axes
+  carry **different tolerances on purpose**: startup is paid once per process and the search is
+  paid for minutes, so a tenth of a percent in the loader is invisible to a player and the same
+  tenth in the search is what the search tolerance exists to refuse. Both verdicts are computed
+  and both are printed before either exits, so a run cannot report one axis clean while staying
+  silent about the other. Seen to FAIL by mutation: a startup budget moved to 1,032,000,000
+  gives `startup REGRESSED by 2.0933%, outside 1.0000%`, exit 1, with the search axis still
+  reading +0.0000%. Taken from `../Stockfish refish`'s `d657cfae`, which found the same hole in
+  the same instrument.
 
 - **The tolerance is set by MUTATION, not by feel.** Forcing `Position::adjust_key50` out of
   line — the per-node class this gate owns — costs **+0.0541%** here with `signature` still
@@ -398,7 +412,10 @@ Four properties, each of which cost a sibling port a wrong verdict before it was
 - **The node count is in the row.** A count taken over a different tree is not comparable,
   and the gate says so instead of reporting the difference as cost.
 - **A missing row SKIPS at exit 2**, never passes. "Could not measure" must not read as "did
-  not regress".
+  not regress". A row in the **pre-startup four-column format** is REFUSED rather than read
+  with the missing column defaulted, because a startup budget of zero passes every
+  measurement — and the refusal is decided AFTER the tier is matched, so a stale row for a
+  tier nobody is measuring cannot block the tier that is.
 
 The golden is **gitignored and per-machine**: the count is a property of the toolchain and
 the libc as well as of the code. Record your own, and re-record after a toolchain bump, a
@@ -417,7 +434,8 @@ cargo xtask budget-ab --base HEAD~1 --tier avx2     # this change, against its p
 
 It builds `--base` from a **detached worktree** under `target/budget-ab/` — never by moving
 this checkout, which would risk the work it was asked to judge — counts both sides the way
-`perf-budget` does, and holds the delta to the same 0.005%.
+`perf-budget` does, and holds the delta to the same two tolerances — 0.005% on the search,
+1% on startup — printing both axes as one table before either decides.
 
 Two refusals rather than a number:
 
