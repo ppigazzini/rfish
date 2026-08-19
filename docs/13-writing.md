@@ -215,19 +215,30 @@ cargo xtask docs-lint      # also runs inside cargo xtask parity
 ```
 
 It reads every `*.md` outside `target/`, `.git/` and `resources/` — tracked or not — and
-fails on three things:
+fails on five things:
 
 - **A dead internal link.** Any `[text](target)` that is not an external URL, a `mailto:` or
   a bare `#anchor` must resolve relative to the linking file or to the workspace root. A
   trailing `#anchor` is stripped first, so the anchor itself is **not** verified: a link to a
   heading that no longer exists passes.
-- **A named path that does not exist.** Any `crates/…` or `tools/…` written in prose is a
-  claim about this tree. A word holding `*`, `<`, `>` or `…` is a placeholder and is skipped,
-  which is what lets `tools/<name>.golden` be written at all.
+- **A named path that does not exist.** Any `crates/…`, `tools/…` or `docs/…` written in
+  prose is a claim about this tree. A word holding `*`, `<`, `>` or `…` is a placeholder and
+  is skipped, which is what lets `tools/<name>.golden` be written at all. The `docs/` prefix
+  was the one missing when the set was renumbered — a dead link is caught by the check above,
+  but a page named in prose or inside a fenced command is not a link.
 - **A quoted bench signature, and an xtask step no page names.** The current value of
   `tools/signature.golden` appearing in prose is a failure — it is the number the "never pin
   a number" rule is most often broken with — and a step in the dispatch table that no shipped
   page mentions is a step nobody can discover.
+- **A documented `parity` order that is not the one `parity` runs.** A LIST a gate computes
+  is the same rule as a number it computes, and the page carrying that list had drifted by
+  three entries in the paragraph warning about drift.
+- **A page that does not carry the gates that hold it.** Three properties, and each is one
+  way the routing decays: a page with no `## The gates` section, a gate no page's section
+  routes to, and a row pointing at a page whose own table does not name that gate. Being
+  MENTIONED is not being routed to, which is what the check above cannot distinguish. Two
+  exemption lists carry it — the pages that hold no gates, and the steps that are not gates —
+  and both expire in both directions.
 
 **The last check sweeps the whole INDEX, not the markdown set**, and it exists because the
 path check above cannot see its class. That check exempts a path `.gitignore` names, on the
@@ -269,7 +280,7 @@ the number.
 
 | gate | what it proves here | owned by |
 |---|---|---|
-| `docs-lint` | the mechanical half of documentation rot: a dead link, an absent path, a pinned number a gate computes, a list a gate computes, a step no page names, and a shipped file naming the internal working area | this page |
+| `docs-lint` | the mechanical half of documentation rot: a dead link, an absent path, a number or a list a gate computes, a step no page names, a page that does not carry the gates holding it, and a shipped file naming the internal working area | this page |
 
 The section above is where its mechanics live, and the three classes it cannot reach are the
 reason this page exists at all: the gate buys the mechanical half, and the rest is a reader's.

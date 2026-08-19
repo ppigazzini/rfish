@@ -733,6 +733,17 @@ const MUTANTS: &[Mutant] = &[
         gate: "docs-lint",
     },
     Mutant {
+        // The routing every page's gates section states. A page rewritten without its section
+        // is the shape the check exists for: nothing on the page tells a reader what holds it,
+        // while every page that routes a gate there still points at it. Both halves fire —
+        // the missing section, and the dangling pointer from the far page.
+        label: "a page loses the gates section other pages route to",
+        file: "docs/05-tablebases.md",
+        find: "## The gates",
+        replace: "## The checks",
+        gate: "docs-lint",
+    },
+    Mutant {
         // The direction `cargo` cannot check. A `use` is enough: `board` is the zone nothing
         // below it may influence, which is what makes perft a complete test of it.
         label: "the board zone reads the search zone",
@@ -1059,7 +1070,7 @@ pub(crate) fn fixture_coverage() -> Result<Outcome, String> {
 /// Parsed from the table rather than kept as a second list here: a list beside the thing it
 /// describes rots exactly the way the prose this tree gates rots. `docs-lint` reads the same
 /// table for the same reason.
-fn dispatch_steps(root: &Path) -> Result<Vec<String>, String> {
+pub(crate) fn dispatch_steps(root: &Path) -> Result<Vec<String>, String> {
     let main = root.join("crates/xtask/src/main.rs");
     let text = std::fs::read_to_string(&main).map_err(|e| format!("{}: {e}", main.display()))?;
     let mut steps = Vec::new();

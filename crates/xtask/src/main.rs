@@ -137,8 +137,9 @@ cargo xtask <step> — the rfish build driver
     test                  the unit and property suite
     fmt / fmt-fix         cargo fmt --check / cargo fmt
     clippy                cargo clippy -D warnings
-    docs-lint             no dead doc links, no named paths that do not exist, and no
-                          shipped file naming the internal working area
+    docs-lint             no dead doc links, no named paths that do not exist, no shipped
+                          file naming the internal working area, and every page carrying
+                          the gates that hold it -- routed both ways
     lane-coverage         every step runs in a workflow, runs in parity, or is excused
                           with a reason -- a lane that is in no gate is not a lane
     fixture-coverage      tools/fixture_properties.tsv still holds: every property has a
