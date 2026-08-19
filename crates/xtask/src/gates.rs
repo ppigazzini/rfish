@@ -1065,7 +1065,7 @@ pub(crate) fn docs_lint() -> Result<Outcome, String> {
         }
     }
 
-    // The two rules `docs/12-writing.md` names as the most-broken, held mechanically.
+    // The two rules `docs/13-writing.md` names as the most-broken, held mechanically.
     checked += quoted_signature(&root, &files, &mut problems)?;
     checked += undocumented_steps(&root, &files, &mut problems)?;
 

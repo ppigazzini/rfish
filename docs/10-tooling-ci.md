@@ -168,7 +168,7 @@ as a broken engine rather than as a position to skip.
 Five checks: every markdown link resolves, every `crates/…` or `tools/…` path named in prose
 exists, no page quotes the current bench anchor, no `xtask` step goes unnamed by every
 shipped page, and no tracked file names the internal working area. The middle two hold the
-rules [12-writing.md](12-writing.md) records as the most-broken — a pinned number and an
+rules [13-writing.md](13-writing.md) records as the most-broken — a pinned number and an
 undiscoverable step — and both read their subject from its owner (`tools/signature.golden`,
 the dispatch table in `crates/xtask/src/main.rs`) rather than from a second list here.
 
@@ -188,7 +188,7 @@ that had no way to know. `crates/xtask/src/devsweep.rs` carries the needles and 
 declares the directory — those two files are the only ones allowed to name it, and the
 exemption is asserted rather than assumed.
 
-It settles the **mechanical** half of documentation rot, and [12-writing.md](12-writing.md)
+It settles the **mechanical** half of documentation rot, and [13-writing.md](13-writing.md)
 names the three classes it cannot: a real symbol attributed to the wrong file, a list with
 the wrong count or order, and a behaviour described as absent from a build that has it. It
 cannot tell you a sentence has become false, and in the sibling ports every false claim ever

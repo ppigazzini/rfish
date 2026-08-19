@@ -92,7 +92,7 @@ reader applies now, and let the number be the evidence.
 `std::arch` one is an `unsafe fn`; use `std::simd`, which needs no `unsafe` block" does not.
 
 **Cut anything that does not help implement or verify.** Background a reader could get from
-Stockfish's own wiki belongs in [11-references.md](11-references.md) as a link. Length is not
+Stockfish's own wiki belongs in [12-references.md](12-references.md) as a link. Length is not
 thoroughness; it is where rot hides. This binds a generated page exactly as it binds a
 hand-written one — match the length to what the change needs, and add no section that exists
 to look complete: a summary restating the section above it, a recap of what a gate prints, a
@@ -119,9 +119,9 @@ lands, and nobody knows which claim broke better than the person who broke it.
 | [08-idiomatic-rust.md](08-idiomatic-rust.md) | the Rust patterns, the falsified list, the measured shapes | cold as prose, append-only as a ledger |
 | [09-type-design.md](09-type-design.md) | the value domain, its algebra, and the boundary of what it promises | warm — a type added without a row here makes the page wrong |
 | [10-tooling-ci.md](10-tooling-ci.md) | `cargo xtask` steps, the tiers, `.github/workflows/` | hot — a step added here is a page edit there |
-| [11-references.md](11-references.md) | external links | cold |
+| [12-references.md](12-references.md) | external links | cold |
 | this page | the rules | cold |
-| [13-glossary.md](13-glossary.md) | the vocabulary, in four tiers | warm — every entry names an owner, and a rename dates it |
+| [14-glossary.md](14-glossary.md) | the vocabulary, in four tiers | warm — every entry names an owner, and a rename dates it |
 
 Cold does not mean unowned. It means the claim outlives a release, so when it *is* wrong it
 has usually been wrong for a long time.

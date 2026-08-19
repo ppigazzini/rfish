@@ -229,7 +229,7 @@ site looks.**
 
 What is left on this axis, in order: the net reader at ~624M and the magic build at ~270M are
 87% of what remains, and 98.4M of the whole bench process is `memset` whose allocator is not
-yet established — see [11-references.md](11-references.md).
+yet established — see [12-references.md](12-references.md).
 
 - `leb128_i16` decoded into a `vec![0i32; out.len()]` and narrowed afterwards. On the main
   weight block that is 23,068,672 entries — 92 MiB, allocated and page-faulted to be read once.
@@ -309,7 +309,7 @@ Everything above this line describes the evaluation as it is. Everything below i
 record of what the accumulator cost and what moved it, kept for the same reason
 [08-idiomatic-rust.md](08-idiomatic-rust.md) keeps its own: a falsified idea that is not
 written down is re-derived, and a measurement is a fact about the tree rather than a story
-about the week. [12-writing.md](12-writing.md) names both pages where it forbids history in
+about the week. [13-writing.md](13-writing.md) names both pages where it forbids history in
 shipped prose.
 
 Read it before proposing a change to the accumulator. The rows are the numbers any further
