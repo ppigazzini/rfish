@@ -292,8 +292,8 @@ impl TableRegistry {
     pub fn root_probe(
         &self,
         pos: &Position,
-        rule50: bool,
-        rank_dtz: bool,
+        rule50: Rule50,
+        rank_dtz: RankDtz,
     ) -> Option<Vec<RankedRootMove>> {
         // The fifty-move counter at the root, which every distance below is measured
         // against: a win in 40 is not a win if the counter is already at 70.
@@ -301,7 +301,7 @@ impl TableRegistry {
         // A repetition since the last zeroing move makes the opponent able to force one
         // again, so a long win cannot be trusted to stay a win.
         let rep = pos.has_repeated();
-        let bound = if rule50 { MAX_DTZ / 2 - 100 } else { 1 };
+        let bound = if rule50.applies() { MAX_DTZ / 2 - 100 } else { 1 };
 
         let mut work = pos.clone();
         let mut out = Vec::new();
@@ -312,7 +312,9 @@ impl TableRegistry {
                 // A zeroing move starts a fresh count, so the distance is the verdict's own
                 // -101/-1/0/1/101 rather than anything stored in a table.
                 self.probe_wdl(&work).map(|w| dtz_before_zeroing(w.negate()))
-            } else if (rule50 && work.is_draw(Ply::new(1))) || work.is_repetition(Ply::new(1)) {
+            } else if (rule50.applies() && work.is_draw(Ply::new(1)))
+                || work.is_repetition(Ply::new(1))
+            {
                 // One ply from the root, so this is a true repetition inside the game's own
                 // history rather than a search artefact: the move draws.
                 Ok(0)
@@ -340,14 +342,14 @@ impl TableRegistry {
             let rank = match dtz.cmp(&0) {
                 std::cmp::Ordering::Greater => {
                     if dtz + cnt50 <= 99 && !rep {
-                        MAX_DTZ - if rank_dtz { dtz } else { 0 }
+                        MAX_DTZ - if rank_dtz.wanted() { dtz } else { 0 }
                     } else {
                         MAX_DTZ / 2 - (dtz + cnt50)
                     }
                 }
                 std::cmp::Ordering::Less => {
                     if -dtz * 2 + cnt50 < 100 {
-                        -MAX_DTZ - if rank_dtz { dtz } else { 0 }
+                        -MAX_DTZ - if rank_dtz.wanted() { dtz } else { 0 }
                     } else {
                         -MAX_DTZ / 2 + (-dtz + cnt50)
                     }
@@ -381,7 +383,7 @@ impl TableRegistry {
     /// enough to keep the game won and not enough to finish it, which is why this is the
     /// fallback and why the search keeps probing when it is the one that answered.
     #[must_use]
-    pub fn root_probe_wdl(&self, pos: &Position, rule50: bool) -> Option<Vec<RankedRootMove>> {
+    pub fn root_probe_wdl(&self, pos: &Position, rule50: Rule50) -> Option<Vec<RankedRootMove>> {
         const WDL_TO_RANK: [i32; 5] = [-MAX_DTZ, -MAX_DTZ + 101, 0, MAX_DTZ - 101, MAX_DTZ];
         const WDL_TO_VALUE: [Value; 5] = [
             VALUE_MATE.negate().offset(MAX_PLY as i32 + 1),
@@ -419,7 +421,7 @@ impl TableRegistry {
             let rank = WDL_TO_RANK[(wdl as i32 + 2) as usize];
             // With the fifty-move rule off, a cursed win IS a win and a blessed loss IS a
             // loss: the caller has said the counter does not apply to this game.
-            let scored = if rule50 {
+            let scored = if rule50.applies() {
                 wdl
             } else if (wdl as i32) > 0 {
                 Wdl::Win
@@ -435,6 +437,55 @@ impl TableRegistry {
             });
         }
         Some(out)
+    }
+}
+
+/// Whether the fifty-move rule applies to a tablebase verdict — the `Syzygy50MoveRule` option.
+///
+/// A TYPE, not a `bool`, because it stood next to another `bool` in argument position and the
+/// transposition compiled. Both inversions are silent: this one changes the VERDICT a table
+/// gives — a cursed win becomes a win — while [`RankDtz`] changes whether distance ranking
+/// happens at all. Neither shows up as a crash or a wrong move on the next ply; they show up
+/// as a game drawn from a won position.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Rule50 {
+    /// The counter does not end the game, so a cursed win counts as a win.
+    Ignore,
+    /// The counter ends the game, which is the default and the rules.
+    Apply,
+}
+
+impl Rule50 {
+    /// From the option's own value, which is where the only `bool` left should be.
+    #[must_use]
+    pub const fn from_option(on: bool) -> Rule50 {
+        if on { Rule50::Apply } else { Rule50::Ignore }
+    }
+
+    /// True when the counter ends the game.
+    #[must_use]
+    pub const fn applies(self) -> bool {
+        matches!(self, Rule50::Apply)
+    }
+}
+
+/// Whether the root ranking distinguishes DISTANCES, or ranks every win alike.
+///
+/// Yes only where mate is the only zeroing move, because there DTZ *is* distance to mate and
+/// ranking by it costs nothing. See [`Rule50`] for why this is a type.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RankDtz {
+    /// Every win ranks the same.
+    No,
+    /// Rank by distance, which distinguishes a shorter win from a longer one.
+    Yes,
+}
+
+impl RankDtz {
+    /// True when the ranking distinguishes distances.
+    #[must_use]
+    pub const fn wanted(self) -> bool {
+        matches!(self, RankDtz::Yes)
     }
 }
 
@@ -652,10 +703,10 @@ mod tests {
         let won = Position::from_fen("8/8/8/8/8/2k5/8/KQ6 w - - 0 1", false).expect("valid");
         let drawn = Position::from_fen("8/8/8/8/8/2k5/8/KQ6 w - - 100 200", false).expect("valid");
 
-        let ranked = r.root_probe_wdl(&won, true).expect("the tables cover three men");
+        let ranked = r.root_probe_wdl(&won, Rule50::Apply).expect("the tables cover three men");
         assert!(ranked.iter().any(|m| m.score > VALUE_DRAW), "a won root must rank as won");
 
-        let ranked = r.root_probe_wdl(&drawn, true).expect("the tables cover three men");
+        let ranked = r.root_probe_wdl(&drawn, Rule50::Apply).expect("the tables cover three men");
         assert!(
             ranked.iter().all(|m| m.score == VALUE_DRAW),
             "every move from a position the clock has drawn is a draw"
@@ -670,8 +721,8 @@ mod tests {
         let r = TableRegistry::discover(&dir);
         let pos = Position::startpos();
         assert!(r.probe_wdl(&pos).is_err());
-        assert!(r.root_probe(&pos, true, false).is_none());
-        assert!(r.root_probe_wdl(&pos, true).is_none());
+        assert!(r.root_probe(&pos, Rule50::Apply, RankDtz::No).is_none());
+        assert!(r.root_probe_wdl(&pos, Rule50::Apply).is_none());
     }
 
     #[test]

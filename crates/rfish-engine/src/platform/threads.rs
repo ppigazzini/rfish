@@ -116,7 +116,7 @@ impl ThreadPool {
         tb: &Option<Arc<crate::platform::syzygy::TableRegistry>>,
         probe_depth: i32,
         probe_limit: u32,
-        use_rule50: bool,
+        use_rule50: crate::platform::syzygy::Rule50,
     ) {
         for w in &mut self.workers {
             w.set_tablebases(tb.clone());

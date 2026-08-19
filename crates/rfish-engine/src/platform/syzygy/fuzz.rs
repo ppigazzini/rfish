@@ -123,7 +123,7 @@ fn one_round(rng: &mut Rng, dir: &std::path::Path, source: &std::path::Path) -> 
     // Both probes: WDL and DTZ read different tables and different decoder paths.
     let answered = registry.probe_wdl(&pos).is_ok()
         | registry.probe_dtz(&pos).is_ok()
-        | registry.root_probe_wdl(&pos, true).is_some();
+        | registry.root_probe_wdl(&pos, crate::platform::syzygy::Rule50::Apply).is_some();
 
     // Ask the registry what the round reached, rather than inferring it from the probes: a
     // probe reports one `Fail` whether the parse refused the file or the decoder ran and

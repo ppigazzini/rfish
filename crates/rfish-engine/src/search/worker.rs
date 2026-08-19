@@ -334,7 +334,7 @@ pub struct SearchWorker {
     tablebases: Option<Arc<crate::platform::syzygy::TableRegistry>>,
     tb_probe_depth: i32,
     tb_probe_limit: u32,
-    tb_use_rule50: bool,
+    tb_use_rule50: crate::platform::syzygy::Rule50,
     /// The piece count the in-search probe is still willing to answer at. Zero once the
     /// root ranking has settled the game and further probing would only cost time.
     tb_cardinality: u32,
@@ -413,7 +413,7 @@ impl SearchWorker {
             tablebases: None,
             tb_probe_depth: 1,
             tb_probe_limit: 7,
-            tb_use_rule50: true,
+            tb_use_rule50: crate::platform::syzygy::Rule50::Apply,
             tb_cardinality: 0,
             root_in_tb: false,
         };
@@ -434,7 +434,12 @@ impl SearchWorker {
 
     /// How deep a node must be before it is worth probing, and how many pieces a table
     /// covers. Both come from UCI options.
-    pub fn set_tb_limits(&mut self, probe_depth: i32, probe_limit: u32, use_rule50: bool) {
+    pub fn set_tb_limits(
+        &mut self,
+        probe_depth: i32,
+        probe_limit: u32,
+        use_rule50: crate::platform::syzygy::Rule50,
+    ) {
         self.tb_probe_depth = probe_depth;
         self.tb_probe_limit = probe_limit;
         self.tb_use_rule50 = use_rule50;
@@ -2898,7 +2903,7 @@ impl SearchWorker {
 
         // `Syzygy50MoveRule` off means a cursed win counts as a win: the caller has told us
         // the fifty-move rule does not apply to this game.
-        let draw_score = i32::from(self.tb_use_rule50);
+        let draw_score = i32::from(self.tb_use_rule50.applies());
         let w = wdl as i32;
         let tb_value = VALUE_TB - ply.get();
 
@@ -2976,7 +2981,11 @@ impl SearchWorker {
 
         // When mate is the only zeroing move, DTZ IS distance to mate, so ranking by it
         // costs nothing and produces the shortest win rather than any win.
-        let rank_dtz = self.pos.dtz_is_dtm();
+        let rank_dtz = if self.pos.dtz_is_dtm() {
+            crate::platform::syzygy::RankDtz::Yes
+        } else {
+            crate::platform::syzygy::RankDtz::No
+        };
         let mut dtz_available = true;
         let mut ranked = tb.root_probe(&self.pos, self.tb_use_rule50, rank_dtz);
         if ranked.is_none() {
@@ -3088,7 +3097,7 @@ impl SearchWorker {
     /// endgames like `KRvK` is minimal DTZ also minimal distance to mate.
     fn syzygy_extend_pv(&mut self, v: &mut Value) {
         let Some(tb) = self.tablebases.clone() else { return };
-        let rule50 = self.tb_use_rule50;
+        let rule50 = self.tb_use_rule50.applies();
         let start = Instant::now();
 
         // Never spend more than half the move overhead on this. It is presentation, and a
@@ -3112,7 +3121,11 @@ impl SearchWorker {
         // Step 1: walk while the tables still rank each PV move top.
         while ply < pv.len() {
             let pv_move = pv[ply];
-            let Some(ranked) = self.rank_for_extension(&tb, &pos, false) else { break };
+            let Some(ranked) =
+                self.rank_for_extension(&tb, &pos, crate::platform::syzygy::RankDtz::No)
+            else {
+                break;
+            };
             let Some(best) = ranked.iter().map(|r| r.rank).max() else { break };
             let Some(this) = ranked.iter().find(|r| r.mv == pv_move).map(|r| r.rank) else { break };
             if best != this {
@@ -3182,7 +3195,11 @@ impl SearchWorker {
 
             // Ranked by distance this time: the winner wants the shortest win, and the
             // loser the longest defeat, which is the same ordering seen from each side.
-            let Some(ranked) = self.rank_for_extension(&tb, &pos, true) else { break };
+            let Some(ranked) =
+                self.rank_for_extension(&tb, &pos, crate::platform::syzygy::RankDtz::Yes)
+            else {
+                break;
+            };
             cand.sort_by_key(|&(m, _)| {
                 core::cmp::Reverse(ranked.iter().find(|r| r.mv == m).map_or(i32::MIN, |r| r.rank))
             });
@@ -3210,7 +3227,7 @@ impl SearchWorker {
         &self,
         tb: &crate::platform::syzygy::TableRegistry,
         pos: &Position,
-        rank_dtz: bool,
+        rank_dtz: crate::platform::syzygy::RankDtz,
     ) -> Option<Vec<crate::platform::syzygy::RankedRootMove>> {
         if pos.piece_total() > tb.max_cardinality()
             || pos.can_castle(crate::board::types::CastlingRights::ANY)
@@ -3223,7 +3240,15 @@ impl SearchWorker {
         // shorter win from a longer one. Without it the PV walk in step 1 finds every win
         // equally top-ranked, never truncates, and shows the search's line where upstream
         // shows the tables' shortest.
-        tb.root_probe(pos, self.tb_use_rule50, rank_dtz || pos.dtz_is_dtm())
+        tb.root_probe(
+            pos,
+            self.tb_use_rule50,
+            if rank_dtz.wanted() || pos.dtz_is_dtm() {
+                crate::platform::syzygy::RankDtz::Yes
+            } else {
+                crate::platform::syzygy::RankDtz::No
+            },
+        )
     }
 
     /// Emit one `info` line for the current PV slot.
