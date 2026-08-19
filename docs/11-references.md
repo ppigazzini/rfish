@@ -179,6 +179,20 @@ whose large buffers are `alloc_zeroed` and take their zeroes from fresh mmap pag
 stops here rather than guessing, exactly as refish's own P6 entry stops at the 110 MiB it could
 not attribute. Size the allocations before writing anything.
 
+**The 2026-08-19 window was eleven commits and almost all of them were TYPE DESIGN**, which
+is the one subject where this port has a page of its own and the branch has none. Swept per
+commit:
+
+| probed, `refish` `2e484fdb..c39bdf1c` | verdict |
+|---|---|
+| `db74904f`, typing `root_probe`'s two adjacent bools | **taken.** The identical hazard: two `bool`s in argument position, both inversions silent, and one of them decides whether a won position is ranked as won. `Rule50`/`RankDtz`, broken on purpose to see the compiler refuse both orders |
+| `2e484fdb`, what `LenTabMaxBits` costs on either side of 12 | **taken, and re-measured rather than quoted.** Their 22%-at-12-bits is a FIVE-man figure; the corpus here is three-man, `max_sym_len` 7 and 11, and **no bucket escapes at all** — the cap never binds on what this repository ships. Both numbers are recorded, theirs marked as theirs |
+| `43e74015`, compile-probe rows proving each new type refuses its transposition | **partly taken, and the gap is named.** The refusals were confirmed by hand, which is this tree's existing convention for the table in [09-type-design.md](09-type-design.md). What is NOT here is a GATE: `negative-control` requires a mutant to compile, so a row that must FAIL to compile needs a mode it does not have. Seven rows of that table rest on "was broken on purpose" with nothing re-running it |
+| `c39bdf1c`, what `textequal.sh` cannot prove about a signature change | **taken as documentation.** The same limit binds `codegen-equiv`: a parameter's type is part of the mangled name, so retyping one renames the symbol and the gate compares bodies by name. Recorded in [10-tooling-ci.md](10-tooling-ci.md) |
+| `057eb35a`, the cpu-add result made nodiscard | **taken**, as `#[must_use]` with a one-line reason at each of the four sites that drop it |
+| `a0234971`, naming `reduction`'s parameters | **not taken as typing, and the reason is this tree's own rule.** `reduction(improving, d, mn, delta)` carries three adjacent `i32`s and the swap is silent, but it is called from `search`, the largest function in the engine, where [09-type-design.md](09-type-design.md) says a type costs where many values are live. That is refish's own `P4` verdict on the same function, reached independently |
+| `29be37a0` bestmove with its ponder move, `f301f771` a history share, `e56eabec` bank index types, `dd4024ed` quadrant subscripts, `b17449b5` two magic layouts, `3683267f` explicit constructors | **no analogue or already held.** Four are shapes this port never had — its history block is per-worker and its quadrant is reached through named methods, not two bool subscripts — and `explicit` is a C++ conversion rule with no Rust equivalent |
+
 | probed, `SPEEDUP.md`'s deterministic-win patterns | verdict |
 |---|---|
 | **P7**, a runtime parameter that is a literal at every call site | **taken, and it was the sweep's largest result.** `build_magics` took its four ray directions as an argument, so one non-generic instantiation served both sliders and every ray step loaded a direction that could have been a constant. −28.7M at `avx2` and −27.9M at `sse41`, 2.7–2.9% of every startup, search flat on both. refish's tell is what found it: the callee survives in the profile as ONE symbol however literal the call sites look |

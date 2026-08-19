@@ -630,6 +630,15 @@ disassembles `.text`, and compares symbol by symbol. A genuine rewording reports
 identical; anything that moved a bound, changed an inlining decision or handed the register
 allocator a different problem names the symbols it moved.
 
+**It cannot settle a SIGNATURE change, and the reason generalises.** A parameter's type is
+part of a Rust symbol's mangled name, so retyping one renames the function — and this gate
+matches bodies BY NAME, so a renamed symbol reads as one removal and one addition with no
+body compared at all. Only a change that keeps every signature can use this gate as proof.
+Retyping the tablebase root probe's two flags is the worked example: the callee was inlined,
+so nothing was added or removed and three CALLERS moved by one to three instructions each —
+enough for the gate to refuse the claim, which is the right answer, and the commit says so
+rather than calling itself a pure refactor.
+
 Four normalisations, and each is a place where identical code prints differently once
 something before it changes size:
 
