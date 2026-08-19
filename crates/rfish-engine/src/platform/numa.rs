@@ -221,7 +221,8 @@ impl Default for NumaConfig {
         let mut cfg = NumaConfig::empty();
         let n = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         for c in 0..n {
-            cfg.add_cpu_to_node(NumaIndex::new(0), CpuIndex::new(c));
+            // One node, and `c` counts up, so no processor can already be assigned.
+            let _fresh = cfg.add_cpu_to_node(NumaIndex::new(0), CpuIndex::new(c));
         }
         cfg
     }
@@ -236,6 +237,14 @@ impl NumaConfig {
 
     /// Assign `c` to node `n`. False when `c` already belongs to a node, in which case
     /// nothing changed.
+    ///
+    /// **`#[must_use]`, because the false is the interesting answer and four of the five call
+    /// sites drop it.** A processor named twice is a config that does not describe the machine
+    /// — from `/sys` it means the topology contradicted itself, and from a `NumaPolicy` string
+    /// it means the operator asked for something incoherent. `from_string` refuses on it; the
+    /// sysfs paths cannot act on it and say so at the call rather than by omission, which is
+    /// the difference between a decision and an oversight.
+    #[must_use]
     fn add_cpu_to_node(&mut self, n: NumaIndex, c: CpuIndex) -> bool {
         if self.is_cpu_assigned(c) {
             return false;
@@ -312,7 +321,10 @@ impl NumaConfig {
                 };
                 for c in indices_from_shortened_string(&cpus).into_iter().map(CpuIndex::new) {
                     if is_allowed(c) {
-                        cfg.add_cpu_to_node(NumaIndex::new(n), c);
+                        // A processor listed under two nodes is a `/sys` that contradicts
+                        // itself. The FIRST node wins, which is what the false reports, and
+                        // there is no better answer available here than keeping it.
+                        let _fresh = cfg.add_cpu_to_node(NumaIndex::new(n), c);
                     }
                 }
             }
@@ -323,7 +335,8 @@ impl NumaConfig {
             let total = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
             for c in (0..total).map(CpuIndex::new) {
                 if is_allowed(c) {
-                    cfg.add_cpu_to_node(NumaIndex::new(0), c);
+                    // The config was just emptied and `c` counts up: nothing is assigned yet.
+                    let _fresh = cfg.add_cpu_to_node(NumaIndex::new(0), c);
                 }
             }
         }
@@ -400,7 +413,9 @@ impl NumaConfig {
             }
             for d in ds {
                 for c in d {
-                    cfg.add_cpu_to_node(NumaIndex::new(n), c);
+                    // The L3 domains were merged into disjoint sets above, so a processor
+                    // reaches this once. The false would mean that merge was wrong.
+                    let _fresh = cfg.add_cpu_to_node(NumaIndex::new(n), c);
                 }
                 n += 1;
             }
