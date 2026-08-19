@@ -215,7 +215,7 @@ cargo xtask docs-lint      # also runs inside cargo xtask parity
 ```
 
 It reads every `*.md` outside `target/`, `.git/` and `resources/` — tracked or not — and
-fails on five things:
+fails on each of these:
 
 - **A dead internal link.** Any `[text](target)` that is not an external URL, a `mailto:` or
   a bare `#anchor` must resolve relative to the linking file or to the workspace root. A

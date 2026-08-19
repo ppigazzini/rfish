@@ -1463,7 +1463,8 @@ is always whatever freedom the type takes away.
 
 Every shape on this page is a claim about COST, and the anchor is blind to all of them: it
 pins the node count and says nothing about what a node costs. The instruments that can see
-one are [11-performance.md](11-performance.md)'s, and the rows below are the ones a shape is argued on.
+one are [11-performance.md](11-performance.md)'s, and the rows below are the ones a shape is
+argued on.
 
 | gate | what it proves here | owned by |
 |---|---|---|
