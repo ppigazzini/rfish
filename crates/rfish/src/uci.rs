@@ -513,7 +513,9 @@ impl Engine {
             &self.tablebases,
             self.options.spin("SyzygyProbeDepth") as i32,
             self.options.spin("SyzygyProbeLimit") as u32,
-            self.options.check("Syzygy50MoveRule"),
+            rfish_engine::platform::syzygy::Rule50::from_option(
+                self.options.check("Syzygy50MoveRule"),
+            ),
         );
     }
 

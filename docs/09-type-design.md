@@ -47,9 +47,28 @@ its type existed and is now a compile error:
 | a threat index where a king-piece index belongs | folded a different column of the weight table into the accumulator |
 | a history bonus where a score belongs | a score-domain number clamped by a history limit |
 | a bonus and its clamp, swapped | a differently shaped gravity curve, so a different move ordering |
+| the tablebase root probe's two flags, swapped | a won position ranked as drawn, or every win ranked alike — see below |
 
 None of those is hypothetical: each was reachable, and each has been broken on purpose to
-confirm the compiler rejects it.
+confirm the compiler rejects it. The last one is the newest and shows the shape at its
+plainest: `root_probe(pos, rule50: bool, rank_dtz: bool)` carried the whole distinction between
+its two flags in argument position, and **both inversions are silent** — `rule50` changes the
+VERDICT a table gives, since a cursed win becomes a win, while `rank_dtz` changes whether
+distance ranking happens at all. `Rule50{Ignore, Apply}` and `RankDtz{No, Yes}` make the swap
+two type errors:
+
+```text
+expected `RankDtz`, found `Rule50`
+expected `Rule50`, found `RankDtz`
+```
+
+The flag is a type from the option that sets it down to the probe that reads it, so no call
+site converts and there is no `bool` left to transpose. It costs nothing —
+`budget-ab` reads −6 instructions at an unmoved node count — but `codegen-equiv` reports three
+symbols changed by one to three instructions each, so it is **not** a pure refactor by that
+gate's standard and this page does not claim to be one. A `#[repr(u8)]` with pinned
+discriminants was tried to get the identity back and did not change the count, so it was
+dropped rather than kept as decoration.
 
 ### It finds defects, not only prevents them
 
