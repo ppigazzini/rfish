@@ -275,3 +275,61 @@ catches it.
   topology, the policies and the reporting are in `crates/rfish-engine/src/platform/numa.rs`,
   read from `/sys` and `/proc`; what `std` exposes no API for is binding a thread to a node.
   See [06-platform.md](06-platform.md) for why each gap is blocked rather than pending.
+
+## The gates
+
+The zone split and the `unsafe` prohibition are the two claims on this page that a reader
+cannot check by reading, because both are properties of what the tree does NOT contain.
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `zone-check` | no engine module names a zone at or above its own, except where a baseline says why | this page |
+| `unsafe-lint` | the workspace `forbid` is still there, asserted from OUTSIDE the compiler that enforces it | this page |
+| `test` | the whole stack under the gate profile, where `debug_assert!` and overflow checks are on | [10-tooling-ci.md](10-tooling-ci.md) |
+| `signature` | the three crates, assembled, search upstream's tree | [10-tooling-ci.md](10-tooling-ci.md) |
+
+### `zone-check` — the direction `cargo` cannot check
+
+```sh
+cargo xtask zone-check
+```
+
+`rfish-engine`'s five zones have a declared dependency direction — `board` reads nothing,
+`state` reads `board`, `eval` and `search` read both, `platform` reads all of them — and the
+consequence that matters is that **perft is a complete test of the board zone**, because
+nothing below it can influence it. The crate boundary is checked by the compiler; this graph is
+inside ONE crate, where a cycle between modules builds fine.
+
+So it was a property a reviewer maintained, and
+[00-architecture.md](00-architecture.md) said so: it carried a hand-written inventory of what
+crosses, with the note that a fourth edge would be noticed by nobody. **There was already a
+fourth** — `search/worker.rs` names `platform::syzygy`'s types in five places, in every shipped
+build. The gate found it on its first run, which is the second time in this repository that
+writing the instrument was worth more than the finding it was aimed at.
+
+The baseline **expires in both directions**, which is the half that makes a baseline worth
+having: an undeclared crossing reddens the gate, and a declared crossing whose edge is gone
+reddens it too. Both seen to fail, and `negative-control` carries the first:
+
+```text
+UNDECLARED board -> search in board/bitboard.rs: it names a zone at or above its own, ...
+STALE search -> platform in search/harness.rs is in the baseline and the edge is gone. ...
+```
+
+Each entry's REASON is printed on every run, not merely stored. A baseline nobody reads stops
+being questioned; printing it is what keeps each entry something a reader can disagree with.
+`../Stockfish refish` keeps `depcheck.sh`'s baselines the same way and its `lanecheck.sh`
+prints excuses for the same reason.
+
+### `unsafe-lint`
+
+No `unsafe` keyword, no `allow(unsafe_code)`, and `unsafe_code = "forbid"` still present in
+the workspace manifest.
+
+The compiler already rejects the first two. The gate exists because the manifest line is one
+line and a reviewer can miss it being deleted — the property is asserted from **outside**
+the mechanism that enforces it.
+
+It scans the shipped crates only. `xtask` is a build tool that never enters the binary and
+necessarily names the patterns it looks for; scanning it would make the gate report itself.
+It is still covered by the workspace forbid, which the manifest check asserts.

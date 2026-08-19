@@ -48,38 +48,40 @@ it. So the sentence is now a check: `docs-lint` reads this arrow run and compare
 carries the row, and dropping a gate from the prose turns the gate red with both orders
 printed.
 
-## Which gate answers which question
-
 Two dozen steps, and choosing between them otherwise means reading the rest of this page.
-The column that makes the table worth having is the last one, and every entry in it is that
-gate's own stated limit from its section below rather than a summary written from memory.
+The column that earns the table is "cannot see", and every entry in it is that gate's own
+stated limit rather than a summary written from memory. The last column is where the gate is
+described, which is the page whose subject it holds; `this page` means the mechanics are here.
 
-| Gate | Answers | Cannot see | Lane |
-|---|---|---|---|
-| `signature` | does the search visit the same NODES as upstream | what a node COSTS; only the default arch, so no ISA-gated divergence | `rfish_parity` |
-| `perft` | does movegen enumerate the right tree | anything above movegen — it never evaluates or searches | `rfish_parity`, `rfish_perft` |
-| `golden` | does the shell still SAY what it said | whether what it says is what upstream says | `rfish_parity` |
-| `golden-audit` | is each golden what UPSTREAM produces | paths no fixture drives | `rfish_upstream_check`, and via `parity` |
-| `nnue-check` | is the network's raw output upstream's | how that output is USED once the search has it | `rfish_upstream_check`, and via `parity` |
-| `tb` | are the WDL and DTZ answers upstream's | what the prober COSTS, and the root RANKING — neither is a probe | `rfish_upstream_check`, and via `parity` |
-| `upstream-nodes` | does the search agree node-for-node off the bench list | positions no random draw reaches | `rfish_upstream_check` |
-| `fingerprint` | does rfish CALL what upstream calls, as often | what happens between the calls | `rfish_upstream_check` |
-| `net-roundtrip` | do the net reader and writer agree | whether either matches upstream's format — that is `nnue-check` | via `parity` |
-| `async-check` | what an INTERRUPTED search leaves | values: an interrupted search ends wherever the clock got to | via `parity` |
-| `repro-search` | what a COMPLETED search leaves for the next one | whether the node counts are RIGHT; and one thread only | via `parity` |
-| `zone-check` | does any module name a zone at or above its own | a `use` in a block comment; whether an edge is behind `cfg(test)` | via `parity` |
-| `lane-coverage` | does every step run somewhere, or say why not | whether the lane that runs it actually asserts anything | via `parity` |
-| `fixture-coverage` | is every fixture classified and every property presented | whether the fixture exercises the property WELL | via `parity` |
-| `docs-lint` | dead links, absent paths, a pinned number a gate computes | whether a claim is TRUE — only whether it is checkable | `rfish_parity` |
-| `unsafe-lint` | is the workspace forbid still in place | nothing else; it is one property | `rfish_parity` |
-| `arch-determinism` | does every tier reach the anchor | tiers this host cannot execute — it names them rather than counting them checked | `rfish_parity` |
-| `tsan` | does a 4-thread search race | a race no 4-thread run happens to take | `rfish_parity` |
-| `sync-status` | is the golden checkout AT the pin | whether the pin is the right pin | `rfish_upstream_check` |
-| `negative-control` | do the gates FAIL when they should | a gate with no row | none — local, it mutates the tree |
-| `perf-budget`, `budget-ab` | what a node costs, and what startup costs | cache, branches, latency; and without `--syzygy`, the tablebase reader entirely | none — local, per-machine golden |
-| `codegen-equiv` | did the compiler emit what it emitted before | anything that changes a SIGNATURE: retyping a parameter renames the symbol, and it matches bodies by name | none — local, needs a working tree |
-| `counters` | cache and branch behaviour against upstream | where the cost is, per component; and AVX-512 tiers | none — local, needs an oracle and a PGO build |
-| `fuzz` | does hostile input reach a panic | anything the generator does not produce | `rfish_fuzz` |
+| Gate | Answers | Cannot see | Lane | Described in |
+|---|---|---|---|---|
+| `signature` | does the search visit the same NODES as upstream | what a node COSTS; only the default arch, so no ISA-gated divergence | `rfish_parity` | this page |
+| `perft` | does movegen enumerate the right tree | anything above movegen — it never evaluates or searches | `rfish_parity`, `rfish_perft` | [01-engine-board.md](01-engine-board.md) |
+| `golden` | does the shell still SAY what it said | whether what it says is what upstream says | `rfish_parity` | [07-shell.md](07-shell.md) |
+| `golden-audit` | is each golden what UPSTREAM produces | paths no fixture drives | `rfish_upstream_check`, and via `parity` | [07-shell.md](07-shell.md) |
+| `nnue-check` | is the network's raw output upstream's | how that output is USED once the search has it | `rfish_upstream_check`, and via `parity` | [03-engine-eval.md](03-engine-eval.md) |
+| `tb` | are the WDL and DTZ answers upstream's | what the prober COSTS, and the root RANKING — neither is a probe | `rfish_upstream_check`, and via `parity` | [05-tablebases.md](05-tablebases.md) |
+| `upstream-nodes` | does the search agree node-for-node off the bench list | positions no random draw reaches | `rfish_upstream_check` | this page |
+| `fingerprint` | does rfish CALL what upstream calls, as often | what happens between the calls | `rfish_upstream_check` | [11-performance.md](11-performance.md) |
+| `net-roundtrip` | do the net reader and writer agree | whether either matches upstream's format — that is `nnue-check` | via `parity` | [03-engine-eval.md](03-engine-eval.md) |
+| `async-check` | what an INTERRUPTED search leaves | values: an interrupted search ends wherever the clock got to | via `parity` | [07-shell.md](07-shell.md) |
+| `repro-search` | what a COMPLETED search leaves for the next one | whether the node counts are RIGHT; and one thread only | via `parity` | [02-engine-search.md](02-engine-search.md) |
+| `zone-check` | does any module name a zone at or above its own | a `use` in a block comment; whether an edge is behind `cfg(test)` | via `parity` | [00-architecture.md](00-architecture.md) |
+| `lane-coverage` | does every step run somewhere, or say why not | whether the lane that runs it actually asserts anything | via `parity` | this page |
+| `fixture-coverage` | is every fixture classified and every property presented | whether the fixture exercises the property WELL | via `parity` | [07-shell.md](07-shell.md) |
+| `docs-lint` | dead links, absent paths, a pinned number a gate computes | whether a claim is TRUE — only whether it is checkable | `rfish_parity` | [13-writing.md](13-writing.md) |
+| `unsafe-lint` | is the workspace forbid still in place | nothing else; it is one property | `rfish_parity` | [00-architecture.md](00-architecture.md) |
+| `arch-determinism` | does every tier reach the anchor | tiers this host cannot execute — it names them rather than counting them checked | `rfish_parity` | this page |
+| `tsan` | does a 4-thread search race | a race no 4-thread run happens to take | `rfish_parity` | this page |
+| `sync-status` | is the golden checkout AT the pin | whether the pin is the right pin | `rfish_upstream_check` | this page |
+| `negative-control` | do the gates FAIL when they should | a gate with no row | none — local, it mutates the tree | this page |
+| `perf-budget`, `budget-ab` | what a node costs, and what startup costs | cache, branches, latency; and without `--syzygy`, the tablebase reader entirely | none — local, per-machine golden | [11-performance.md](11-performance.md) |
+| `codegen-equiv` | did the compiler emit what it emitted before | anything that changes a SIGNATURE: retyping a parameter renames the symbol, and it matches bodies by name | none — local, needs a working tree | [11-performance.md](11-performance.md) |
+| `counters` | cache and branch behaviour against upstream | where the cost is, per component; and AVX-512 tiers | none — local, needs an oracle and a PGO build | [11-performance.md](11-performance.md) |
+| `fuzz` | does hostile input reach a panic | anything the generator does not produce | `rfish_fuzz` | this page |
+| `test` | do the unit and property suites hold, under the gate profile where `debug_assert!` and `overflow-checks` are ON | anything only a whole search reaches | `rfish_parity` | this page |
+| `fmt`, `clippy` | is the source the shape the toolchain agrees on | every property below the surface, which is all of them | `rfish_parity` | this page |
+| `parity` | every gate above that needs no build of upstream | whatever it SKIPPED — which it names, separately from the passes | `rfish_parity` | this page |
 
 **The stacked rows are the ones a reader gets wrong.** `signature` and `golden` both watch one
 binary and only one of them reads what it SAID. `tb` and the probing budget both drive the
@@ -90,11 +92,11 @@ The lane column is here and not repeated per section, so there is one copy to ke
 A gate whose lane is "none" is excused in `lane-coverage` with a reason, and the reason is
 capability or cost — never that nobody got round to it.
 
-**The last four rows are the cost axes, and their mechanics are
-[11-performance.md](11-performance.md)'s.** They answer a different question from everything
-else on this page — not whether the engine is right but what it costs — and the conditions a
-ratio needs before it means anything are stated there once, beside the instruments that need
-them.
+**`perf-budget`, `budget-ab`, `codegen-equiv` and `counters` are the cost axes, and their
+mechanics are [11-performance.md](11-performance.md)'s.** They answer a different question
+from everything else on this page — not whether the engine is right but what it costs — and
+the conditions a ratio needs before it means anything are stated there once, beside the
+instruments that need them.
 
 ### `signature`
 
@@ -108,110 +110,6 @@ pin, so a diff is a porting REGRESSION rather than a tuning difference — see
 
 The gate has to run in well under a minute, because that is the property that decides
 whether anyone runs it before pushing. If a change makes it slower, fix the change.
-
-### `perft`
-
-`tools/perft.table` is **not** a golden and no step regenerates it. Those counts are facts
-about chess, reproduced here against a pristine upstream build, so a mismatch is always a
-movegen bug.
-
-The `chess960` flag is part of each row rather than a mode the runner is in, because the
-same FEN means two different positions under the two castling dialects.
-
-### `golden`
-
-Each `tools/cases/*.uci` script is driven into the engine and its output compared with
-`tools/<name>.golden`.
-
-Lines whose content depends on the clock or the machine are filtered before comparison —
-`info depth`, `Total time`, `Nodes/second`, the compiler banner. Without that filter every
-golden would be a record of one machine's timing rather than of the engine's behaviour.
-
-### `nnue-check`
-
-The differential evaluation gate, and the one that says the NNUE port is a PORT rather than
-an approximation. It drives rfish and a pristine upstream build over the same positions and
-compares the RAW network output — the number upstream's `eval` prints as "internal units".
-
-Comparing final evaluations would not do: the optimism blend and the fifty-move damping sit
-on top and would mask a forward-pass error.
-
-It needs two things a fresh clone does not have — the 90 MiB net (`cargo xtask net`) and an
-upstream binary (`cd ../Stockfish/src && make -j build ARCH=x86-64-avx2`) — and reports
-SKIPPED for either. **It is deliberately not a CI step**: a gate that can only skip in CI
-teaches contributors to ignore a skip. `parity` names it when it could not run.
-
-Positions in check are excluded, because upstream's `eval` refuses to score one — and so does
-rfish's, for the same reason and so the two emit the same number of lines.
-
-**Both differential gates drive ONE engine invocation for the whole battery.** A spawn per
-position reloads the 90 MiB network every time; batching took `nnue-check` from minutes to
-three seconds and `tb` from minutes to six. A gate that takes five minutes is a gate people
-skip, which makes it worth no more than one that does not exist.
-
-The batching also made a real difference visible that the per-position form had hidden: it
-compares the two engines' line COUNTS, and rfish was answering two positions upstream
-declined.
-
-### `tb`
-
-The differential tablebase gate: rfish's WDL verdict and DTZ distance must equal a pristine
-upstream build's, position by position.
-
-A tablebase answer is exact, so "close" is meaningless — an index computed one off reads a
-different position's entry and returns a confident wrong verdict. A golden pinning rfish's
-own output would pin whatever it currently does; only the comparison catches that.
-
-It also checks the property that makes an unconfigured engine safe: with no path set nothing
-is discovered, no probe fires, and the signature is unaffected.
-
-SKIPs without `resources/syzygy/` or without an upstream build. Every entry in the battery is
-LEGAL — an illegal position makes the oracle exit rather than answer, which reads to a gate
-as a broken engine rather than as a position to skip.
-
-### `docs-lint`
-
-Five checks: every markdown link resolves, every `crates/…` or `tools/…` path named in prose
-exists, no page quotes the current bench anchor, no `xtask` step goes unnamed by every
-shipped page, and no tracked file names the internal working area. The middle two hold the
-rules [13-writing.md](13-writing.md) records as the most-broken — a pinned number and an
-undiscoverable step — and both read their subject from its owner (`tools/signature.golden`,
-the dispatch table in `crates/xtask/src/main.rs`) rather than from a second list here.
-
-**The last check sweeps the whole INDEX, not the markdown set**, and it exists because the
-path check above cannot see its class. That check exempts a path `.gitignore` names, on the
-grounds that an ignored path is one the repository decided not to carry and a doc naming it
-is usually documenting the tool that writes it. The internal area is ignored, so every
-reference into it landed in that exemption and reported clean — six tracked files were doing
-exactly that, two of them engine sources. A source comment dangles for a reader precisely as
-a doc line does, which is why the subject is every tracked file rather than every page.
-
-Both sibling ports wrote this rule against a hand-written list of directories and both were
-bitten by the same shape it guards: ../zfish's read eight paths, so its whole build package
-and all of `.github/` were blind, and a file landed there four commits later; ../mcfish
-established the rule, verified it by hand, and had it broken twice within days by commits
-that had no way to know. `crates/xtask/src/devsweep.rs` carries the needles and `.gitignore`
-declares the directory — those two files are the only ones allowed to name it, and the
-exemption is asserted rather than assumed.
-
-It settles the **mechanical** half of documentation rot, and [13-writing.md](13-writing.md)
-names the three classes it cannot: a real symbol attributed to the wrong file, a list with
-the wrong count or order, and a behaviour described as absent from a build that has it. It
-cannot tell you a sentence has become false, and in the sibling ports every false claim ever
-found got there by a commit that changed the code and not the page. That half is yours.
-
-### `unsafe-lint`
-
-No `unsafe` keyword, no `allow(unsafe_code)`, and `unsafe_code = "forbid"` still present in
-the workspace manifest.
-
-The compiler already rejects the first two. The gate exists because the manifest line is one
-line and a reviewer can miss it being deleted — the property is asserted from **outside**
-the mechanism that enforces it.
-
-It scans the shipped crates only. `xtask` is a build tool that never enters the binary and
-necessarily names the patterns it looks for; scanning it would make the gate report itself.
-It is still covered by the workspace forbid, which the manifest check asserts.
 
 ### `lane-coverage`
 
@@ -238,64 +136,6 @@ run somewhere is reported as a stale excuse, and a unit test refuses an excuse n
 the dispatch table no longer has. Two extraction bugs the sibling ports paid for are held
 here too — a step named in a workflow **comment** is not a step the workflow runs, and a
 word boundary that accepts a hyphen lets `xtask net-fetch` satisfy `xtask net`.
-
-### `fixture-coverage`
-
-**A test's input domain is not the arguments it passes — it is every property the code
-branches on**, and a fixture set is only as good as the list of properties it was partitioned
-over. That list was in nobody's head twice over: "does the golden corpus cover Shredder
-castling notation, or an en-passant capture that exposes the king along the rank?" could only
-be answered by reading three directories. `tools/fixture_properties.tsv` writes it down — 60
-rows of `<property> <owner> <fixture> <witness>` — and this gate holds it to the tree in both
-directions.
-
-Direction 1: every row is still true. The owner exists, the fixture exists, and the witness
-still appears in it, so a case that stops presenting its property reddens — the option line
-deleted, the position rewritten, the file renamed. The witness is a literal **substring**,
-not a pattern, with `\n` as the one escape, so it cannot silently match more than it says.
-
-Direction 2: every file in `tools/cases/` appears in some row. The fixture universe is
-globbed from the tree rather than listed in the table, because a second list rots exactly
-like the first, and this is the direction that catches a case arriving with nobody having
-answered "a representative of *what*?".
-
-It also refuses a `#` line in a `.uci` fixture. **A `.uci` file is engine input**, piped raw,
-so a line that looks like a comment is a command the engine answers `Unknown command` to and
-the case diverges for a reason unrelated to what it tests. ../mcfish lost a milestone to
-exactly that.
-
-**What it cannot do** is prove that presenting a property exercises the owner's branch. That
-needs coverage data this tree does not collect, and a green run says only that the fixtures
-still present what the table claims.
-
-### `async-check`
-
-**No byte-golden can reach the interrupted-search path.** Every case in `tools/cases/` is
-driven by writing all its lines and closing the pipe, so a `stop` there is read after the
-search has already ended — and a stop that lands inside a *running* search ends it wherever
-the clock got to, which moves the final `info` line's node count run to run. There is nothing
-to pin.
-
-So this gate asserts **invariants** rather than values, which needs no reference at all. They
-are not rfish-authored expectations of upstream's output; they are properties of the UCI
-contract:
-
-1. a `stop` inside a running search yields exactly one `bestmove`, it is legal, and the
-   engine still answers `isready`;
-2. a bare `stop` with no search running answers nothing and stays up — an engine that replied
-   here would be inventing a move;
-3. `ponderhit` converts a pondering search and it still ends with exactly one `bestmove`;
-4. `quit` during a running search exits. **The timeout is the assertion**: before `go` ran off
-   the UCI thread this would have hung, and a hang in CI reads as an infrastructure flake
-   rather than as the engine ignoring `quit`.
-
-The legal move list comes from the engine's own `go perft 1` rather than being written down
-here, so the gate carries no expectation of its own — and reading anything but 20 root moves
-from the start position is a rig fault, not a verdict. 4 of 4, in 7s.
-
-`negative-control` covers it: with `quit` no longer stopping an unbounded search, the gate
-goes red in 59s. The mutant is bounded by the GATE rather than by the engine — `async-check`
-caps its own wait at 30s and reports a broken invariant instead of hanging the run.
 
 ### Two framework checks with no subject here
 
@@ -417,80 +257,6 @@ so the lane passes the flag, and the lane's first run had already died at the th
 without it. The flag expires by itself: a runner that gains AVX-512 benches all five and it
 stops excusing anything. Full five-tier coverage is a LOCAL run on an AVX-512 box, which is
 the run to make after touching a kernel.
-
-### `zone-check` — the direction `cargo` cannot check
-
-```sh
-cargo xtask zone-check
-```
-
-`rfish-engine`'s five zones have a declared dependency direction — `board` reads nothing,
-`state` reads `board`, `eval` and `search` read both, `platform` reads all of them — and the
-consequence that matters is that **perft is a complete test of the board zone**, because
-nothing below it can influence it. The crate boundary is checked by the compiler; this graph is
-inside ONE crate, where a cycle between modules builds fine.
-
-So it was a property a reviewer maintained, and
-[00-architecture.md](00-architecture.md) said so: it carried a hand-written inventory of what
-crosses, with the note that a fourth edge would be noticed by nobody. **There was already a
-fourth** — `search/worker.rs` names `platform::syzygy`'s types in five places, in every shipped
-build. The gate found it on its first run, which is the second time in this repository that
-writing the instrument was worth more than the finding it was aimed at.
-
-The baseline **expires in both directions**, which is the half that makes a baseline worth
-having: an undeclared crossing reddens the gate, and a declared crossing whose edge is gone
-reddens it too. Both seen to fail, and `negative-control` carries the first:
-
-```text
-UNDECLARED board -> search in board/bitboard.rs: it names a zone at or above its own, ...
-STALE search -> platform in search/harness.rs is in the baseline and the edge is gone. ...
-```
-
-Each entry's REASON is printed on every run, not merely stored. A baseline nobody reads stops
-being questioned; printing it is what keeps each entry something a reader can disagree with.
-`../Stockfish refish` keeps `depcheck.sh`'s baselines the same way and its `lanecheck.sh`
-prints excuses for the same reason.
-
-### `repro-search` — what a COMPLETED search leaves for the next one
-
-Node counts repeat across `ucinewgame`, at twenty budgets.
-
-```sh
-cargo xtask repro-search
-```
-
-**Every other value gate reads the FIRST answer the process gives.** `signature` runs one
-bench, `perft` counts a tree, `golden` pins a transcript — none of them asks whether a search
-left anything behind. This runs the same two positions twice in one process with a
-`ucinewgame` between the rounds and requires the second round to reproduce the first node for
-node, so anything the reset misses shows as a divergence: a history table, a stack entry, a
-correction bank, a root-move field, a time-manager carry-over.
-
-It is **upstream's own `tests/reprosearch.sh`**, which this port had never taken, and the
-budget progression is upstream's — `100 * 3^i / 2^i` for i in 1..=20. The budgets are not
-round numbers at any step on purpose: each one stops the search at a different point.
-
-What it cannot see: whether those node counts are the RIGHT ones, which is `signature`'s
-question, and what a second thread would do to them. It runs at the default thread count, and
-a Lazy-SMP search is not node-reproducible — no gate can make it so.
-
-Upstream's version drives the engine through `expect` and, before that was repaired, a
-missing interpreter left `grep` matching nothing, `awk` rejecting nothing, and the script
-printing `reprosearch testing OK` having checked nothing at all. This one drives the binary
-the way every other gate here does, so there is no interpreter to be absent and no pipeline
-whose exit status belongs to its last stage — and a round that reports fewer than four
-searches is the failure it looks like rather than a vacuous pass.
-
-Seen to FAIL by mutation, and `negative-control` carries the row: with `ucinewgame` no longer
-clearing the worker histories, 33 of 40 searches diverge and it names each one —
-
-```text
-differs 332525 nodes, `position startpos`: 332529 nodes before ucinewgame, 332595 after
-repro-search: 7 of 40 searches reproduced across ucinewgame
-```
-
-The seven that still reproduce are the smallest budgets, where the histories have barely
-moved — which is the honest shape of the result rather than a weakness in the row.
 
 ## Running the engine
 

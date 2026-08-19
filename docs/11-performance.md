@@ -402,3 +402,20 @@ sibling ports added that check: a node count is a property of the net as much as
 - **`cargo bench` is not used.** The engine is measured by driving the binary, because that
   is what a harness measures and what ships. A microbenchmark of a function LTO would have
   inlined away is a measurement of a program nobody runs.
+
+## The gates
+
+None of these runs in `parity`, and each is excused there with the reason `lane-coverage`
+prints: a per-machine golden, a working tree to compare against, or an oracle and a PGO build
+that a push lane cannot afford.
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `perf-budget` | retired instructions against a recorded row, on two axes — the search at 0.005% and startup at 1% | this page |
+| `budget-ab` | the same two axes against a git ref, with both sides built and nothing stored | this page |
+| `codegen-equiv` | per-symbol machine-code identity between the working tree and a ref | this page |
+| `counters` | what the hardware did: reads, writes, D1 and icache misses, branches and their mispredicts | this page |
+| `perf` | the interleaved paired wall clock, reported as a median ratio with its spread | this page |
+| `fingerprint` | rfish still reaches its answer by CALLING what upstream calls, as often | this page |
+| `signature` | that both sides searched the same tree, without which every figure above is void | [10-tooling-ci.md](10-tooling-ci.md) |
+

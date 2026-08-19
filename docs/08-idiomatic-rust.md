@@ -1458,3 +1458,16 @@ Three things decide whether this is worth reaching for:
 **The general shape: a property the compiler cannot see is not a property you have.** Alignment,
 length and range are all like this. The fix is always to move the fact into a type, and the cost
 is always whatever freedom the type takes away.
+
+## The gates
+
+Every shape on this page is a claim about COST, and the anchor is blind to all of them: it
+pins the node count and says nothing about what a node costs. The instruments that can see
+one are [11-performance.md](11-performance.md)'s, and the rows below are the ones a shape is argued on.
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `perf-budget`, `budget-ab` | what the shape costs, in retired instructions, against a recorded row or against a git ref | [11-performance.md](11-performance.md) |
+| `codegen-equiv` | that a reformulation emitted the SAME CODE — the only gate that answers a "no functional change" claim | [11-performance.md](11-performance.md) |
+| `signature` | that the shape did not move the tree, without which every figure above describes a different engine | [10-tooling-ci.md](10-tooling-ci.md) |
+| `test` | the wrapping this page relies on, under the gate profile where `overflow-checks` is ON and a bare `+` that wraps in release traps instead | [10-tooling-ci.md](10-tooling-ci.md) |

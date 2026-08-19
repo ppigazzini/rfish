@@ -346,3 +346,27 @@ green over the remaining hole for three nights. `../zfish` fixed the same half-h
 earlier (`3883af90`), from this port's own harness finding — the two ports keep re-finding each
 other's residue, and the shape to look for is a validated field whose *consumers* read more out
 of it than the validation checked.
+
+## The gates
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `tb` | rfish's WDL verdict and DTZ distance equal a pristine upstream build's, position by position | this page |
+| `fuzz` | mutated table bytes reach no panic — the only input here that no part of the process vouches for | [10-tooling-ci.md](10-tooling-ci.md) |
+| `perf-budget` with `--syzygy` | what the prober COSTS: the bench list never enters it, so this is the only workload that measures this zone at all | [11-performance.md](11-performance.md) |
+
+### `tb`
+
+The differential tablebase gate: rfish's WDL verdict and DTZ distance must equal a pristine
+upstream build's, position by position.
+
+A tablebase answer is exact, so "close" is meaningless — an index computed one off reads a
+different position's entry and returns a confident wrong verdict. A golden pinning rfish's
+own output would pin whatever it currently does; only the comparison catches that.
+
+It also checks the property that makes an unconfigured engine safe: with no path set nothing
+is discovered, no probe fires, and the signature is unaffected.
+
+SKIPs without `resources/syzygy/` or without an upstream build. Every entry in the battery is
+LEGAL — an illegal position makes the oracle exit rather than answer, which reads to a gate
+as a broken engine rather than as a position to skip.

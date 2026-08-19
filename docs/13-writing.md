@@ -229,6 +229,22 @@ fails on three things:
   a number" rule is most often broken with — and a step in the dispatch table that no shipped
   page mentions is a step nobody can discover.
 
+**The last check sweeps the whole INDEX, not the markdown set**, and it exists because the
+path check above cannot see its class. That check exempts a path `.gitignore` names, on the
+grounds that an ignored path is one the repository decided not to carry and a doc naming it
+is usually documenting the tool that writes it. The internal area is ignored, so every
+reference into it landed in that exemption and reported clean — six tracked files were doing
+exactly that, two of them engine sources. A source comment dangles for a reader precisely as
+a doc line does, which is why the subject is every tracked file rather than every page.
+
+Both sibling ports wrote this rule against a hand-written list of directories and both were
+bitten by the same shape it guards: ../zfish's read eight paths, so its whole build package
+and all of `.github/` were blind, and a file landed there four commits later; ../mcfish
+established the rule, verified it by hand, and had it broken twice within days by commits
+that had no way to know. `crates/xtask/src/devsweep.rs` carries the needles and `.gitignore`
+declares the directory — those two files are the only ones allowed to name it, and the
+exemption is asserted rather than assumed.
+
 **Three classes stay out of its reach, and they are the common ones:**
 
 - a real symbol attributed to the **wrong file**;
@@ -248,3 +264,12 @@ reader. Docs are accurate when written and rot where the code moves under them, 
 repository mid-port the code moves a lot. Prefer the claim that stays true: name the owner
 and the invariant, name the upstream golden for what is missing, and point at the gate for
 the number.
+
+## The gates
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `docs-lint` | the mechanical half of documentation rot: a dead link, an absent path, a pinned number a gate computes, a list a gate computes, a step no page names, and a shipped file naming the internal working area | this page |
+
+The section above is where its mechanics live, and the three classes it cannot reach are the
+reason this page exists at all: the gate buys the mechanical half, and the rest is a reader's.

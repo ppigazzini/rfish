@@ -1511,3 +1511,51 @@ branches than upstream and mispredicts more of them. Read traffic at 1.233 is th
 data-shaped lead, and `StackEntry` at 72 bytes against upstream's 56 is part of it — but the
 56-byte alternative was measured and was worse, so that row is a REDESIGN and not an edit.
 
+## The gates
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `nnue-check` | the RAW network output equals a pristine upstream build's, position by position | this page |
+| `net-roundtrip` | the format reader and the writer agree, so an order stated twice is welded | this page |
+| `signature` | how that output is USED once the search has it — which `nnue-check` cannot see | [10-tooling-ci.md](10-tooling-ci.md) |
+| `perf-budget` | what the forward pass and the accumulator COST, which no gate in `parity` can see | [11-performance.md](11-performance.md) |
+
+### `nnue-check`
+
+The differential evaluation gate, and the one that says the NNUE port is a PORT rather than
+an approximation. It drives rfish and a pristine upstream build over the same positions and
+compares the RAW network output — the number upstream's `eval` prints as "internal units".
+
+Comparing final evaluations would not do: the optimism blend and the fifty-move damping sit
+on top and would mask a forward-pass error.
+
+It needs two things a fresh clone does not have — the 90 MiB net (`cargo xtask net`) and an
+upstream binary (`cd ../Stockfish/src && make -j build ARCH=x86-64-avx2`) — and reports
+SKIPPED for either. **It is deliberately not a CI step**: a gate that can only skip in CI
+teaches contributors to ignore a skip. `parity` names it when it could not run.
+
+Positions in check are excluded, because upstream's `eval` refuses to score one — and so does
+rfish's, for the same reason and so the two emit the same number of lines.
+
+**Both differential gates drive ONE engine invocation for the whole battery.** A spawn per
+position reloads the 90 MiB network every time; batching took `nnue-check` from minutes to
+three seconds and `tb` from minutes to six. A gate that takes five minutes is a gate people
+skip, which makes it worth no more than one that does not exist.
+
+The batching also made a real difference visible that the per-position form had hidden: it
+compares the two engines' line COUNTS, and rfish was answering two positions upstream
+declined.
+
+### `net-roundtrip`
+
+`export_net` writes the network back out and the gate reads it in again, byte for byte. The
+format is stated twice — once in the reader and once in the writer — and only a round trip
+welds the two statements together.
+
+It is aimed at the one output path nothing else drives. A writer can drift from its reader
+while the engine evaluates and searches exactly as before: measured, `signature` and
+`nnue-check` both stay green over a mutant that swaps two of the writer's eight operations
+and emits a net this build cannot read back. A gate that only reads what the engine CONSUMES
+cannot see that.
+
+It says nothing about whether either half matches UPSTREAM's format. That is `nnue-check`.
