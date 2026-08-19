@@ -95,8 +95,8 @@ and the replacement shape is sometimes better:
   `s.shift(d)` followed by an on-board test to become `s.try_shift(d)` returning `Option`,
   which short-circuits before the Chebyshev distance is computed at all. `sliding_attacks`
   runs that loop for every square by every occupancy: **−22.2M instructions in
-  `build_magics`**, on the startup axis that `perf-budget` subtracts and no gate in `parity`
-  can see.
+  `build_magics`**, on the startup axis — which `perf-budget` subtracts from the search figure
+  and, since the axis was given its own tolerance, also gates.
 - **An `Option`-returning accessor reads the field once.** `if ep.is_ok() { … ep.file() … }`
   loads `st.ep_square` twice; `if let Some(ep) = ep.square()` loads it once — **−743K** on the
   `do_move` path.

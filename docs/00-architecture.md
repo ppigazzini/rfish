@@ -71,10 +71,12 @@ for the argv form, so `stockfish bench` does not silently measure the fallback, 
 resolves the file relative to the working directory, which is why every gate runs the engine
 from `resources/`.
 
-**Startup is not free, and no gate in `parity` can see it.** `cargo xtask perf-budget`
-subtracts a `quit`-only profile, so the net load and the magic search sit outside every
-number it reports. [03-engine-eval.md](03-engine-eval.md) carries that axis, how to measure
-it, and what a defect on it looked like.
+**Startup is not free, and no gate in `parity` sees it — but one outside `parity` now does.**
+`cargo xtask perf-budget` and `budget-ab` measure a `quit`-only profile, SUBTRACT it from the
+search figure, and gate it as a second axis on its own 1% tolerance; the net load and the
+magic build are ~1.02e9 instructions against a ~1.51e9 search.
+[03-engine-eval.md](03-engine-eval.md) carries that axis, how to measure it, and what two
+defects on it looked like — the second was found by the gate's first run.
 
 ## How a search flows
 
