@@ -81,6 +81,16 @@ pub struct PairsData {
 /// The table is `1 << min(max_sym_len, this)` bytes, sized to the TABLE rather than to the
 /// cap: a small alphabet gets a small table and touches fewer cache lines for it. Uncapped it
 /// would want `1 << 63` entries.
+///
+/// **On the corpus this repository ships the cap never binds**, and that is worth knowing
+/// before anyone tunes it. The three-man tables measure `max_sym_len` 7 and 11, so their
+/// length tables are 128 and 2,048 bytes and **no bucket escapes to the walk at all**. The cap
+/// is sized for the tables the prober supports and the repository does not ship: on a FIVE-man
+/// corpus, where a typical table is `min_sym_len` 5 and `max_sym_len` 18, `../Stockfish refish`
+/// measures 22% of buckets escaping at 12 bits, 41% at 10 and 72% at 8 — and taking it to 8
+/// cost them 2.5x the mispredicts and 12% more instructions in this reader to save 39% of its
+/// L1 read misses. Twelve is near a knee rather than a round number, and the knee is on a
+/// corpus no gate here runs.
 const LEN_TAB_MAX_BITS: u32 = 12;
 
 /// The length table's "this bucket spans two lengths; walk it". Cannot collide with a real
@@ -510,6 +520,73 @@ pub fn set_groups(
 
 #[cfg(test)]
 mod tests {
+
+    /// The one-load answer is the walk's answer, for every buffer — not just at bucket ends.
+    ///
+    /// **The optimisation has to be TRANSPARENT, and this is what says so.** `build_len_tab`
+    /// decides each bucket by walking both of its ends; this checks the finished table against
+    /// the walk for arbitrary buffers, which is what catches the failure the construction
+    /// cannot catch itself — a decoder indexing with a different shift from the one the
+    /// builder assumed. A bucket that answered differently would be a wrong tablebase verdict,
+    /// not a slow one.
+    ///
+    /// It also reports the ESCAPE RATE, which is what the cap buys: an escape falls to the
+    /// walk, and the walk is the unpredictable branch this table exists to remove.
+    /// `../Stockfish refish` measured 22% escapes at 12 bits on a FIVE-man corpus, where a
+    /// typical table is `min_sym_len` 5 and `max_sym_len` 18. That is a different question
+    /// from this one and its number is not quoted here as if it were the same.
+    #[test]
+    fn the_length_table_answers_exactly_what_the_walk_would() {
+        // A canonical descending, right-padded `base64` for each shape worth covering: one
+        // alphabet inside the cap, one that straddles it, one at a single length.
+        for (min_sym_len, max_sym_len) in [(1u8, 4u8), (5, 12), (5, 18), (7, 7), (1, 40)] {
+            let mut d = PairsData { max_sym_len, min_sym_len, ..PairsData::default() };
+            let n = usize::from(max_sym_len) - usize::from(min_sym_len) + 1;
+            // Built the way `set_sizes` leaves it: DESCENDING, and each entry right-padded
+            // to 64 bits, so `base64[i]`'s low `64 - (i + min_sym_len)` bits are zero. That
+            // padding is the whole reason a code no longer than K bits owns a whole number of
+            // buckets, so a synthetic table without it tests a property the real one has.
+            d.base64 = vec![0u64; n];
+            let mut v = u64::MAX;
+            for i in 0..n {
+                let bits = i + usize::from(min_sym_len);
+                let align = 1u64 << (64 - bits);
+                d.base64[i] = v & !(align - 1);
+                v = d.base64[i].saturating_sub(1);
+            }
+            build_len_tab(&mut d);
+
+            assert_eq!(
+                d.len_tab.len(),
+                1usize << (64 - d.len_tab_shift),
+                "the table is sized to the bits it is indexed by"
+            );
+
+            let mut escapes = 0usize;
+            // A fixed LCG, so a failure is reproducible without a seed to record.
+            let mut x = 0x2545_f491_4f6c_dd1d_u64;
+            for _ in 0..20_000 {
+                x = x
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let fast = usize::from(d.len_tab[(x >> d.len_tab_shift) as usize]);
+                if fast == usize::from(NO_FAST_LEN) {
+                    escapes += 1;
+                    continue;
+                }
+                assert_eq!(
+                    fast,
+                    walk_len(&d.base64, x),
+                    "min {min_sym_len} max {max_sym_len}, buffer {x:#018x}"
+                );
+            }
+            // A shape whose whole alphabet fits under the cap must never escape, which is the
+            // property that makes the cap a cap rather than a guess.
+            if usize::from(max_sym_len) <= LEN_TAB_MAX_BITS as usize {
+                assert_eq!(escapes, 0, "min {min_sym_len} max {max_sym_len} should never walk");
+            }
+        }
+    }
     use super::*;
 
     #[test]
