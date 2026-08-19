@@ -119,6 +119,7 @@ lands, and nobody knows which claim broke better than the person who broke it.
 | [08-idiomatic-rust.md](08-idiomatic-rust.md) | the Rust patterns, the falsified list, the measured shapes | cold as prose, append-only as a ledger |
 | [09-type-design.md](09-type-design.md) | the value domain, its algebra, and the boundary of what it promises | warm — a type added without a row here makes the page wrong |
 | [10-tooling-ci.md](10-tooling-ci.md) | `cargo xtask` steps, the tiers, `.github/workflows/` | hot — a step added here is a page edit there |
+| [11-performance.md](11-performance.md) | the six cost axes and what each is blind to | hot — every measured figure on it is a property of one toolchain on one box |
 | [12-references.md](12-references.md) | external links | cold |
 | this page | the rules | cold |
 | [14-glossary.md](14-glossary.md) | the vocabulary, in four tiers | warm — every entry names an owner, and a rename dates it |
