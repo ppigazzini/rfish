@@ -228,3 +228,98 @@ Two things follow from it, and both had to move together:
   search declares itself unbounded and answers the pending quit in the same call. Both races
   are gated — `async-check` invariant 4 sends the quit into a running search and invariant 5
   sends it ahead of one, and only the second fails if the decision moves back to the reader.
+
+## The gates
+
+Everything this page owns is observable as TEXT, which is what makes the golden set the
+primary instrument here — and what makes its blind spots the ones to know: a golden pins what
+rfish says, not what upstream says, and it only ever sees a command some `.uci` case sends.
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `golden` | the shell still SAYS what it said, over every `.uci` case | this page |
+| `golden-audit` | what it says is what UPSTREAM says — the half a golden cannot reach | this page |
+| `fixture-coverage` | every fixture is classified and every property has a fixture that presents it | this page |
+| `async-check` | INVARIANTS on a RUNNING search: `stop`, `ponderhit` and `quit` are answered, which no golden can reach | this page |
+| `signature` | the engine behind the surface | [10-tooling-ci.md](10-tooling-ci.md) |
+
+### `golden`
+
+Each `tools/cases/*.uci` script is driven into the engine and its output compared with
+`tools/<name>.golden`.
+
+Lines whose content depends on the clock or the machine are filtered before comparison —
+`info depth`, `Total time`, `Nodes/second`, the compiler banner. Without that filter every
+golden would be a record of one machine's timing rather than of the engine's behaviour.
+
+### `golden-audit`
+
+A golden pins THIS engine. `golden-audit` drives a pristine upstream build through the same
+cases and diffs the two, which is the only way a golden's CONTENT is ever questioned; it
+found three real differences the goldens had been recording as correct for as long as they
+existed.
+
+`--write` is therefore the regenerator, and `golden-update` refuses: a golden written from
+rfish is a photograph of rfish. See [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+It refuses a case where both sides are blank before it tallies either way, for the reason
+[10-tooling-ci.md](10-tooling-ci.md) gives under "A gate that compared nothing must not
+pass": `""` equals `""`, so two dead engines score an agreement.
+
+### `fixture-coverage`
+
+**A test's input domain is not the arguments it passes — it is every property the code
+branches on**, and a fixture set is only as good as the list of properties it was partitioned
+over. That list was in nobody's head twice over: "does the golden corpus cover Shredder
+castling notation, or an en-passant capture that exposes the king along the rank?" could only
+be answered by reading three directories. `tools/fixture_properties.tsv` writes it down — 60
+rows of `<property> <owner> <fixture> <witness>` — and this gate holds it to the tree in both
+directions.
+
+Direction 1: every row is still true. The owner exists, the fixture exists, and the witness
+still appears in it, so a case that stops presenting its property reddens — the option line
+deleted, the position rewritten, the file renamed. The witness is a literal **substring**,
+not a pattern, with `\n` as the one escape, so it cannot silently match more than it says.
+
+Direction 2: every file in `tools/cases/` appears in some row. The fixture universe is
+globbed from the tree rather than listed in the table, because a second list rots exactly
+like the first, and this is the direction that catches a case arriving with nobody having
+answered "a representative of *what*?".
+
+It also refuses a `#` line in a `.uci` fixture. **A `.uci` file is engine input**, piped raw,
+so a line that looks like a comment is a command the engine answers `Unknown command` to and
+the case diverges for a reason unrelated to what it tests. ../mcfish lost a milestone to
+exactly that.
+
+**What it cannot do** is prove that presenting a property exercises the owner's branch. That
+needs coverage data this tree does not collect, and a green run says only that the fixtures
+still present what the table claims.
+
+### `async-check`
+
+**No byte-golden can reach the interrupted-search path.** Every case in `tools/cases/` is
+driven by writing all its lines and closing the pipe, so a `stop` there is read after the
+search has already ended — and a stop that lands inside a *running* search ends it wherever
+the clock got to, which moves the final `info` line's node count run to run. There is nothing
+to pin.
+
+So this gate asserts **invariants** rather than values, which needs no reference at all. They
+are not rfish-authored expectations of upstream's output; they are properties of the UCI
+contract:
+
+1. a `stop` inside a running search yields exactly one `bestmove`, it is legal, and the
+   engine still answers `isready`;
+2. a bare `stop` with no search running answers nothing and stays up — an engine that replied
+   here would be inventing a move;
+3. `ponderhit` converts a pondering search and it still ends with exactly one `bestmove`;
+4. `quit` during a running search exits. **The timeout is the assertion**: before `go` ran off
+   the UCI thread this would have hung, and a hang in CI reads as an infrastructure flake
+   rather than as the engine ignoring `quit`.
+
+The legal move list comes from the engine's own `go perft 1` rather than being written down
+here, so the gate carries no expectation of its own — and reading anything but 20 root moves
+from the start position is a rig fault, not a verdict. 4 of 4, in 7s.
+
+`negative-control` covers it: with `quit` no longer stopping an unbounded search, the gate
+goes red in 59s. The mutant is bounded by the GATE rather than by the engine — `async-check`
+caps its own wait at 30s and reports a broken invariant instead of hanging the run.

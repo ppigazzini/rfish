@@ -87,3 +87,20 @@ Pondering IS here. `Ponder` buys the current move a quarter more time; a budget 
 out while pondering sets a flag rather than stopping, because only the GUI can end a ponder;
 and `ponderhit` converts the search into a real one, stopping immediately if that flag was
 already set. The thinking done on the opponent's clock counts.
+
+## The gates
+
+**`bench` is single-threaded**, so every gate that reads a node count — the anchor included —
+stays green while a race is live and while contention gets worse. These are the ones that are
+not blind to it.
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `tsan` | a four-thread search under ThreadSanitizer: the table, the counters and the vote, on the paths a real search takes | [10-tooling-ci.md](10-tooling-ci.md) |
+| `repro-search` | what a completed search leaves for the next one — at ONE thread, which is the limit of the row | [02-engine-search.md](02-engine-search.md) |
+| `test` | the vote over a constructed candidate set, and that a resized pool keeps at least the main thread and still searches — both in-process, at 1 and 3 workers | [10-tooling-ci.md](10-tooling-ci.md) |
+
+A worker is ~15.6 MB resident, so a harness must never drive `Threads` near the option's
+declared maximum — that is `Threads 1024`, ~16 GB, and it has taken this box down. Keep every
+harness at 1, 2, 8 or 16 and test the bounds as a pure function; [07-shell.md](07-shell.md)
+owns the rule and the option surface it applies to.

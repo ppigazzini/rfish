@@ -213,3 +213,27 @@ diffing the recomputed feature SETS, which is correct by construction.
 [03-engine-eval.md](03-engine-eval.md) carries the numbers and the four things that decided
 it. Keep the recording working — the decision is about the accumulator, not about the board
 zone — and read that page before proposing to consume it again.
+
+## The gates
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `perft` | move generation is right, in both castling dialects | this page |
+| `fuzz` | make then unmake restores the position exactly, and no legal list holds a duplicate | [10-tooling-ci.md](10-tooling-ci.md) |
+| `signature` | the board through a real search, where a movegen ORDER change moves the node count without moving a perft total | [10-tooling-ci.md](10-tooling-ci.md) |
+
+### `perft`
+
+`tools/perft.table` is **not** a golden and no step regenerates it. Those counts are facts
+about chess, reproduced here against a pristine upstream build, so a mismatch is always a
+movegen bug.
+
+The `chess960` flag is part of each row rather than a mode the runner is in, because the
+same FEN means two different positions under the two castling dialects.
+
+**Perft cannot see a key that desyncs and resyncs**, because it counts leaves: a position
+whose Zobrist key goes wrong and comes back right generates the same moves and reaches the
+same total. Neither can the anchor, which is a fixed position list. What does see it is the
+board half of `fuzz`: it checks make-then-unmake per MOVE, so a category-specific fault is
+attributed to the move that caused it, and it unwinds a whole line back to the position it
+started from. The invariant table in [10-tooling-ci.md](10-tooling-ci.md) is the set.

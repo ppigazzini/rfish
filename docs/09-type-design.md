@@ -475,3 +475,17 @@ Two practical consequences:
 5. Run `cargo xtask signature`, then `cargo xtask perf-budget` at both tiers.
 6. Add a row here — to the map, to the boundary, or to both. A type added without one makes
    this page quietly wrong.
+
+## The gates
+
+**The compiler is this page's gate, and it is the only one that fires.** A type introduced so
+that a wrong spelling stops compiling has nothing to redden: the defect it prevents never
+reaches a binary, so no gate can be shown to fail over it. That is a property of the
+technique rather than a hole, and it is why `negative-control` carries no row for this page —
+a mutant here fails to build, which is the mechanism working.
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `test` | the conversions, the saturating arithmetic and the sentinel splits at their boundaries, where the type system stops and a value check starts | [10-tooling-ci.md](10-tooling-ci.md) |
+| `signature` | that an encoding change did not move the tree — the check on every "this is only a retyping" claim | [10-tooling-ci.md](10-tooling-ci.md) |
+| `codegen-equiv` | that the retyping cost nothing, with the standing caveat that a changed SIGNATURE renames the symbol and the gate then compares no body at all | [11-performance.md](11-performance.md) |

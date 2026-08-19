@@ -103,3 +103,16 @@ guarantees. The two places platform differences are visible:
 Everything else compiles identically. There is no `#[cfg(target_os)]` in the engine's
 search, evaluation or board zones, and there should not be one: a `cfg` in engine code is a
 second engine that no gate runs.
+
+## The gates
+
+This zone's hazard is not a wrong answer but a wrong ALLOCATION, and the value gates are
+blind to it: an engine that parses `NumaPolicy` into gigabytes benches exactly as before,
+right up to the point where the allocator gives up.
+
+| gate | what it proves here | owned by |
+|---|---|---|
+| `test` | the topology model, the three auto policies and the `NumaPolicy` bounds, as PURE FUNCTIONS — the only way this class may be exercised, because a reproducer that drives the binary has taken this box down twice | [10-tooling-ci.md](10-tooling-ci.md) |
+| `golden` | the shell still prints `info string Network replica 1: Local memory.` in upstream's own words, which is this zone's honest report of what it cannot do | [07-shell.md](07-shell.md) |
+| `zone-check` | nothing above this zone reads it, which is what makes the direction stated at the top of this page a fact rather than an intention | [00-architecture.md](00-architecture.md) |
+| `unsafe-lint` | the file reads that replace upstream's FFI are still the whole mechanism | [00-architecture.md](00-architecture.md) |
