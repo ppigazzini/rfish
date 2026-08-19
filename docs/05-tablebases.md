@@ -231,6 +231,16 @@ proof, and a corrupt header costs speed instead of correctness.
 | probing workload | **−1,119,491,009 (−12.05%)** | **−996,752,167 (−10.03%)** |
 | bench workload | +69 (+0.0000%) | — |
 
+**The cap never binds on the corpus this repository ships**, which is worth knowing before
+anyone tunes it: the three-man tables measure `max_sym_len` 7 and 11, so their length tables
+are 128 and 2,048 bytes and **not one bucket escapes to the walk**. Twelve is sized for the
+tables the prober supports and the repository does not ship — on a five-man corpus, where a
+typical table is `min_sym_len` 5 and `max_sym_len` 18, `refish` measures 22% of buckets
+escaping at 12 bits, 41% at 10 and 72% at 8, and taking the cap to 8 cost them 2.5x the
+mispredicts and 12% more instructions to save 39% of the reader's L1 read misses. The knee is
+real and it is on a corpus no gate here runs, so the constant carries their numbers as
+*theirs* rather than as a measurement of this tree.
+
 313,744 nodes on both sides of every run, and `tb` reads 264 of 264 probes matching upstream
 before and after. The bench figure is the control: that workload never enters this zone, which
 is the whole reason the axis had to exist before the change could be judged.
