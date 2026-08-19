@@ -18,7 +18,8 @@ Read in order. Each page owns a zone of the source and is the live claim about i
 | [07-shell.md](07-shell.md) | `crates/rfish/src/` — UCI transport, options, benchmark |
 | [08-idiomatic-rust.md](08-idiomatic-rust.md) | the pattern-by-pattern translation, and the measurement laws |
 | [09-type-design.md](09-type-design.md) | the value domain: what each type means, why it has that shape, and what it does not promise |
-| [10-tooling-ci.md](10-tooling-ci.md) | `cargo xtask`, the gates, CI, and each instrument's blind spots |
+| [10-tooling-ci.md](10-tooling-ci.md) | `cargo xtask`, the gates and CI — the instruments that say whether the engine is RIGHT |
+| [11-performance.md](11-performance.md) | the six cost axes, what each proves and what it cannot see |
 | [12-references.md](12-references.md) | upstream, Rust and UCI sources this port is checked against |
 | [13-writing.md](13-writing.md) | how to write a comment and a doc page here |
 | [14-glossary.md](14-glossary.md) | the words this set uses without stopping to define them |
