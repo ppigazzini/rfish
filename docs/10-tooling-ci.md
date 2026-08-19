@@ -34,14 +34,58 @@ from the passes, and never counts one as green.
 Listed in the order `parity` runs them. See [CONTRIBUTING.md](../CONTRIBUTING.md) for what
 each asserts.
 
-`fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `lane-coverage` → `fixture-coverage` →
-`async-check` → `test` → `perft` → `golden` → `golden-audit` → `nnue-check` → `tb` →
-`signature`
+`fmt` → `clippy` → `unsafe-lint` → `docs-lint` → `lane-coverage` → `zone-check` →
+`fixture-coverage` → `async-check` → `repro-search` → `test` → `perft` → `golden` →
+`golden-audit` → `nnue-check` → `net-roundtrip` → `tb` → `signature`
 
 Cheap and structural first, so a formatting mistake is reported in seconds rather than
 after a two-minute bench. `fmt-fix` is the same gate with the fix applied, and is not one
 `parity` runs. Read the list from `gates::parity` when it matters: prose cannot be gated,
-and a list that drifts by one entry reads exactly like one that has not.
+and a list that drifts by one entry reads exactly like one that has not — **which this list
+did**, by three entries, between `zone-check` landing and anyone reading the sentence above
+it.
+
+## Which gate answers which question
+
+Two dozen steps, and choosing between them otherwise means reading the rest of this page.
+The column that makes the table worth having is the last one, and every entry in it is that
+gate's own stated limit from its section below rather than a summary written from memory.
+
+| Gate | Answers | Cannot see | Lane |
+|---|---|---|---|
+| `signature` | does the search visit the same NODES as upstream | what a node COSTS; only the default arch, so no ISA-gated divergence | `rfish_parity` |
+| `perft` | does movegen enumerate the right tree | anything above movegen — it never evaluates or searches | `rfish_parity`, `rfish_perft` |
+| `golden` | does the shell still SAY what it said | whether what it says is what upstream says | `rfish_parity` |
+| `golden-audit` | is each golden what UPSTREAM produces | paths no fixture drives | `rfish_upstream_check`, and via `parity` |
+| `nnue-check` | is the network's raw output upstream's | how that output is USED once the search has it | `rfish_upstream_check`, and via `parity` |
+| `tb` | are the WDL and DTZ answers upstream's | what the prober COSTS, and the root RANKING — neither is a probe | `rfish_upstream_check`, and via `parity` |
+| `upstream-nodes` | does the search agree node-for-node off the bench list | positions no random draw reaches | `rfish_upstream_check` |
+| `fingerprint` | does rfish CALL what upstream calls, as often | what happens between the calls | `rfish_upstream_check` |
+| `net-roundtrip` | do the net reader and writer agree | whether either matches upstream's format — that is `nnue-check` | via `parity` |
+| `async-check` | what an INTERRUPTED search leaves | values: an interrupted search ends wherever the clock got to | via `parity` |
+| `repro-search` | what a COMPLETED search leaves for the next one | whether the node counts are RIGHT; and one thread only | via `parity` |
+| `zone-check` | does any module name a zone at or above its own | a `use` in a block comment; whether an edge is behind `cfg(test)` | via `parity` |
+| `lane-coverage` | does every step run somewhere, or say why not | whether the lane that runs it actually asserts anything | via `parity` |
+| `fixture-coverage` | is every fixture classified and every property presented | whether the fixture exercises the property WELL | via `parity` |
+| `docs-lint` | dead links, absent paths, a pinned number a gate computes | whether a claim is TRUE — only whether it is checkable | `rfish_parity` |
+| `unsafe-lint` | is the workspace forbid still in place | nothing else; it is one property | `rfish_parity` |
+| `arch-determinism` | does every tier reach the anchor | tiers this host cannot execute — it names them rather than counting them checked | `rfish_parity` |
+| `tsan` | does a 4-thread search race | a race no 4-thread run happens to take | `rfish_parity` |
+| `sync-status` | is the golden checkout AT the pin | whether the pin is the right pin | `rfish_upstream_check` |
+| `negative-control` | do the gates FAIL when they should | a gate with no row | none — local, it mutates the tree |
+| `perf-budget`, `budget-ab` | what a node costs, and what startup costs | cache, branches, latency; and without `--syzygy`, the tablebase reader entirely | none — local, per-machine golden |
+| `codegen-equiv` | did the compiler emit what it emitted before | anything that changes a SIGNATURE: retyping a parameter renames the symbol, and it matches bodies by name | none — local, needs a working tree |
+| `counters` | cache and branch behaviour against upstream | where the cost is, per component; and AVX-512 tiers | none — local, needs an oracle and a PGO build |
+| `fuzz` | does hostile input reach a panic | anything the generator does not produce | `rfish_fuzz` |
+
+**The stacked rows are the ones a reader gets wrong.** `signature` and `golden` both watch one
+binary and only one of them reads what it SAID. `tb` and the probing budget both drive the
+tablebases and only one of them is about cost. `async-check` and `repro-search` both ask what
+a search leaves behind, and they differ on whether it finished.
+
+The lane column is here and not repeated per section, so there is one copy to keep in step.
+A gate whose lane is "none" is excused in `lane-coverage` with a reason, and the reason is
+capability or cost — never that nobody got round to it.
 
 ### `signature`
 
