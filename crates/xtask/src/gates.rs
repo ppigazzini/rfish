@@ -975,6 +975,44 @@ fn is_identity(line: &str) -> bool {
 /// happens to have lying around, so a doc naming a file that only ever exists locally passes
 /// here and fails in CI — which is how the reference to the per-machine
 /// `tools/instr_budget.golden` reached `main` green.
+/// The `parity` order as `docs/10-tooling-ci.md` states it, checked against `parity` itself.
+///
+/// The page writes the order as one arrow-joined run of backticked step names. Anything else
+/// on the page is prose; this reads that one line and compares it to the list `parity` will
+/// actually run, in order, so an added gate cannot leave the documentation a step behind.
+fn parity_order_documented(root: &std::path::Path) -> Result<Vec<String>, String> {
+    let page = root.join("docs/10-tooling-ci.md");
+    let text = std::fs::read_to_string(&page).map_err(|e| format!("{}: {e}", page.display()))?;
+
+    // The arrow run may wrap over several lines; take the block between the heading that
+    // introduces it and the blank line that ends it.
+    let Some(start) = text.find("`fmt` → ") else {
+        return Ok(vec![format!(
+            "{}: the parity order is not stated — it opens `fmt` → and nothing matches",
+            page.display()
+        )]);
+    };
+    let block: String =
+        text[start..].lines().take_while(|l| !l.trim().is_empty()).collect::<Vec<_>>().join(" ");
+    let documented: Vec<String> = block
+        .split('→')
+        .map(|t| t.trim().trim_matches('`').trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    let actual: Vec<String> = parity_step_names().into_iter().map(str::to_string).collect();
+    if documented == actual {
+        return Ok(Vec::new());
+    }
+    Ok(vec![format!(
+        "{}: the documented parity order is not the one `parity` runs.\n      documented: \
+         {}\n      actual:     {}",
+        page.display(),
+        documented.join(" -> "),
+        actual.join(" -> ")
+    )])
+}
+
 pub(crate) fn docs_lint() -> Result<Outcome, String> {
     let root = workspace_root();
     let mut problems = Vec::new();
@@ -1039,6 +1077,15 @@ pub(crate) fn docs_lint() -> Result<Outcome, String> {
     let leaks = crate::devsweep::sweep(&root, &tracked)?;
     checked += tracked.len();
     problems.extend(leaks);
+
+    // The documented `parity` order against the one `parity` runs.
+    //
+    // **The page carrying this list says, directly under it, that a list which drifts by one
+    // entry reads exactly like one that has not — and it had drifted by three.** A number a
+    // gate computes is already refused above; a LIST a gate computes is the same rule, and
+    // this is the check that was missing when three gates were added and the prose was not.
+    problems.extend(parity_order_documented(&root)?);
+    checked += 1;
 
     for p in &problems {
         eprintln!("  {p}");
@@ -1604,7 +1651,12 @@ type GateStep = (&'static str, fn() -> Result<Outcome, String>);
 /// because the caller has to distinguish "a gate is red" (exit 1) from "a gate could not
 /// run" (exit 2), and an `Err` collapses both into the first.
 #[allow(clippy::unnecessary_wraps)]
-pub(crate) fn parity() -> Result<Outcome, String> {
+/// The steps `parity` runs, in order, as ONE list.
+///
+/// A function rather than a literal inside `parity`, because `docs-lint` reads the same list
+/// to hold the documented order to it — one order stated twice and welded, which is the shape
+/// `net-roundtrip` uses for the net format and this page's own drift argued for.
+fn parity_steps() -> Vec<GateStep> {
     let steps: Vec<GateStep> = vec![
         ("fmt", || fmt(false)),
         ("clippy", clippy),
@@ -1631,6 +1683,21 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         ("tb", tb),
         ("signature", || signature(false)),
     ];
+    steps
+}
+
+/// Just the names, for the gate that checks the documentation against them.
+fn parity_step_names() -> Vec<&'static str> {
+    parity_steps().into_iter().map(|(name, _)| name).collect()
+}
+
+// The signature is the DISPATCH TABLE's, not this function's choice: every step in
+// `main.rs` returns the same type, and `parity` handles each gate's error itself rather
+// than propagating one, so clippy is right that the `Ok` is never a `Err` and wrong that
+// the wrap is unnecessary.
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn parity() -> Result<Outcome, String> {
+    let steps = parity_steps();
 
     let mut failed = Vec::new();
     let mut skipped = Vec::new();

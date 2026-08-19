@@ -51,8 +51,16 @@ figure written into prose in the sibling ports went stale within a day, and a st
 worse than an absent one — it tells a reader to hold the wrong invariant.
 
 **Never pin a list a gate owns, either.** The gates `parity` runs, the lanes in CI, the tiers
-in the tier table. A list that drifts by one entry reads exactly like one that has not, and
-`docs-lint` cannot count. Name the function or the file that owns the list beside it.
+in the tier table. A list that drifts by one entry reads exactly like one that has not. Name
+the function or the file that owns the list beside it.
+
+**And this rule was broken by the page that states it.** `10-tooling-ci.md` wrote the `parity`
+order out, in the same paragraph as a sentence telling the reader that prose cannot be gated,
+and the list then drifted by three entries while nobody noticed — which is precisely what the
+sentence predicts and precisely why predicting it is not enough. `docs-lint` now reads that
+arrow run and compares it to `gates::parity_steps`, the one list `parity` itself runs from, so
+one of the lists this rule names is a check rather than a habit. The others still are not:
+where a list cannot be gated, write the owner beside it and expect the prose to rot.
 
 **State the limit.** A page that omits its own boundary invites over-trust. Say what the
 thing does *not* cover: `signature` builds at the default arch and cannot see an ISA-gated

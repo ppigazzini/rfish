@@ -723,6 +723,16 @@ const MUTANTS: &[Mutant] = &[
         gate: "nnue-check",
     },
     Mutant {
+        // The list a gate computes and a page writes down. The page said, directly under its
+        // own copy, that a list which drifts reads exactly like one that has not — and it had
+        // drifted by three entries with nothing to catch it.
+        label: "the documented parity order loses a gate",
+        file: "docs/10-tooling-ci.md",
+        find: "`lane-coverage` → `zone-check` →",
+        replace: "`lane-coverage` →",
+        gate: "docs-lint",
+    },
+    Mutant {
         // The direction `cargo` cannot check. A `use` is enough: `board` is the zone nothing
         // below it may influence, which is what makes perft a complete test of it.
         label: "the board zone reads the search zone",

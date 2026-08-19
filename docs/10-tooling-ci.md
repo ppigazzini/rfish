@@ -43,7 +43,10 @@ after a two-minute bench. `fmt-fix` is the same gate with the fix applied, and i
 `parity` runs. Read the list from `gates::parity` when it matters: prose cannot be gated,
 and a list that drifts by one entry reads exactly like one that has not — **which this list
 did**, by three entries, between `zone-check` landing and anyone reading the sentence above
-it.
+it. So the sentence is now a check: `docs-lint` reads this arrow run and compares it to
+`gates::parity_steps`, which is the one list `parity` itself runs from. `negative-control`
+carries the row, and dropping a gate from the prose turns the gate red with both orders
+printed.
 
 ## Which gate answers which question
 
