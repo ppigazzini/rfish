@@ -56,7 +56,9 @@ In the order `parity` runs them:
 | `docs-lint` | no dead doc links, no named `crates/` or `tools/` path that does not exist, and no tracked file naming the internal working area |
 | `lane-coverage` | every `xtask` step runs in a workflow, runs in `parity`, or is excused with a reason |
 | `fixture-coverage` | `tools/fixture_properties.tsv` still holds: every property has a fixture that presents it, and every fixture is classified |
+| `zone-check` | no engine module names a zone at or above its own, except the crossings a baseline declares — the direction inside the crate that `cargo` cannot check |
 | `async-check` | `stop`, `ponderhit` and `quit` on a RUNNING search leave one legal `bestmove` and a live engine |
+| `repro-search` | node counts repeat across `ucinewgame` at twenty budgets — what a COMPLETED search leaves for the next one, where `async-check` asks what an interrupted one leaves |
 | `test` | the unit and property suite, under the `gate` profile's debug assertions |
 | `perft` | the reference counts in `tools/perft.table` match |
 | `golden` | the UCI case outputs match `tools/*.golden` |
