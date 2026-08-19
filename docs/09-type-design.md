@@ -21,7 +21,7 @@ So the design rule throughout is: when the code knows something, put it where th
 see it. A doc-comment saying "this index is always below 64" is a proof that has evaporated. A
 `Square` is the same proof, still there at every call site.
 
-The theory each family rests on is collected in [11-references.md](11-references.md) under
+The theory each family rests on is collected in [12-references.md](12-references.md) under
 "Type theory and type design", with what each citation is for. This page assumes it.
 
 ## What this buys
