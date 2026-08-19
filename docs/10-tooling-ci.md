@@ -69,7 +69,7 @@ described, which is the page whose subject it holds; `this page` means the mecha
 | `zone-check` | does any module name a zone at or above its own | a `use` in a block comment; whether an edge is behind `cfg(test)` | via `parity` | [00-architecture.md](00-architecture.md) |
 | `lane-coverage` | does every step run somewhere, or say why not | whether the lane that runs it actually asserts anything | via `parity` | this page |
 | `fixture-coverage` | is every fixture classified and every property presented | whether the fixture exercises the property WELL | via `parity` | [07-shell.md](07-shell.md) |
-| `docs-lint` | dead links, absent paths, a pinned number a gate computes | whether a claim is TRUE — only whether it is checkable | `rfish_parity` | [13-writing.md](13-writing.md) |
+| `docs-lint` | dead links, absent paths, a number or a LIST a gate computes, and every page carrying the gates that hold it | whether a claim is TRUE — only whether it is checkable | `rfish_parity` | [13-writing.md](13-writing.md) |
 | `unsafe-lint` | is the workspace forbid still in place | nothing else; it is one property | `rfish_parity` | [00-architecture.md](00-architecture.md) |
 | `arch-determinism` | does every tier reach the anchor | tiers this host cannot execute — it names them rather than counting them checked | `rfish_parity` | this page |
 | `tsan` | does a 4-thread search race | a race no 4-thread run happens to take | `rfish_parity` | this page |

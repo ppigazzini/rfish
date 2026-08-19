@@ -1013,6 +1013,215 @@ fn parity_order_documented(root: &std::path::Path) -> Result<Vec<String>, String
     )])
 }
 
+/// Pages that hold no gates, and say so here rather than carrying an empty table.
+///
+/// The list expires in BOTH directions: an exempt page that grows a section is a stale
+/// exemption, and an exemption naming a page the tree no longer has fails.
+const GATELESS_PAGES: &[(&str, &str)] = &[
+    ("docs/12-references.md", "a link list — it holds no claim of its own for a gate to bear on"),
+    (
+        "docs/14-glossary.md",
+        "the vocabulary; every entry names an owner, and the owner carries the gate",
+    ),
+];
+
+/// Steps that are not gates, and the reason each is not one.
+///
+/// Same shape as `meta::EXCUSED` and for the same reason: a list of names with no reasons
+/// beside them is a list nobody can expire. It expires both ways — a name the dispatch table
+/// no longer answers to fails, and so does one that turns up in a page's gates table.
+const NOT_A_GATE: &[(&str, &str)] = &[
+    ("help", "the help text"),
+    ("build", "builds the binary the gates drive; it asserts nothing"),
+    ("bench", "runs the benchmark; `signature` is the gate that judges the result"),
+    ("net", "fetches the network"),
+    ("tb-fetch", "fetches the tablebase set"),
+    ("pgo", "builds this side of a differential"),
+    ("oracle", "builds the other side of a differential"),
+    ("fmt-fix", "the fixing half of `fmt`"),
+    ("signature-update", "the regenerator behind `signature`"),
+    ("golden-update", "refuses; `golden-audit --write` is the regenerator"),
+    ("perf-budget-update", "the regenerator behind `perf-budget`"),
+];
+
+/// The routing every page's `## The gates` section states, held to the tree in both directions.
+///
+/// Every page ends with that section, and until this check that was a habit. A habit rots the
+/// way every list here rots: a page is rewritten and loses its section while other pages still
+/// route to it, and nothing says so. Three properties, each the failure of one way the routing
+/// decays:
+///
+/// - **a page with no section** — a reader of that page never learns what holds it, and the
+///   gate is discoverable only by grepping;
+/// - **a gate in no page's section** — `undocumented_steps` passes on an incidental mention
+///   anywhere in the prose, which is not the same as being ROUTED to;
+/// - **a row pointing at a page that does not carry the gate** — the pointer outlives its
+///   target exactly as a baseline outlives its edge, so it expires in the second direction
+///   like every other list here.
+fn gates_routing(
+    root: &std::path::Path,
+    steps: &[String],
+    problems: &mut Vec<String>,
+) -> Result<usize, String> {
+    let docs = root.join("docs");
+    let mut pages: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&docs).map_err(|e| format!("{}: {e}", docs.display()))? {
+        let name = entry.map_err(|e| e.to_string())?.file_name().to_string_lossy().into_owned();
+        // The numbered set only: README.md is the index and routes nothing itself.
+        // The extension is compared exactly rather than case-insensitively: `.md` is this
+        // set's one spelling, and `devsweep` reads the same names on the same terms.
+        let is_page = std::path::Path::new(&name).extension().is_some_and(|e| e == "md");
+        if is_page && name.starts_with(|c: char| c.is_ascii_digit()) {
+            pages.push(format!("docs/{name}"));
+        }
+    }
+    pages.sort();
+
+    let gateless = |page: &str| GATELESS_PAGES.iter().any(|(p, _)| *p == page);
+    for (page, _) in GATELESS_PAGES {
+        if !root.join(page).exists() {
+            problems.push(format!("the gateless list names {page}, which the tree does not carry"));
+        }
+    }
+
+    // `gate -> the page whose table names it`, and the rows to re-check in the other direction.
+    let mut carried: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
+    let mut routes: Vec<(String, String, String)> = Vec::new();
+    let mut sectioned = 0;
+    for page in &pages {
+        let text = std::fs::read_to_string(root.join(page)).map_err(|e| format!("{page}: {e}"))?;
+        let sections = text.lines().filter(|l| l.trim_end() == "## The gates").count();
+        if gateless(page) {
+            if sections != 0 {
+                problems.push(format!(
+                    "{page} is on the gateless list and has a gates section — stale exemption"
+                ));
+            }
+            continue;
+        }
+        match sections {
+            1 => sectioned += 1,
+            0 => {
+                problems.push(format!("{page} has no `## The gates` section"));
+                continue;
+            }
+            n => {
+                problems.push(format!("{page} has {n} `## The gates` sections — want exactly one"));
+                continue;
+            }
+        }
+        for (gate, target) in routing_rows(&text, steps) {
+            carried.insert((gate.clone(), page.clone()));
+            routes.push((gate, target, page.clone()));
+        }
+    }
+
+    // b. every gate is routed to by some page.
+    for step in steps {
+        if NOT_A_GATE.iter().any(|(n, _)| n == step) {
+            continue;
+        }
+        if !carried.iter().any(|(g, _)| g == step) {
+            problems.push(format!("`{step}` is a gate no page's `## The gates` section routes to"));
+        }
+    }
+    for (name, _) in NOT_A_GATE {
+        if !steps.iter().any(|s| s == name) {
+            problems.push(format!(
+                "the not-a-gate list names `{name}`, which the dispatch table no longer answers to"
+            ));
+        }
+        if carried.iter().any(|(g, _)| g == name) {
+            problems.push(format!(
+                "`{name}` is excused as not a gate and is in a gates table — stale exemption"
+            ));
+        }
+    }
+
+    // c. a row that points at a page must find the gate there.
+    for (gate, target, src) in &routes {
+        if target.is_empty() {
+            continue;
+        }
+        let target_page = format!("docs/{target}");
+        if !root.join(&target_page).exists() {
+            problems.push(format!("{src} routes `{gate}` to {target_page}, which does not exist"));
+            continue;
+        }
+        if !carried.contains(&(gate.clone(), target_page.clone())) {
+            problems.push(format!(
+                "{src} routes `{gate}` to {target}, whose gates table does not name it"
+            ));
+        }
+    }
+
+    println!(
+        "docs-lint: {sectioned} page(s) carry `## The gates`, {} gate(s) routed",
+        carried.iter().map(|(g, _)| g).collect::<std::collections::BTreeSet<_>>().len()
+    );
+    Ok(routes.len())
+}
+
+/// The rows of the FIRST table under `## The gates`, as `(gate, page or "" for this page)`.
+///
+/// The gate names come from the first cell and the page link from the last, rather than from
+/// anywhere in the row: the middle cells say what a gate cannot see, and they name other gates
+/// and other pages to say it. Reading the whole row made every such mention a route.
+fn routing_rows(text: &str, steps: &[String]) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    let mut in_section = false;
+    let mut started = false;
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed == "## The gates" {
+            in_section = true;
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if trimmed.starts_with("## ") {
+            break;
+        }
+        if !trimmed.starts_with('|') {
+            // The routing table is the first one in the section; anything after it is a
+            // moved gate description, which may carry tables of its own.
+            if started {
+                break;
+            }
+            continue;
+        }
+        let cells: Vec<&str> = trimmed.trim_matches('|').split('|').collect();
+        if cells.len() < 2 || cells.iter().all(|c| c.trim().trim_matches(['-', ':']).is_empty()) {
+            continue;
+        }
+        started = true;
+        let page = markdown_link_targets(cells[cells.len() - 1])
+            .into_iter()
+            .find(|t| is_page_link(t))
+            .map(str::to_string)
+            .unwrap_or_default();
+        for token in cells[0].split('`').skip(1).step_by(2) {
+            if steps.iter().any(|s| s == token) {
+                rows.push((token.to_string(), page.clone()));
+            }
+        }
+    }
+    rows
+}
+
+/// `NN-name.md`, the shape every page in the set has.
+fn is_page_link(target: &str) -> bool {
+    let name = target.rsplit('/').next().unwrap_or(target);
+    let bytes = name.as_bytes();
+    bytes.len() > 3
+        && bytes[0].is_ascii_digit()
+        && bytes[1].is_ascii_digit()
+        && bytes[2] == b'-'
+        && std::path::Path::new(name).extension().is_some_and(|e| e == "md")
+}
+
 pub(crate) fn docs_lint() -> Result<Outcome, String> {
     let root = workspace_root();
     let mut problems = Vec::new();
@@ -1048,7 +1257,9 @@ pub(crate) fn docs_lint() -> Result<Outcome, String> {
                 // Skip anything holding a placeholder: prose legitimately writes
                 // `tools/<name>.golden` and `crates/…`, and neither names a real file.
                 let placeholder = word.contains(['*', '<', '>', '\u{2026}']);
-                if (word.starts_with("crates/") || word.starts_with("tools/"))
+                if (word.starts_with("crates/")
+                    || word.starts_with("tools/")
+                    || word.starts_with("docs/"))
                     && !placeholder
                     && !word.ends_with('/')
                 {
@@ -1077,6 +1288,9 @@ pub(crate) fn docs_lint() -> Result<Outcome, String> {
     let leaks = crate::devsweep::sweep(&root, &tracked)?;
     checked += tracked.len();
     problems.extend(leaks);
+
+    // The routing every page's `## The gates` section states, in both directions.
+    checked += gates_routing(&root, &crate::meta::dispatch_steps(&root)?, &mut problems)?;
 
     // The documented `parity` order against the one `parity` runs.
     //
@@ -1789,6 +2003,45 @@ mod tests {
             filter_volatile(out),
             "info depth 3 seldepth 2 score cp 12 nodes 5 pv e2e4\nreadyok\nuciok\n"
         );
+    }
+
+    #[test]
+    fn a_route_is_read_from_the_first_cell_and_the_last() {
+        // The trap this parser exists for: the middle cells say what a gate CANNOT see, and
+        // they say it by naming other gates and other pages. Reading the whole row made every
+        // such mention a route, and the row below would have claimed that `net-roundtrip`'s
+        // page carries `nnue-check` and `parity` too.
+        let steps: Vec<String> =
+            ["net-roundtrip", "nnue-check", "parity", "perf-budget", "budget-ab"]
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+        let page = "## The gates\n\n| Gate | Cannot see | Described in |\n|---|---|---|\n\
+                    | `net-roundtrip` | whether either matches upstream — that is `nnue-check` \
+                    | [03-engine-eval.md](03-engine-eval.md) |\n\
+                    | `perf-budget`, `budget-ab` | latency | this page |\n\
+                    \nprose\n\n| a | later | table |\n|---|---|---|\n| `parity` | x | y |\n";
+        assert_eq!(
+            routing_rows(page, &steps),
+            vec![
+                ("net-roundtrip".to_string(), "03-engine-eval.md".to_string()),
+                ("perf-budget".to_string(), String::new()),
+                ("budget-ab".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_not_a_gate_name_is_still_a_step() {
+        // The same expiry `meta::EXCUSED` carries: a name the dispatch table no longer answers
+        // to is a dead excuse, and a dead excuse hides the next one.
+        let steps = crate::meta::dispatch_steps(&workspace_root()).expect("the dispatch table");
+        for (name, why) in NOT_A_GATE {
+            assert!(
+                steps.contains(&(*name).to_string()),
+                "`{name}` is excused as not a gate ({why}) but is no longer a step"
+            );
+        }
     }
 
     #[test]

@@ -30,8 +30,16 @@ Each page above is a live claim about code someone is about to touch. Change a z
 re-read its page and fix it **in the same commit**: a doc is wrong from the moment the code
 lands, and every false claim ever found in the sibling ports' docs got there that way.
 
-`cargo xtask docs-lint` catches a dead link and a named path that does not exist. It
+`cargo xtask docs-lint` catches a dead link, a named path that does not exist, a number or a
+list a gate computes, and a page that has stopped naming the gates that hold it. It
 **cannot** tell you a sentence has become false. That part is yours.
+
+**Each page carries a `## The gates` section**, naming what holds its claims. `owned by` reads
+`this page` where the mechanics live there and names the page otherwise, so a gate is described
+once and reachable from everywhere it matters — and the routing is checked in both directions,
+because a pointer outlives its target exactly as a baseline outlives its edge.
+[12-references.md](12-references.md) and [14-glossary.md](14-glossary.md) hold no gates and are
+exempt by name.
 
 ## Two documentation surfaces
 
