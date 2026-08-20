@@ -41,9 +41,9 @@ aligned atomic words. Rust's allocator already honours the type's alignment, so 
 nothing to hand-roll. Large pages would be a measurable win on a large `Hash`, and getting
 them portably needs a platform call that is `unsafe` — so this is a real cost of the
 constraint, and it is recorded as one rather than papered over. It has not been measured.
-A failed allocation is the allocator's own abort, with the size it could not satisfy, which
-is what upstream's `report_failed_allocation` was added to do by hand once its allocators
-began returning a null it then wrote through.
+An allocation that cannot be satisfied aborts in the allocator, naming the size it asked
+for; upstream's `memory.h` does the same by hand, in `report_failed_allocation`, because its
+own allocators return a null that the placement-new after them would write through.
 
 **Memory mapping.** A mapping is `unsafe` in Rust because the file can change under it. The
 Syzygy prober reads with positioned file reads instead; see

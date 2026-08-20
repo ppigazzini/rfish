@@ -2198,10 +2198,10 @@ impl SearchWorker {
 
             r -= self.stack[si.index()].stat_score * 439 / 4096;
 
-            // A quiet move asked to lift a window whose floor already sits above the static
-            // eval has more to prove, so reduce it harder; one with room below the floor is
-            // reduced less. Bounded both ways, and only while the window is about a score
-            // rather than about a mate or a tablebase verdict.
+            // The further the window's floor sits ABOVE the static eval, the more a quiet
+            // move has to prove to reach it, so reduce it harder; where the eval is already
+            // above alpha, reduce it less. Bounded either way, and skipped once alpha is
+            // about a mate or a tablebase verdict rather than about a score.
             if !capture && !is_decisive(alpha) {
                 r += 3 * (alpha - eval).clamp(-64, 96);
             }
@@ -3074,13 +3074,11 @@ impl SearchWorker {
 
         let out_of_time = self.limits.uses_time_management()
             && (elapsed > self.budget.maximum() || self.shared.stop_on_ponderhit());
-        // `move_time` is in the SAME unit as `elapsed` by the time this reads it, which is
-        // what `TimeManagement::init` guarantees: under `nodestime` it converts the clock,
-        // the increment, the overhead and `movetime` together, so both sides here are nodes
-        // or both are milliseconds. It was not always so -- upstream compared a node count
-        // against a millisecond figure until `ceb059eb`, and this port reproduced the
-        // crossing deliberately -- and the cast below is only the widening the unit type
-        // asks for, not a unit change.
+        // `move_time` is in the SAME unit as `elapsed` by the time this reads it, and
+        // `TimeManagement::init` is what guarantees it: under `nodestime` it converts the
+        // clock, the increment, the overhead and `movetime` together, so both sides of this
+        // comparison are nodes, or both are milliseconds. The cast is the widening the unit
+        // type asks for, not a unit change.
         let past_move_time =
             self.limits.move_time.is_some_and(|mt| elapsed >= Elapsed::new(mt as i64));
         let past_nodes = self.limits.nodes.is_some_and(|n| nodes >= n);
@@ -3159,17 +3157,17 @@ impl SearchWorker {
         // Step 2: extend by playing the shortest win each time, as a reader of the tables
         // would.
         //
-        // **NOT BOUNDED IN PLIES, because upstream stopped bounding it.** `ee515ad9` gave
-        // the root move a growable PV for exactly this loop, so a won line may run past
-        // `MAX_PLY`; a cap here would print a truncated win where the golden prints the
-        // whole one, and only a table set larger than the one this repo ships can tell the
-        // two apart.
+        // **NOT BOUNDED IN PLIES.** A won line may run past `MAX_PLY` — upstream's
+        // `RootPVMoves` is a growable vector for exactly this loop — so a cap here would
+        // print a truncated win where the golden prints the whole one. Only a table set
+        // larger than the one this repository ships can tell the two apart.
         //
-        // What holds the loop is therefore upstream's own set: the mate test, the draw test
-        // under `Syzygy50MoveRule`, the move-overhead deadline under time management, and a
-        // DTZ that shortens on every step. The last of those is a claim about FILE DATA —
-        // a table that ranks a repetition top loops here, pushing a move and a state per
-        // iteration — and the Syzygy reader one zone over is what refuses such a file.
+        // What holds the loop is therefore the same set upstream relies on: the mate test,
+        // the draw test under `Syzygy50MoveRule`, the move-overhead deadline under time
+        // management, and a DTZ that shortens on every step. The last of those is a claim
+        // about FILE DATA — a table that ranks a repetition top loops here, pushing a move
+        // and a state per iteration — and the Syzygy reader one zone over is what refuses
+        // such a file.
         while !(rule50 && pos.is_draw(Ply::ROOT)) {
             if timed_out(&start) {
                 break;

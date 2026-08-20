@@ -346,14 +346,12 @@ impl<R: Read> NetReader<R> {
         Self::whole(Self::leb128_values(bytes.iter(), out)?.as_slice())
     }
 
-    /// A block is consumed WHOLE, or the file is not the file this build reads.
+    /// Refuse a block with bytes left after its last value.
     ///
     /// The declared length and the value count are two statements of the same fact, written
-    /// at opposite ends of the format, and a block that satisfies one but not the other is a
-    /// block whose structure this build does not agree with -- even where every hash matched,
-    /// which is exactly when a silent acceptance costs the most. Upstream asserted the same
-    /// balance and `49f8e667` made it a stream failure, for the reason every assert in a
-    /// reader has: `-DNDEBUG` deletes it in the build people run.
+    /// at opposite ends of the format. A block that satisfies one but not the other has a
+    /// structure this build does not share -- and it reaches here only when every hash
+    /// already matched, which is exactly when accepting it silently costs the most.
     fn whole(rest: &[u8]) -> Result<(), NetError> {
         if rest.is_empty() { Ok(()) } else { Err(NetError::BlockNotConsumed) }
     }
@@ -715,15 +713,17 @@ mod tests {
     /// A block that declares more bytes than its values consume is refused.
     ///
     /// The complement of the truncation row above: too FEW bytes ends inside a value and is
-    /// already caught, while too many decodes every value successfully and leaves the rest
-    /// unread, which is the case an assert used to cover in both engines.
+    /// caught there, while too many decodes every value successfully and leaves the rest
+    /// unread.
     #[test]
     fn a_block_with_bytes_left_over_is_refused() {
         let mut bytes = leb_block(&[1, 2, 3]);
         // One more payload byte than the three values need, and a declared length that
-        // counts it: a well-formed encoding of nothing the reader was asked for.
-        let declared = u32::from_le_bytes([bytes[17], bytes[18], bytes[19], bytes[20]]);
-        bytes[17..21].copy_from_slice(&(declared + 1).to_le_bytes());
+        // counts it: a well-formed encoding of nothing the reader was asked for. The count
+        // sits immediately after the magic string, which is what fixes its offset.
+        let at = LEB128_MAGIC.len();
+        let declared = u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
+        bytes[at..at + 4].copy_from_slice(&(declared + 1).to_le_bytes());
         bytes.push(0x00);
         let mut out = vec![0i32; 3];
         assert!(matches!(

@@ -165,10 +165,15 @@ is the durable per-task record — the reply to a request is a summary of the co
 the other way round.
 
 **Subject: a conventional type, an optional scope, and the claim. 72 characters.** The types
-in use here are `feat`, `fix`, `perf`, `refactor` and `docs`, and the scope is the zone or
-module (`fix(syzygy):`, `perf(nnue):`, `docs(types):`). Bare `docs:` is fine when the change
-is the whole set. State what is now true, not which area was touched: *"refuse a WDL score
-the file invented"* beats *"fix a tablebase bug"*.
+in use here are `feat`, `fix`, `perf`, `refactor`, `docs` and `sync`, and the scope is the
+zone or module (`fix(syzygy):`, `perf(nnue):`, `docs(types):`). Bare `docs:` is fine when the
+change is the whole set. State what is now true, not which area was touched: *"refuse a WDL
+score the file invented"* beats *"fix a tablebase bug"*.
+
+**`sync:` is the one type that is not about a zone**, and it carries an extra obligation:
+it advances `tools/upstream/UPSTREAM_BASE`, so its body says which upstream commits the pin
+crossed and what each one did here — ported, or a no-op with the reason. A window whose
+commits are all no-ops is still a `sync:` commit, because the pin moved.
 
 **Body wrapped at 80, carrying three things in this order:** what the change is and why it is
 right, the witness, then the gates.

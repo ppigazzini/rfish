@@ -17,6 +17,12 @@ use crate::search::history::{ContKey, CorrKey};
 ///
 /// Every field is what upstream's `Limits` holds, and the same rule applies: a zero or
 /// empty field means "not constrained by this", not "constrained to zero".
+///
+/// **The clock fields are in milliseconds as RECEIVED, and in the budget's unit afterwards.**
+/// `TimeManagement::init` takes this by `&mut` and rewrites `time`, `inc` and `move_time`
+/// into node counts under `nodestime`, so a reader downstream of it compares node counts
+/// against node counts. It runs on a per-`go` clone, which is what keeps the conversion from
+/// compounding.
 #[derive(Clone, Debug, Default)]
 pub struct Limits {
     /// Milliseconds left on each side's clock.
@@ -570,11 +576,13 @@ impl WallMillis {
 
 /// The two stopping points, carrying the unit they are in.
 ///
-/// Under `nodestime` the whole time model switches to nodes — the clock, the increment and
-/// the move overhead are all multiplied into node counts. The unit was a `bool` stored beside
-/// two `pub i64`s, and the doc claimed that keeping it there "stops a caller comparing a node
-/// count against a millisecond". It stopped nothing: the flag and the bounds were three
-/// independent public fields, and nothing obliged a reader of one to consult the other.
+/// Under `nodestime` the whole time model switches to nodes — the clock, the increment, the
+/// move overhead and `movetime` are all multiplied into node counts.
+///
+/// **The unit is the CONTAINER of the bounds, not a flag beside them.** A `bool` next to two
+/// public numbers obliges nobody to read it, so a caller can compare a node count against a
+/// millisecond and no signature objects; here a bound cannot be had without naming which
+/// arm it came out of.
 #[derive(Clone, Copy, Debug)]
 pub enum Budget {
     /// Bounds in milliseconds of wall clock.

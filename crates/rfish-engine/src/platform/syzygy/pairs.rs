@@ -315,10 +315,9 @@ pub fn decompress(d: &PairsData, bytes: &[u8], idx: u64) -> i32 {
 
 /// Where one symbol stands in the expansion walk.
 ///
-/// Three states, not a visited flag, because the walk has to tell a symbol reached TWICE
-/// from a symbol reached through ITSELF, and a `bool` collapses exactly that distinction —
-/// which is the defect upstream's `5fd94536` fixed by widening its own flag the same way.
-/// The names say what the walk knows, so `Open` beside a child is a loop by reading.
+/// Three states rather than a visited flag, because the walk has to tell a symbol reached
+/// TWICE from a symbol reached through ITSELF, and a `bool` collapses exactly that
+/// distinction. `Open` beside a child is a loop, by reading.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SymState {
     /// Nothing has reached this symbol.
@@ -329,26 +328,42 @@ enum SymState {
     Closed,
 }
 
+/// One entry of the expansion walk's stack: which symbol, and which half of the visit.
+///
+/// A symbol is pushed twice — once to descend into and once to sum, after both children have
+/// their lengths — and which of the two an entry means decides whether `symlen[s]` is read or
+/// written. Carrying that as a `bool` beside the index leaves the two transposable and the
+/// meaning of `true` nowhere in the source.
+#[derive(Clone, Copy, Debug)]
+enum Visit {
+    /// Descend into this symbol, pushing whichever children still need one.
+    Enter(usize),
+    /// Sum this symbol's length; both children are `Closed` by now.
+    Sum(usize),
+}
+
 /// How many values a symbol expands into, minus one.
 ///
 /// Written iteratively over an explicit stack rather than recursively: a chain runs as deep
 /// as the twelve-bit child field allows, and a recursive walk spends a frame per link.
 ///
-/// [`SymState`] is what tells a symbol reached twice from a symbol reached through ITSELF. A
-/// shared child is ordinary — Recursive Pairing names the same pair from many places — and
-/// reads `Closed`, its length already final. A child that reads `Open` is still on the stack,
-/// so it is an ancestor and the tree closes a loop: `symlen` would then be a function of
-/// itself and no expansion terminates.
+/// Returns false for a tree no expansion can terminate on — a child outside the alphabet, or
+/// a symbol that is its own ancestor. A shared child is neither: Recursive Pairing names the
+/// same pair from many places, and such a child reads `Closed` with its length already final,
+/// where an ancestor reads `Open`.
 fn compute_symlen(d: &mut PairsData, bytes: &[u8], root: usize, state: &mut [SymState]) -> bool {
-    let mut stack = vec![(root, false)];
-    while let Some((s, expanded)) = stack.pop() {
-        if expanded {
-            let sr = d.right(bytes, s);
-            let sl = d.left(bytes, s);
-            d.symlen[s] = d.symlen[sl].wrapping_add(d.symlen[sr]).wrapping_add(1);
-            state[s] = SymState::Closed;
-            continue;
-        }
+    let mut stack = vec![Visit::Enter(root)];
+    while let Some(visit) = stack.pop() {
+        let s = match visit {
+            Visit::Sum(s) => {
+                let sr = d.right(bytes, s);
+                let sl = d.left(bytes, s);
+                d.symlen[s] = d.symlen[sl].wrapping_add(d.symlen[sr]).wrapping_add(1);
+                state[s] = SymState::Closed;
+                continue;
+            }
+            Visit::Enter(s) => s,
+        };
         if state[s] != SymState::Unseen {
             continue;
         }
@@ -368,17 +383,18 @@ fn compute_symlen(d: &mut PairsData, bytes: &[u8], root: usize, state: &mut [Sym
         if sl >= d.symlen.len() || sr >= d.symlen.len() {
             return false;
         }
-        // A child that is its own ancestor, refused for the same reason.
+        // A child that is its own ancestor, refused for the same reason: `symlen` would be a
+        // function of itself and the expansion in `decompress` would never reach a leaf.
         if state[sl] == SymState::Open || state[sr] == SymState::Open {
             return false;
         }
-        // Re-push this symbol to be summed once both children are known.
-        stack.push((s, true));
+        // Summed only once both children are known, so this entry sits UNDER them.
+        stack.push(Visit::Sum(s));
         if state[sr] == SymState::Unseen {
-            stack.push((sr, false));
+            stack.push(Visit::Enter(sr));
         }
         if state[sl] == SymState::Unseen {
-            stack.push((sl, false));
+            stack.push(Visit::Enter(sl));
         }
     }
     true
@@ -449,14 +465,14 @@ pub fn set_sizes(d: &mut PairsData, bytes: &[u8], mut off: usize) -> Option<usiz
         // `lo_i >= lo_i1` and neither side wraps at all, but a corrupt table inverts the pair
         // and a bare `-` would trap under the gate profile's overflow checks.
         d.base64[i] = d.base64[i + 1].wrapping_add(lo_i).wrapping_sub(lo_i1) / 2;
-        // A canonical code halves at least as slowly as the lengths grow, so
-        // `base64[i] * 2 >= base64[i + 1]` holds for every real table. Upstream asserted it
-        // and `5fd94536` made it a refusal, because an assert is deleted by -DNDEBUG in the
-        // build everyone runs. Without the property the decoder's comparison chain is not
-        // monotone, so a length lookup answers a length the symbol does not have.
+        // A canonical code halves at least as slowly as its lengths grow, so
+        // `base64[i] * 2 >= base64[i + 1]` holds for every real table. Without it the
+        // comparison chain `decompress` walks is not monotone, and a length lookup then
+        // answers a length the symbol does not have -- a wrong verdict from a file the user
+        // broke, where a refusal is a table probed as if absent.
         //
-        // Wrapping for the reason above it: both sides are unsigned in upstream and a
-        // corrupt table is what puts a value large enough to wrap into either.
+        // Wrapping for the reason above it: the operands are unsigned, and a corrupt table
+        // is what puts a value large enough to wrap into either.
         if d.base64[i].wrapping_mul(2) < d.base64[i + 1] {
             return None;
         }
@@ -698,13 +714,11 @@ mod tests {
 
     /// The deepest chain the format can express, walked without recursing.
     ///
-    /// **`N` is 4095 because a child field is TWELVE BITS.** It was 20,000, and the encoder
-    /// below silently truncated every child to its low twelve — so the tree that test built
-    /// was not a 20,000-deep chain at all but a short one whose symbols named each other in
-    /// a loop, which is why the cycle refusal above catches it. No chain can exceed the
-    /// child field: a symbol at or above 4096 can be a root, never a child, and 0xFFF is the
-    /// leaf marker rather than a symbol. That is the same bound upstream writes as its
-    /// `SymCount`.
+    /// **`N` is 4095 because a child field is TWELVE BITS**, and the encoder below writes
+    /// exactly those twelve — so a larger `N` does not build a deeper chain, it builds a
+    /// short one whose symbols name each other in a loop. No chain can exceed the field: a
+    /// symbol at or above 4096 can be a root, never a child, and 0xFFF is the leaf marker
+    /// rather than a symbol. Upstream writes the same bound as `SymCount`.
     #[test]
     fn a_deep_symbol_chain_does_not_overflow_the_stack() {
         const N: usize = 4095;
