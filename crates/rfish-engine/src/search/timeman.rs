@@ -42,8 +42,8 @@ impl Default for TimeManagement {
     fn default() -> TimeManagement {
         TimeManagement {
             start: Instant::now(),
-            optimum: 0,
-            maximum: 0,
+            optimum: TimeManagement::NO_BOUND,
+            maximum: TimeManagement::NO_BOUND,
             use_nodes_time: false,
             available_nodes: -1,
             original_time_adjust: -1.0,
@@ -52,6 +52,17 @@ impl Default for TimeManagement {
 }
 
 impl TimeManagement {
+    /// What a move with no clock of its own is held to.
+    ///
+    /// Not zero, and not "unset". [`TimeManagement::budget`] hands both bounds to the
+    /// workers unconditionally — `uses_time_management` is true whenever EITHER side has a
+    /// clock — so every path out of [`TimeManagement::init`] has to leave a number the
+    /// readers can act on, and zero is the number that means "stop on the first check".
+    ///
+    /// Half of `i64::MAX`, which is upstream's `NoBound`, so that a reader adding to it
+    /// cannot overflow.
+    pub const NO_BOUND: i64 = i64::MAX / 2;
+
     /// Forget the whole-game state. Called on `ucinewgame`.
     pub fn clear(&mut self) {
         self.available_nodes = -1;
@@ -109,6 +120,14 @@ impl TimeManagement {
         // The value is signed on the way in for the same reason: `TimePoint` is `int64`, and
         // the sign is the whole content of this case.
         let Some(mut time) = limits.time[side].map(|t| t as i64).filter(|&t| t != 0) else {
+            // WRITTEN, not left. This path is reached with a clock for the OTHER side --
+            // `go depth 3 btime 1000` while White is to move -- and `uses_time_management`
+            // is true for it, so the workers read both bounds on every clock check. Leaving
+            // them holds the previous move's budget, or zero on the first, which stops the
+            // search at once. Upstream's `92c90f41` closes the same hole, where the values
+            // left behind were uninitialised rather than stale.
+            self.optimum = TimeManagement::NO_BOUND;
+            self.maximum = TimeManagement::NO_BOUND;
             return;
         };
 
@@ -226,6 +245,39 @@ mod tests {
         tm.budget()
     }
 
+    /// A clock for the OTHER side still has to leave both bounds readable.
+    ///
+    /// `go depth 3 btime 1000` with White to move: `uses_time_management` is true, because a
+    /// clock on either side is the whole test, so `check_time` reads both bounds on every
+    /// call — while `init` returned before writing either. Upstream read uninitialised
+    /// memory there and this port read the previous move's numbers, or zero on the first,
+    /// which stops the search on its first clock check.
+    ///
+    /// A pure function, as every reproducer in this class must be.
+    #[test]
+    fn a_clock_for_the_other_side_leaves_both_bounds_unbounded() {
+        let mut limits = Limits {
+            time: [None, Some(1000)],
+            depth: Some(3),
+            start: Some(Instant::now()),
+            ..Limits::default()
+        };
+        assert!(limits.uses_time_management(), "the readers below are live for this go line");
+
+        let mut tm = TimeManagement::default();
+        tm.init(&mut limits, Color::White, GamePly::new(1), &SearchOptions::default());
+        let b = tm.budget();
+        assert_eq!(b.optimum(), Elapsed::new(TimeManagement::NO_BOUND));
+        assert_eq!(b.maximum(), Elapsed::new(TimeManagement::NO_BOUND));
+
+        // And a bound left over from a move that DID have a clock is not inherited.
+        let mut clocked = limits_with_clock(60_000, 0, None);
+        tm.init(&mut clocked, Color::White, GamePly::new(20), &SearchOptions::default());
+        assert!(tm.budget().maximum() < Elapsed::new(TimeManagement::NO_BOUND));
+        tm.init(&mut limits, Color::White, GamePly::new(21), &SearchOptions::default());
+        assert_eq!(tm.budget().maximum(), Elapsed::new(TimeManagement::NO_BOUND));
+    }
+
     /// A negative clock, and an extreme `movestogo`, reach the same subtraction.
     ///
     /// Pure functions both: the reproducer is one `go` line, and driving the binary with it
@@ -255,14 +307,15 @@ mod tests {
     }
 
     #[test]
-    fn no_clock_leaves_the_bounds_at_zero() {
+    fn no_clock_leaves_the_bounds_unbounded() {
         let mut l = Limits { depth: Some(10), start: Some(Instant::now()), ..Limits::default() };
         let mut tm = TimeManagement::default();
         tm.init(&mut l, Color::White, GamePly::new(0), &SearchOptions::default());
-        // `go depth` is not bounded by the clock, and the caller checks
-        // `uses_time_management` before reading these at all.
+        // `go depth` is not bounded by the clock, so no reader consults these -- and they
+        // still say "no bound" rather than "stop now", because the one thing a reader must
+        // never find here is a budget that has already run out.
         assert!(!l.uses_time_management());
-        assert_eq!(tm.budget().optimum().get(), 0);
+        assert_eq!(tm.budget().optimum().get(), TimeManagement::NO_BOUND);
     }
 
     #[test]
