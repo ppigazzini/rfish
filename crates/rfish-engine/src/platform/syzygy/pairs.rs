@@ -313,27 +313,51 @@ pub fn decompress(d: &PairsData, bytes: &[u8], idx: u64) -> i32 {
     d.left(bytes, sym) as i32
 }
 
+/// Where one symbol stands in the expansion walk.
+///
+/// Three states, not a visited flag, because the walk has to tell a symbol reached TWICE
+/// from a symbol reached through ITSELF, and a `bool` collapses exactly that distinction —
+/// which is the defect upstream's `5fd94536` fixed by widening its own flag the same way.
+/// The names say what the walk knows, so `Open` beside a child is a loop by reading.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SymState {
+    /// Nothing has reached this symbol.
+    Unseen,
+    /// On the stack: an ancestor of whatever is being read now.
+    Open,
+    /// Its length is final.
+    Closed,
+}
+
 /// How many values a symbol expands into, minus one.
 ///
-/// Written iteratively over an explicit stack rather than recursively: the pairing tree can
-/// be thousands deep on a large table, and a recursive walk overflows the thread stack.
-fn compute_symlen(d: &mut PairsData, bytes: &[u8], root: usize, visited: &mut [bool]) -> bool {
+/// Written iteratively over an explicit stack rather than recursively: a chain runs as deep
+/// as the twelve-bit child field allows, and a recursive walk spends a frame per link.
+///
+/// [`SymState`] is what tells a symbol reached twice from a symbol reached through ITSELF. A
+/// shared child is ordinary — Recursive Pairing names the same pair from many places — and
+/// reads `Closed`, its length already final. A child that reads `Open` is still on the stack,
+/// so it is an ancestor and the tree closes a loop: `symlen` would then be a function of
+/// itself and no expansion terminates.
+fn compute_symlen(d: &mut PairsData, bytes: &[u8], root: usize, state: &mut [SymState]) -> bool {
     let mut stack = vec![(root, false)];
     while let Some((s, expanded)) = stack.pop() {
         if expanded {
             let sr = d.right(bytes, s);
             let sl = d.left(bytes, s);
             d.symlen[s] = d.symlen[sl].wrapping_add(d.symlen[sr]).wrapping_add(1);
+            state[s] = SymState::Closed;
             continue;
         }
-        if visited[s] {
+        if state[s] != SymState::Unseen {
             continue;
         }
-        visited[s] = true;
+        state[s] = SymState::Open;
         let sr = d.right(bytes, s);
         if sr == 0xFFF {
             // A leaf: the left field holds the value, and the symbol is worth one value.
             d.symlen[s] = 0;
+            state[s] = SymState::Closed;
             continue;
         }
         let sl = d.left(bytes, s);
@@ -344,12 +368,16 @@ fn compute_symlen(d: &mut PairsData, bytes: &[u8], root: usize, visited: &mut [b
         if sl >= d.symlen.len() || sr >= d.symlen.len() {
             return false;
         }
+        // A child that is its own ancestor, refused for the same reason.
+        if state[sl] == SymState::Open || state[sr] == SymState::Open {
+            return false;
+        }
         // Re-push this symbol to be summed once both children are known.
         stack.push((s, true));
-        if !visited[sr] {
+        if state[sr] == SymState::Unseen {
             stack.push((sr, false));
         }
-        if !visited[sl] {
+        if state[sl] == SymState::Unseen {
             stack.push((sl, false));
         }
     }
@@ -421,6 +449,17 @@ pub fn set_sizes(d: &mut PairsData, bytes: &[u8], mut off: usize) -> Option<usiz
         // `lo_i >= lo_i1` and neither side wraps at all, but a corrupt table inverts the pair
         // and a bare `-` would trap under the gate profile's overflow checks.
         d.base64[i] = d.base64[i + 1].wrapping_add(lo_i).wrapping_sub(lo_i1) / 2;
+        // A canonical code halves at least as slowly as the lengths grow, so
+        // `base64[i] * 2 >= base64[i + 1]` holds for every real table. Upstream asserted it
+        // and `5fd94536` made it a refusal, because an assert is deleted by -DNDEBUG in the
+        // build everyone runs. Without the property the decoder's comparison chain is not
+        // monotone, so a length lookup answers a length the symbol does not have.
+        //
+        // Wrapping for the reason above it: both sides are unsigned in upstream and a
+        // corrupt table is what puts a value large enough to wrap into either.
+        if d.base64[i].wrapping_mul(2) < d.base64[i + 1] {
+            return None;
+        }
     }
     for i in 0..n {
         // `i + min_sym_len` is a symbol length in bits: at least one and at most 64 in a real
@@ -437,9 +476,9 @@ pub fn set_sizes(d: &mut PairsData, bytes: &[u8], mut off: usize) -> Option<usiz
     d.symlen = vec![0u8; sym_count];
     d.btree = off;
 
-    let mut visited = vec![false; sym_count];
+    let mut state = vec![SymState::Unseen; sym_count];
     for sym in 0..sym_count {
-        if !visited[sym] && !compute_symlen(d, bytes, sym, &mut visited) {
+        if state[sym] == SymState::Unseen && !compute_symlen(d, bytes, sym, &mut state) {
             return None;
         }
     }
@@ -635,8 +674,8 @@ mod tests {
         let mut d = PairsData { btree: 0, symlen: vec![0; 1], ..PairsData::default() };
         let b = [0x07u8, 0xF0, 0xFF]; // left = 7, right = 0xFFF
         assert_eq!(d.right(&b, 0), 0xFFF);
-        let mut visited = vec![false; 1];
-        compute_symlen(&mut d, &b, 0, &mut visited);
+        let mut state = vec![SymState::Unseen; 1];
+        assert!(compute_symlen(&mut d, &b, 0, &mut state));
         assert_eq!(d.symlen[0], 0);
     }
 
@@ -650,17 +689,25 @@ mod tests {
             0x0A, 0xF0, 0xFF, // sym 2: leaf, value 10
         ];
         let mut d = PairsData { btree: 0, symlen: vec![0; 3], ..PairsData::default() };
-        let mut visited = vec![false; 3];
-        compute_symlen(&mut d, &b, 0, &mut visited);
+        let mut state = vec![SymState::Unseen; 3];
+        assert!(compute_symlen(&mut d, &b, 0, &mut state));
         assert_eq!(d.symlen[1], 0);
         assert_eq!(d.symlen[2], 0);
         assert_eq!(d.symlen[0], 1, "two values means symlen 1");
     }
 
-    /// The pairing tree can be thousands deep; the expansion must not recurse.
+    /// The deepest chain the format can express, walked without recursing.
+    ///
+    /// **`N` is 4095 because a child field is TWELVE BITS.** It was 20,000, and the encoder
+    /// below silently truncated every child to its low twelve — so the tree that test built
+    /// was not a 20,000-deep chain at all but a short one whose symbols named each other in
+    /// a loop, which is why the cycle refusal above catches it. No chain can exceed the
+    /// child field: a symbol at or above 4096 can be a root, never a child, and 0xFFF is the
+    /// leaf marker rather than a symbol. That is the same bound upstream writes as its
+    /// `SymCount`.
     #[test]
     fn a_deep_symbol_chain_does_not_overflow_the_stack() {
-        const N: usize = 20_000;
+        const N: usize = 4095;
         let mut b = Vec::with_capacity(N * 3);
         for s in 0..N {
             if s + 1 < N {
@@ -675,8 +722,67 @@ mod tests {
             }
         }
         let mut d = PairsData { btree: 0, symlen: vec![0; N], ..PairsData::default() };
-        let mut visited = vec![false; N];
-        compute_symlen(&mut d, &b, 0, &mut visited);
+        let mut state = vec![SymState::Unseen; N];
+        assert!(compute_symlen(&mut d, &b, 0, &mut state));
         assert_eq!(d.symlen[N - 1], 0);
+    }
+
+    /// A symbol that is its own ancestor has no length, and a shared one is not that.
+    #[test]
+    fn a_symbol_tree_that_closes_a_loop_is_refused() {
+        // Symbol 0 -> (1, 2), symbol 1 -> (0, 2), symbol 2 a leaf. Reaching 0 through 1 is
+        // the loop; reaching 2 from both is the ordinary sharing that must still pass.
+        let cyclic = [
+            0x01, 0x20, 0x00, // sym 0: left = 1, right = 2
+            0x00, 0x20, 0x00, // sym 1: left = 0, right = 2
+            0x00, 0xF0, 0xFF, // sym 2: leaf
+        ];
+        let mut d = PairsData { btree: 0, symlen: vec![0; 3], ..PairsData::default() };
+        assert!(!compute_symlen(&mut d, &cyclic, 0, &mut [SymState::Unseen; 3]));
+
+        let shared = [
+            0x01, 0x20, 0x00, // sym 0: left = 1, right = 2
+            0x02, 0x20, 0x00, // sym 1: left = 2, right = 2
+            0x00, 0xF0, 0xFF, // sym 2: leaf
+        ];
+        let mut d = PairsData { btree: 0, symlen: vec![0; 3], ..PairsData::default() };
+        assert!(compute_symlen(&mut d, &shared, 0, &mut [SymState::Unseen; 3]));
+        assert_eq!(d.symlen[0], 2, "three values below symbol 0");
+    }
+
+    /// One sub-table header, with the three lowest symbols the caller chooses.
+    ///
+    /// Everything else is the smallest structure `set_sizes` accepts: no blocks, a
+    /// three-length alphabet, and one leaf symbol.
+    fn header_with_lowest_syms(lowest: [u16; 3]) -> Vec<u8> {
+        let mut b = vec![
+            0x00, // flags: not a single-value table
+            6,    // block size, as a shift
+            6,    // span, as a shift
+            0,    // block-length padding
+            0, 0, 0, 0, // blocks_num
+            3, // max_sym_len
+            1, // min_sym_len
+        ];
+        for lo in lowest {
+            b.extend_from_slice(&lo.to_le_bytes());
+        }
+        b.extend_from_slice(&1u16.to_le_bytes()); // one symbol
+        b.extend_from_slice(&[0x00, 0xF0, 0xFF]); // which is a leaf
+        b.push(0); // odd symbol count pads to a word
+        b
+    }
+
+    /// A code whose lengths do not halve is not a canonical code, and the decoder's
+    /// comparison chain only answers correctly for one that is.
+    #[test]
+    fn a_non_canonical_huffman_table_is_refused() {
+        // base64[1] = 500 either way. Canonical needs base64[0] * 2 >= 500, so the lowest
+        // symbol of the shortest length has to be far enough above the next one.
+        let mut d = PairsData::default();
+        assert_eq!(set_sizes(&mut d, &header_with_lowest_syms([1500, 1000, 0]), 0), Some(22));
+
+        let mut d = PairsData::default();
+        assert_eq!(set_sizes(&mut d, &header_with_lowest_syms([600, 1000, 0]), 0), None);
     }
 }
