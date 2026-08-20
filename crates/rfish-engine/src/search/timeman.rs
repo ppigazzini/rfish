@@ -59,9 +59,9 @@ impl TimeManagement {
     /// clock — so every path out of [`TimeManagement::init`] has to leave a number the
     /// readers can act on, and zero is the number that means "stop on the first check".
     ///
-    /// Half of `i64::MAX`, which is upstream's `NoBound`, so that a reader adding to it
-    /// cannot overflow.
-    pub const NO_BOUND: i64 = i64::MAX / 2;
+    /// Half of `i64::MAX`, as upstream's `NoBound` is, so that a reader adding to it cannot
+    /// overflow.
+    const NO_BOUND: i64 = i64::MAX / 2;
 
     /// Forget the whole-game state. Called on `ucinewgame`.
     pub fn clear(&mut self) {
@@ -109,13 +109,19 @@ impl TimeManagement {
         self.start = limits.start.unwrap_or_else(Instant::now);
         self.use_nodes_time = npmsec != 0;
 
-        // `movetime` joins the clock, the increment and the overhead in the budget's unit,
-        // and it has to happen ABOVE the no-clock return: `go movetime N` needs no clock at
-        // all, so the path that skips the rest of this function is the one where `movetime`
-        // is the only bound there is. Saturating for the reason the clock below is: the
-        // value arrives off the wire and `nodestime` multiplies it by up to 10,000.
+        // `movetime` joins the clock, the increment and the overhead in the budget's unit.
+        // ABOVE the no-clock return, because `go movetime N` needs no clock at all: the path
+        // that skips the rest of this function is the one where `movetime` is the only bound
+        // there is.
+        //
+        // Saturating, and it cannot saturate on anything the shell accepts: the parse clamps
+        // to `Limits::MAX_CLOCK_MS` and `nodestime`'s own maximum is four digits, so the
+        // product stays well inside the `i64` that `check_time` casts it back to. Nothing in
+        // the TYPE says so -- `Limits` is public and an embedder writes it directly -- and a
+        // `u64` that wrapped here would cast to a NEGATIVE bound, which stops the search on
+        // its first clock check.
         if self.use_nodes_time {
-            limits.move_time = limits.move_time.map(|mt| mt.saturating_mul(npmsec.unsigned_abs()));
+            limits.move_time = limits.move_time.map(|mt| mt.saturating_mul(opts.nodestime));
         }
 
         let side = us.index();
@@ -131,10 +137,9 @@ impl TimeManagement {
         let Some(mut time) = limits.time[side].map(|t| t as i64).filter(|&t| t != 0) else {
             // WRITTEN, not left. This path is reached with a clock for the OTHER side --
             // `go depth 3 btime 1000` while White is to move -- and `uses_time_management`
-            // is true for it, so the workers read both bounds on every clock check. Leaving
-            // them holds the previous move's budget, or zero on the first, which stops the
-            // search at once. Upstream's `92c90f41` closes the same hole, where the values
-            // left behind were uninitialised rather than stale.
+            // is true for it, so the workers read both bounds on every clock check. A bound
+            // left unwritten holds the previous move's budget, or the default, and any value
+            // below the elapsed count stops the search on its first check.
             self.optimum = TimeManagement::NO_BOUND;
             self.maximum = TimeManagement::NO_BOUND;
             return;
@@ -256,11 +261,10 @@ mod tests {
 
     /// A clock for the OTHER side still has to leave both bounds readable.
     ///
-    /// `go depth 3 btime 1000` with White to move: `uses_time_management` is true, because a
-    /// clock on either side is the whole test, so `check_time` reads both bounds on every
-    /// call — while `init` returned before writing either. Upstream read uninitialised
-    /// memory there and this port read the previous move's numbers, or zero on the first,
-    /// which stops the search on its first clock check.
+    /// `go depth 3 btime 1000` with White to move takes init's no-clock path, and
+    /// `uses_time_management` is true for it — a clock on either side is the whole test — so
+    /// `check_time` reads both bounds on every call. A bound this path does not write is the
+    /// previous move's, and one below the elapsed count stops the search at once.
     ///
     /// A pure function, as every reproducer in this class must be.
     #[test]
@@ -416,8 +420,8 @@ mod tests {
     /// `movetime` is measured against the same clock as everything else, so it converts too.
     ///
     /// `check_time` compares `movetime` against an elapsed count that IS nodes under
-    /// `nodestime`, so an unconverted millisecond figure makes `go movetime 1000` stop after
-    /// a thousand nodes. Upstream carried the same crossing and `ceb059eb` closed it.
+    /// `nodestime`, so an unconverted millisecond figure would make `go movetime 1000` stop
+    /// after a thousand nodes.
     #[test]
     fn nodestime_converts_movetime_as_well() {
         let opts = SearchOptions { nodestime: 600, ..SearchOptions::default() };

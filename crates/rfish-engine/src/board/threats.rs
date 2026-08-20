@@ -235,7 +235,7 @@ pub fn update_piece_threats(
         PieceType::Knight => sl.piece(PieceType::Knight, s, occupied),
         // The three slider arms call no kernel at all: `sl.both` above has already computed
         // exactly these rays, for this square and this occupancy, and a queen's are the two
-        // together. That reuse is what upstream's `1b1b5f49` found.
+        // together.
         PieceType::Bishop => b_attacks,
         PieceType::Rook => r_attacks,
         PieceType::Queen => b_attacks | r_attacks,
