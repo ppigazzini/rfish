@@ -380,8 +380,9 @@ the three artifacts this repository handles are not covered by the same licence 
 
 - **GNU GPL v3** — <https://www.gnu.org/licenses/gpl-3.0.html>. rfish is a derivative of
   Stockfish and inherits it. The text is [Copying.txt](../Copying.txt) and the attribution is
-  [AUTHORS](../AUTHORS), both taken from upstream unmodified — a port that reproduces
-  upstream's output line for line does not get to reword its attribution.
+  [AUTHORS](../AUTHORS), whose list is upstream's unmodified under a header naming the
+  derivation — a port that reproduces upstream's output line for line does not get to reword
+  its attribution.
 - **ODbL** — <https://opendatacommons.org/licenses/odbl/odbl-10.txt>. The terms on the Leela
   Chess Zero data the networks are trained on. It reaches this repository through the file
   `cargo xtask net` downloads, not through any source file, which is why nothing in
