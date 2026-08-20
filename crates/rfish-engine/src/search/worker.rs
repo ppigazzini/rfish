@@ -2198,6 +2198,14 @@ impl SearchWorker {
 
             r -= self.stack[si.index()].stat_score * 439 / 4096;
 
+            // A quiet move asked to lift a window whose floor already sits above the static
+            // eval has more to prove, so reduce it harder; one with room below the floor is
+            // reduced less. Bounded both ways, and only while the window is about a score
+            // rather than about a mate or a tablebase verdict.
+            if !capture && !is_decisive(alpha) {
+                r += 3 * (alpha - eval).clamp(-64, 96);
+            }
+
             // An all-node will be searched exhaustively whatever happens, so reducing there
             // costs the least and saves the most.
             if all_node {
