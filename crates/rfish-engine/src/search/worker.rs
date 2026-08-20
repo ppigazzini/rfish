@@ -3074,16 +3074,13 @@ impl SearchWorker {
 
         let out_of_time = self.limits.uses_time_management()
             && (elapsed > self.budget.maximum() || self.shared.stop_on_ponderhit());
-        // UPSTREAM'S UNIT CROSSING, reproduced rather than corrected. `move_time` is
-        // milliseconds and `elapsed` is nodes under `nodestime`, and `search.cpp`'s
-        // `check_time` compares them anyway:
-        //
-        //     || (worker.limits.movetime && elapsed >= worker.limits.movetime)
-        //
-        // So a `go movetime` under `nodestime` stops on a node count compared against a
-        // millisecond figure, in both engines. The conversion is spelled out here because the
-        // types would otherwise refuse it, which is the type doing its job: this is a quirk
-        // inherited on purpose, not one nobody noticed.
+        // `move_time` is in the SAME unit as `elapsed` by the time this reads it, which is
+        // what `TimeManagement::init` guarantees: under `nodestime` it converts the clock,
+        // the increment, the overhead and `movetime` together, so both sides here are nodes
+        // or both are milliseconds. It was not always so -- upstream compared a node count
+        // against a millisecond figure until `ceb059eb`, and this port reproduced the
+        // crossing deliberately -- and the cast below is only the widening the unit type
+        // asks for, not a unit change.
         let past_move_time =
             self.limits.move_time.is_some_and(|mt| elapsed >= Elapsed::new(mt as i64));
         let past_nodes = self.limits.nodes.is_some_and(|n| nodes >= n);
