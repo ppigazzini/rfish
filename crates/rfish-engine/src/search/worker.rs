@@ -3154,21 +3154,18 @@ impl SearchWorker {
         // Step 2: extend by playing the shortest win each time, as a reader of the tables
         // would.
         //
-        // **BOUNDED BY `MAX_PLY`, and that bound is the only one this loop has under one
-        // reachable configuration.** The draw test is `rule50 && ...`, so `Syzygy50MoveRule
-        // false` reduces the guard to `while true`; `timed_out` is `uses_clock && ...`, so
-        // `go infinite` makes it constantly false. What is left is the mate test, which
-        // assumes the tables always rank a move that shortens the win — an assumption about
-        // FILE DATA, exactly like the ones the Syzygy reader refuses one zone over. A table
-        // that ranks a repetition top loops here forever, pushing a move and a state per
-        // iteration, and a hang is the defect class a UCI host cannot tell from a slow
-        // engine. Upstream has the same hole with a fixed-capacity PV and an assert that
-        // `-DNDEBUG` deletes; a `Vec` grows instead, so the hang arrives with the memory.
+        // **NOT BOUNDED IN PLIES, because upstream stopped bounding it.** `ee515ad9` gave
+        // the root move a growable PV for exactly this loop, so a won line may run past
+        // `MAX_PLY`; a cap here would print a truncated win where the golden prints the
+        // whole one, and only a table set larger than the one this repo ships can tell the
+        // two apart.
         //
-        // `MAX_PLY` costs nothing where the loop terminates: it is the longest line the rest
-        // of the engine can represent, and a won 3-man ending mates in a small fraction of
-        // it. `tools/tbpv.golden` is unmoved by this.
-        while pv.len() < MAX_PLY && !(rule50 && pos.is_draw(Ply::ROOT)) {
+        // What holds the loop is therefore upstream's own set: the mate test, the draw test
+        // under `Syzygy50MoveRule`, the move-overhead deadline under time management, and a
+        // DTZ that shortens on every step. The last of those is a claim about FILE DATA —
+        // a table that ranks a repetition top loops here, pushing a move and a state per
+        // iteration — and the Syzygy reader one zone over is what refuses such a file.
+        while !(rule50 && pos.is_draw(Ply::ROOT)) {
             if timed_out(&start) {
                 break;
             }
