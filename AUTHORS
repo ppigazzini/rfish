@@ -1,11 +1,12 @@
 # AUTHORS
 
-mcfish is a derivative of Stockfish. The list below is Stockfish's own AUTHORS
+rfish is a derivative of Stockfish. The list below is Stockfish's own AUTHORS
 file, kept verbatim: the engine design, the search structure, the bench position
-set and the UCI surface that mcfish reimplements in C23 all originate with these
-people, and the GPL requires their attribution to travel with the derivative.
+set and the UCI surface that rfish reimplements in safe Rust all originate with
+these people, and the GPL requires their attribution to travel with the
+derivative.
 
-mcfish's own contributors are listed in CITATION.cff and in the git history.
+rfish's own contributors are in the git history.
 
 --------------------------------------------------------------------------------
 
@@ -22,6 +23,7 @@ Hisayori Noda (nodchip)
 
 # All other authors of Stockfish code (in alphabetical order)
 87flowers
+Adarsh Das (Saphereye)
 Aditya (absimaldata)
 Adrian Ladoni (AdrianGHUB15)
 Adrian Petrescu (apetresc)
@@ -48,9 +50,11 @@ Aron Petkovski (fury)
 Arseniy Surkov (codedeliveryservice)
 Artem Solopiy (EntityFX)
 Auguste Pop
+Ayush (ayushthepiro11-design)
 Balazs Szilagyi
 Balint Pfliegel
 Baptiste Rech (breatn)
+Bartosz Paprzycki (compxed)
 Ben Chaney (Chaneybenjamini)
 Ben Koshy (BKSpurgeon)
 Bill Henry (VoyagerOne)
@@ -164,6 +168,7 @@ Leonardo Ljubičić (ICCF World Champion)
 Leonid Pechenik (lp--)
 Li Ying (yl25946)
 Liam Keegan (lkeegan)
+Liang Chenxuan (aba2222)
 Linmiao Xu (linrock)
 Linus Arver (listx)
 loco-loco
@@ -211,6 +216,7 @@ Norman Schmidt (FireFather)
 notruck
 Nour Berakdar (Nonlinear)
 Ofek Shochat (OfekShochat, ghostway)
+Olaf Bernstein (camel-cdr)
 Ömer Faruk Tutkun (OmerFarukTutkun)
 Ondřej Mišina (AndrovT)
 Ondrej Mosnáček (WOnder93)
