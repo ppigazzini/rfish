@@ -59,11 +59,11 @@ Nodes searched  : 2039
 info string Network replica 1: Local memory.
 
 Position: 1/1 (8/8/8/4k3/8/8/4P3/4K3 w - - 0 1)
-info depth 1 seldepth 2 multipv 1 score cp 5 nodes 7 tbhits 0 pv e1d2
+info depth 1 seldepth 2 multipv 1 score cp -2 nodes 6 tbhits 0 pv e1d2
 bestmove e1d2
 
 ===========================
-Nodes searched  : 7
+Nodes searched  : 6
 info string Network replica 1: Local memory.
 
 Position: 1/1 (8/8/8/4k3/8/8/4P3/4K3 w - - 0 1)
@@ -74,19 +74,19 @@ NNUE network contributions (Normalized, White to move)
 |   Bucket   |  Material  | Positional |   Total    |
 |            |   (PSQT)   |  (Layers)  |            |
 +------------+------------+------------+------------+
-|  0         |  +  0.13   |  -  0.30   |  -  0.17   | <-- this bucket is used
-|  1         |  +  0.23   |  -  0.14   |  +  0.08   |
-|  2         |  +  0.38   |  -  0.27   |  +  0.12   |
-|  3         |  +  0.46   |  +  0.05   |  +  0.50   |
-|  4         |  +  0.48   |  -  0.27   |  +  0.21   |
-|  5         |  +  0.27   |  -  0.16   |  +  0.10   |
-|  6         |  +  0.80   |  -  0.39   |  +  0.41   |
-|  7         |  +  0.83   |  +  0.81   |  +  1.64   |
+|  0         |  -  0.06   |  +  0.03   |  -  0.03   | <-- this bucket is used
+|  1         |  +  0.03   |  +  0.26   |  +  0.28   |
+|  2         |  +  0.19   |  -  0.02   |  +  0.17   |
+|  3         |  +  0.25   |  -  0.08   |  +  0.16   |
+|  4         |  +  0.24   |  -  0.15   |  +  0.09   |
+|  5         |  +  0.19   |  -  0.14   |  +  0.05   |
+|  6         |  +  0.09   |  +  0.31   |  +  0.40   |
+|  7         |  +  0.43   |  +  0.41   |  +  0.84   |
 +------------+------------+------------+------------+
 
-NNUE evaluation          -66 (side to move, internal units)
-NNUE evaluation        -0.17 (white side)
-Final evaluation      -0.17 (white side) [with scaled NNUE, ...]
+NNUE evaluation          -10 (side to move, internal units)
+NNUE evaluation        -0.03 (white side)
+Final evaluation      -0.03 (white side) [with scaled NNUE, ...]
 
 
 ===========================
