@@ -3,13 +3,13 @@ info string Found 5 WDL and 5 DTZ tablebase files (up to 3-man).
 info string Network replica 1: Local memory.
 info depth 1 seldepth 2 multipv 1 score cp 20000 nodes 1 tbhits 11 pv h1h4 e3f3 e1d2 f3g3 h4a4 g3f3 a4b4 f3f2 b4b3 f2f1 d2e3 f1g2 e3e2 g2g1 e2f3 g1h2 b3b1 h2h3 b1h1
 info depth 2 seldepth 3 multipv 1 score cp 20000 nodes 4 tbhits 11 pv h1h4 e3d3 e1f2 d3d2 h4h3 d2d1 f2e3 d1c2 e3e2 c2c1 e2d3 c1b2 d3d2 b2b1 d2c3 b1a2 h3h1 a2a3 h1a1
-info depth 3 seldepth 5 multipv 1 score cp 20000 nodes 33 tbhits 11 pv h1h4 e3d3 e1f2 d3d2 h4h3 d2d1 f2e3 d1c2 e3e2 c2c1 e2d3 c1b2 d3d2 b2b1 d2c3 b1a2 h3h1 a2a3 h1a1
-info depth 4 seldepth 5 multipv 1 score cp 20000 nodes 62 tbhits 11 pv h1h4 e3d3 e1f2 d3d2 h4h3 d2d1 f2e3 d1c2 e3e2 c2c1 e2d3 c1b2 d3d2 b2b1 d2c3 b1a2 h3h1 a2a3 h1a1
-info depth 5 seldepth 7 multipv 1 score cp 20000 nodes 136 tbhits 11 pv h1h4 e3d3 e1f2 d3d2 h4h3 d2d1 f2e3 d1c2 e3e2 c2c1 e2d3 c1b2 d3d2 b2b1 d2c3 b1a2 h3h1 a2a3 h1a1
-info depth 6 seldepth 7 multipv 1 score cp 20000 nodes 231 tbhits 11 pv h1h4 e3d3 e1f2 d3d2 h4h3 d2d1 f2e3 d1c2 e3e2 c2c1 e2d3 c1b2 d3d2 b2b1 d2c3 b1a2 h3h1 a2a3 h1a1
-info depth 7 seldepth 9 multipv 1 score cp 20000 nodes 314 tbhits 11 pv h1h4 e3d3 e1f2 d3d2 h4h3 d2d1 f2e3 d1c2 e3e2 c2c1 e2d3 c1b2 d3d2 b2b1 d2c3 b1a2 h3h1 a2a3 h1a1
-info depth 8 seldepth 9 multipv 1 score cp 20000 nodes 448 tbhits 11 pv h1h4 e3d3 e1f2 d3d2 h4h3 d2d1 f2e3 d1c2 e3e2 c2c1 e2d3 c1b2 d3d2 b2b1 d2c3 b1a2 h3h1 a2a3 h1a1
-bestmove h1h4 ponder e3d3
+info depth 3 seldepth 5 multipv 1 score cp 20000 nodes 30 tbhits 11 pv h1h4 e3f3 e1d2 f3g3 h4a4 g3f3 a4b4 f3f2 b4b3 f2f1 d2e3 f1g2 e3e2 g2g1 e2f3 g1h2 b3b1 h2h3 b1h1
+info depth 4 seldepth 5 multipv 1 score cp 20000 nodes 65 tbhits 11 pv h1h4 e3f3 e1d2 f3g3 h4a4 g3f3 a4b4 f3f2 b4b3 f2f1 d2e3 f1g2 e3e2 g2g1 e2f3 g1h2 b3b1 h2h3 b1h1
+info depth 5 seldepth 7 multipv 1 score cp 20000 nodes 352 tbhits 11 pv h1h4 e3f3 e1d2 f3g3 h4a4 g3f3 a4b4 f3f2 b4b3 f2f1 d2e3 f1g2 e3e2 g2g1 e2f3 g1h2 b3b1 h2h3 b1h1
+info depth 6 seldepth 7 multipv 1 score cp 20000 nodes 371 tbhits 11 pv h1h4 e3f3 e1d2 f3g3 h4a4 g3f3 a4b4 f3f2 b4b3 f2f1 d2e3 f1g2 e3e2 g2g1 e2f3 g1h2 b3b1 h2h3 b1h1
+info depth 7 seldepth 9 multipv 1 score cp 20000 nodes 447 tbhits 11 pv h1h4 e3f3 e1d2 f3g3 h4a4 g3f3 a4b4 f3f2 b4b3 f2f1 d2e3 f1g2 e3e2 g2g1 e2f3 g1h2 b3b1 h2h3 b1h1
+info depth 8 seldepth 11 multipv 1 score cp 20000 nodes 649 tbhits 11 pv h1h4 e3f3 e1d2 f3g3 h4a4 g3f3 a4b4 f3f2 b4b3 f2f1 d2e3 f1g2 e3e2 g2g1 e2f3 g1h2 b3b1 h2h3 b1h1
+bestmove h1h4 ponder e3f3
 info string Network replica 1: Local memory.
 info depth 0 score cp 0
 bestmove (none)

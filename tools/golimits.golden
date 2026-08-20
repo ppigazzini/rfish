@@ -24,13 +24,13 @@ g1h3: 1
 Nodes searched: 20
 
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 15 nodes 20 tbhits 0 pv d2d4
+info depth 1 seldepth 2 multipv 1 score cp 22 nodes 20 tbhits 0 pv d2d4
 bestmove d2d4
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 15 nodes 20 tbhits 0 pv d2d4
+info depth 1 seldepth 2 multipv 1 score cp 22 nodes 20 tbhits 0 pv d2d4
 bestmove d2d4
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 15 nodes 20 tbhits 0 pv d2d4
+info depth 1 seldepth 2 multipv 1 score cp 22 nodes 20 tbhits 0 pv d2d4
 bestmove d2d4
 
 
@@ -39,19 +39,19 @@ NNUE network contributions (Normalized, White to move)
 |   Bucket   |  Material  | Positional |   Total    |
 |            |   (PSQT)   |  (Layers)  |            |
 +------------+------------+------------+------------+
-|  0         |     0.00   |  +  0.09   |  +  0.09   |
-|  1         |     0.00   |  +  1.36   |  +  1.36   |
-|  2         |     0.00   |  +  0.12   |  +  0.12   |
-|  3         |     0.00   |  +  0.31   |  +  0.31   |
+|  0         |     0.00   |  -  0.14   |  -  0.14   |
+|  1         |     0.00   |  +  0.08   |  +  0.08   |
+|  2         |     0.00   |  +  0.15   |  +  0.15   |
+|  3         |     0.00   |  +  0.16   |  +  0.16   |
 |  4         |     0.00   |  +  0.08   |  +  0.08   |
-|  5         |     0.00   |  +  0.04   |  +  0.04   |
-|  6         |     0.00   |  +  0.05   |  +  0.05   |
-|  7         |     0.00   |  +  0.02   |  +  0.02   | <-- this bucket is used
+|  5         |     0.00   |  +  0.08   |  +  0.08   |
+|  6         |     0.00   |  +  0.04   |  +  0.04   |
+|  7         |     0.00   |  -  0.00   |  -  0.00   | <-- this bucket is used
 +------------+------------+------------+------------+
 
-NNUE evaluation          +9 (side to move, internal units)
-NNUE evaluation        +0.02 (white side)
-Final evaluation      +0.03 (white side) [with scaled NNUE, ...]
+NNUE evaluation          -1 (side to move, internal units)
+NNUE evaluation        +0.00 (white side)
+Final evaluation      +0.00 (white side) [with scaled NNUE, ...]
 
 
 Final evaluation: none (in check)
