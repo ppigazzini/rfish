@@ -302,6 +302,48 @@ pub(crate) struct Setup {
     /// The same after defaults are filled in. The report prints both, which is how a run
     /// with a mistyped argument is told apart from one that meant the defaults.
     pub filled: String,
+    /// Every input a range corrected, in the order the arguments appear.
+    ///
+    /// Carried OUT rather than printed here, because this is a pure function and the
+    /// reproducers for this class must stay testable without an engine to drive -- see
+    /// `docs/07-shell.md`. The caller emits them where upstream emits its own, on standard
+    /// error beside the rest of the report.
+    pub corrections: Vec<Correction>,
+}
+
+/// One input the ranges refused, and what ran instead.
+///
+/// A value rather than a formatted line: the range and both numbers stay separate until the
+/// moment of printing, so a test asserts what was corrected rather than how it was worded,
+/// and the wording lives with the type that owns the fact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Correction {
+    /// The argument's name in upstream's message: `threads`, `hash` or `seconds`.
+    what: &'static str,
+    /// What the operator asked for.
+    asked: i64,
+    /// The range that refused it.
+    lo: i64,
+    hi: i64,
+    /// What the run actually used.
+    used: i64,
+}
+
+impl std::fmt::Display for Correction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Correction { what, asked, lo, hi, used } = self;
+        write!(f, "info string speedtest: {what} {asked} is outside [{lo}, {hi}]; using {used}")
+    }
+}
+
+/// Clamp one input, recording the correction when there is one.
+fn clamped(what: &'static str, asked: i64, lo: i64, hi: i64, out: &mut Vec<Correction>) -> i32 {
+    let used = asked.clamp(lo, hi);
+    if used != asked {
+        out.push(Correction { what, asked, lo, hi, used });
+    }
+    // In range by construction: `hi` is an i32 at every call site.
+    i32::try_from(used).unwrap_or(i32::MAX)
 }
 
 /// The `Hash` option's declared range, which is what `tt_size` is emitted into.
@@ -316,6 +358,12 @@ const HASH_MAX: i32 = 33_554_432;
 const TT_SIZE_PER_THREAD: i32 = 128;
 
 const DEFAULT_DURATION_S: i32 = 150;
+
+/// The longest run the schedule can express.
+///
+/// The duration becomes milliseconds on its way into `go movetime`, so `i32::MAX / 1000` is
+/// where that multiply stops fitting -- upstream's own ceiling, for its own reason.
+const MAX_DURATION_S: i32 = i32::MAX / 1000;
 
 /// Milliseconds this ply is worth before scaling: `50000 / (ply + 15)`.
 ///
@@ -336,11 +384,14 @@ fn corrected_time(ply: i32) -> f64 {
 pub(crate) fn setup(args: &[&str], hardware_threads: usize) -> Setup {
     let mut it = args.iter();
     let mut stop = false;
-    let next_int = |it: &mut core::slice::Iter<'_, &str>, stop: &mut bool| -> Option<i32> {
+    // AT `i64`, which is upstream's own width since `30290aa0`. At `i32` a value one past
+    // the type -- `speedtest 3000000000` -- does not clamp, it fails to PARSE, and the latch
+    // below then takes all three defaults and reports a run nobody asked for.
+    let next_int = |it: &mut core::slice::Iter<'_, &str>, stop: &mut bool| -> Option<i64> {
         if *stop {
             return None;
         }
-        let parsed = it.next().and_then(|a| a.parse::<i32>().ok());
+        let parsed = it.next().and_then(|a| a.parse::<i64>().ok());
         // The latch: once an extraction fails, every later one fails too.
         if parsed.is_none() {
             *stop = true;
@@ -354,7 +405,7 @@ pub(crate) fn setup(args: &[&str], hardware_threads: usize) -> Setup {
             original.push_str(&t.to_string());
             t
         }
-        None => i32::try_from(hardware_threads).unwrap_or(i32::MAX),
+        None => i64::try_from(hardware_threads).unwrap_or(i64::from(i32::MAX)),
     };
     let tt_size = match next_int(&mut it, &mut stop) {
         Some(s) => {
@@ -362,7 +413,7 @@ pub(crate) fn setup(args: &[&str], hardware_threads: usize) -> Setup {
             original.push_str(&s.to_string());
             s
         }
-        None => TT_SIZE_PER_THREAD.saturating_mul(threads),
+        None => i64::from(TT_SIZE_PER_THREAD).saturating_mul(threads),
     };
     let desired_time_s = match next_int(&mut it, &mut stop) {
         Some(d) => {
@@ -370,7 +421,7 @@ pub(crate) fn setup(args: &[&str], hardware_threads: usize) -> Setup {
             original.push_str(&d.to_string());
             d
         }
-        None => DEFAULT_DURATION_S,
+        None => i64::from(DEFAULT_DURATION_S),
     };
 
     // CLAMP INTO THE RANGES THESE FEED, and do it here rather than at the `setoption` line.
@@ -388,11 +439,20 @@ pub(crate) fn setup(args: &[&str], hardware_threads: usize) -> Setup {
     // fix for this did, and it converts an instant refusal into a legal request for sixteen
     // gigabytes -- worse than the bug, because it succeeds. A speedtest measures throughput,
     // and more workers than cores does not measure more throughput.
-    let threads = threads.clamp(1, i32::try_from(hardware_threads).unwrap_or(i32::MAX).max(1));
-    let tt_size = tt_size.clamp(HASH_MIN, HASH_MAX);
+    // Each correction is REPORTED, as upstream reports its own: a run that silently
+    // measured something other than what was asked for is a wrong number presented as a
+    // measurement, which is the same defect the clamp exists to close.
+    let mut corrections = Vec::new();
+    let cores = i64::try_from(hardware_threads).unwrap_or(i64::from(i32::MAX)).max(1);
+    let threads = clamped("threads", threads, 1, cores, &mut corrections);
+    let tt_size =
+        clamped("hash", tt_size, i64::from(HASH_MIN), i64::from(HASH_MAX), &mut corrections);
     // A non-positive duration makes `scale` non-positive and every `go movetime` argument
-    // zero or negative, so the run measures nothing and reports a throughput anyway.
-    let desired_time_s = desired_time_s.max(1);
+    // zero or negative, so the run measures nothing and reports a throughput anyway. The
+    // ceiling is upstream's: the duration reaches the schedule as milliseconds, so anything
+    // above `i32::MAX / 1000` overflows the multiply that gets it there.
+    let desired_time_s =
+        clamped("seconds", desired_time_s, 1, i64::from(MAX_DURATION_S), &mut corrections);
 
     let filled = format!("{threads} {tt_size} {desired_time_s}");
 
@@ -420,7 +480,7 @@ pub(crate) fn setup(args: &[&str], hardware_threads: usize) -> Setup {
         }
     }
 
-    Setup { threads, tt_size, commands, original, filled }
+    Setup { threads, tt_size, commands, original, filled, corrections }
 }
 
 #[cfg(test)]
@@ -499,9 +559,55 @@ mod tests {
         let s = setup(&["4", "256", "10"], 8);
         assert_eq!((s.threads, s.tt_size), (4, 256));
 
-        // The echo is what the OPERATOR typed, never the clamped value -- upstream prints the
-        // invocation back, and a report that silently rewrites it hides the clamp.
+        // The echo is what the OPERATOR typed, never the clamped value. Upstream echoes the
+        // clamped one as of `30290aa0` and names the correction on standard error; this port
+        // keeps the typed value and names the correction too, so the report carries both
+        // numbers rather than replacing one with the other.
         assert_eq!(setup(&["1024"], 8).original, "1024");
+    }
+
+    /// Every correction is REPORTED, and a run inside the ranges reports nothing.
+    ///
+    /// A clamp the operator cannot see turns "measured at what you asked for" into a wrong
+    /// number presented as a measurement, which is the defect the clamp was added to close
+    /// rather than a second one to open.
+    #[test]
+    fn a_corrected_input_says_so() {
+        assert_eq!(setup(&["4", "256", "10"], 8).corrections, []);
+
+        let s = setup(&["1024", "99999999", "0"], 8);
+        assert_eq!(
+            s.corrections.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "info string speedtest: threads 1024 is outside [1, 8]; using 8",
+                "info string speedtest: hash 99999999 is outside [1, 33554432]; using 33554432",
+                "info string speedtest: seconds 0 is outside [1, 2147483]; using 1",
+            ]
+        );
+
+        // The range a correction names is the one that actually bound it: the host's cores
+        // for threads, the option's own range for hash.
+        assert_eq!(s.corrections[0].hi, 8);
+        assert_eq!(s.corrections[1].hi, i64::from(HASH_MAX));
+    }
+
+    /// An argument past `i32` clamps; it does not fail to parse and take every default.
+    ///
+    /// The latch is the reason this matters: a token that will not parse takes ALL THREE
+    /// defaults, so reading the width too narrowly turns one out-of-range argument into a
+    /// completely different run.
+    #[test]
+    fn an_argument_past_the_option_width_still_clamps() {
+        let s = setup(&["3000000000", "16", "5"], 8);
+        assert_eq!((s.threads, s.tt_size), (8, 16));
+        assert_eq!(s.filled, "8 16 5", "the later arguments were still read");
+        assert_eq!(s.corrections.len(), 1);
+
+        // Past `i64` there is nothing left to clamp INTO, and upstream's stream fails there
+        // too -- so the latch takes over and the defaults run, as they always did.
+        let s = setup(&["99999999999999999999", "16", "5"], 8);
+        assert_eq!(s.filled, "8 1024 150");
+        assert_eq!(s.original, "");
     }
 
     /// The clamp above is only correct while it names the option's real range.

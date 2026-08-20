@@ -805,6 +805,13 @@ impl Engine {
         let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         let setup = speedtest::setup(args, cores);
 
+        // Before anything is measured, so the operator reads what the run was corrected to
+        // above the numbers it produced. Upstream prints the same line from inside its
+        // parse; here the parse is a pure function and the lines travel out of it.
+        for correction in &setup.corrections {
+            eprintln!("{correction}");
+        }
+
         // Through the option model, as upstream does, so `Threads` and `Hash` take the same
         // path a GUI's `setoption` takes -- including the pool resize and the reallocation.
         let mut quiet = std::io::sink();
