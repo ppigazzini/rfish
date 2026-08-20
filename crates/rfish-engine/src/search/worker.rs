@@ -1761,7 +1761,7 @@ impl SearchWorker {
 
             // Step 7. Razoring. So far below alpha that the full search is very unlikely to
             // recover; ask quiescence instead, which is far cheaper.
-            if !N::PV && eval < alpha - 483 - 318 * depth * depth {
+            if !N::PV && eval < alpha - 482 * depth * depth {
                 return self.qsearch::<NonPv>(alpha, beta, ply, tt);
             }
 
