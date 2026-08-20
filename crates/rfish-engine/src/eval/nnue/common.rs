@@ -163,6 +163,8 @@ pub enum NetError {
     NotCompressed,
     /// The file has trailing bytes after the last layer stack.
     TrailingData,
+    /// A compressed block declared more bytes than its values consume.
+    BlockNotConsumed,
 }
 
 impl std::fmt::Display for NetError {
@@ -179,6 +181,9 @@ impl std::fmt::Display for NetError {
             NetError::Truncated => f.write_str("network file ends before its structure does"),
             NetError::NotCompressed => f.write_str("a weight block is missing its LEB128 marker"),
             NetError::TrailingData => f.write_str("network file has trailing data"),
+            NetError::BlockNotConsumed => {
+                f.write_str("a weight block has bytes left after its last value")
+            }
         }
     }
 }
@@ -320,7 +325,7 @@ impl<R: Read> NetReader<R> {
             // the residency the walk-the-output rewrite bought for the flat block.
             src = Self::leb128_values(src, group)?;
         }
-        Ok(())
+        Self::whole(src.as_slice())
     }
 
     /// The decode both widths share, walking the OUTPUT and consuming bytes as it needs them.
@@ -338,7 +343,19 @@ impl<R: Read> NetReader<R> {
     /// pins it.
     fn leb128_block<T: FromI32Truncating>(&mut self, out: &mut [T]) -> Result<(), NetError> {
         let bytes = self.leb128_bytes()?;
-        Self::leb128_values(bytes.iter(), out).map(|_| ())
+        Self::whole(Self::leb128_values(bytes.iter(), out)?.as_slice())
+    }
+
+    /// A block is consumed WHOLE, or the file is not the file this build reads.
+    ///
+    /// The declared length and the value count are two statements of the same fact, written
+    /// at opposite ends of the format, and a block that satisfies one but not the other is a
+    /// block whose structure this build does not agree with -- even where every hash matched,
+    /// which is exactly when a silent acceptance costs the most. Upstream asserted the same
+    /// balance and `49f8e667` made it a stream failure, for the reason every assert in a
+    /// reader has: `-DNDEBUG` deletes it in the build people run.
+    fn whole(rest: &[u8]) -> Result<(), NetError> {
+        if rest.is_empty() { Ok(()) } else { Err(NetError::BlockNotConsumed) }
     }
 
     /// A LEB128 block's header, checked, and its payload.
@@ -692,6 +709,26 @@ mod tests {
         assert!(matches!(
             NetReader::new(bytes.as_slice()).leb128(&mut out),
             Err(NetError::Truncated)
+        ));
+    }
+
+    /// A block that declares more bytes than its values consume is refused.
+    ///
+    /// The complement of the truncation row above: too FEW bytes ends inside a value and is
+    /// already caught, while too many decodes every value successfully and leaves the rest
+    /// unread, which is the case an assert used to cover in both engines.
+    #[test]
+    fn a_block_with_bytes_left_over_is_refused() {
+        let mut bytes = leb_block(&[1, 2, 3]);
+        // One more payload byte than the three values need, and a declared length that
+        // counts it: a well-formed encoding of nothing the reader was asked for.
+        let declared = u32::from_le_bytes([bytes[17], bytes[18], bytes[19], bytes[20]]);
+        bytes[17..21].copy_from_slice(&(declared + 1).to_le_bytes());
+        bytes.push(0x00);
+        let mut out = vec![0i32; 3];
+        assert!(matches!(
+            NetReader::new(bytes.as_slice()).leb128(&mut out),
+            Err(NetError::BlockNotConsumed)
         ));
     }
 
