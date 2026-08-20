@@ -233,9 +233,12 @@ pub fn update_piece_threats(
     let raw_threatened = match pc.piece_type() {
         PieceType::Pawn => pawn_attacks_from(pc.color(), s),
         PieceType::Knight => sl.piece(PieceType::Knight, s, occupied),
-        PieceType::Bishop => sl.piece(PieceType::Bishop, s, occupied),
-        PieceType::Rook => sl.piece(PieceType::Rook, s, occupied),
-        PieceType::Queen => sl.piece(PieceType::Queen, s, occupied),
+        // The three slider arms call no kernel at all: `sl.both` above has already computed
+        // exactly these rays, for this square and this occupancy, and a queen's are the two
+        // together. That reuse is what upstream's `1b1b5f49` found.
+        PieceType::Bishop => b_attacks,
+        PieceType::Rook => r_attacks,
+        PieceType::Queen => b_attacks | r_attacks,
         PieceType::King | PieceType::None => Bitboard::EMPTY,
     };
     let mut threatened = raw_threatened & occupied_no_k;
