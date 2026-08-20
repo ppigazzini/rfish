@@ -98,9 +98,9 @@ impl TimeManagement {
     /// Work out the bounds for the current move.
     ///
     /// `limits` is taken by `&mut` because nodes-as-time REWRITES it: the clock, the
-    /// increment and the overhead are all converted into node counts, and everything
-    /// downstream then compares node counts against node counts. That conversion is
-    /// upstream's, and doing it anywhere else would leave two units in play at once.
+    /// increment, the overhead and `movetime` are all converted into node counts, and
+    /// everything downstream then compares node counts against node counts. That conversion
+    /// is upstream's, and doing it anywhere else would leave two units in play at once.
     pub fn init(&mut self, limits: &mut Limits, us: Color, ply: GamePly, opts: &SearchOptions) {
         let npmsec = opts.nodestime as i64;
 
@@ -108,6 +108,15 @@ impl TimeManagement {
         // have to be right: `movetime` and the node limit are measured against them.
         self.start = limits.start.unwrap_or_else(Instant::now);
         self.use_nodes_time = npmsec != 0;
+
+        // `movetime` joins the clock, the increment and the overhead in the budget's unit,
+        // and it has to happen ABOVE the no-clock return: `go movetime N` needs no clock at
+        // all, so the path that skips the rest of this function is the one where `movetime`
+        // is the only bound there is. Saturating for the reason the clock below is: the
+        // value arrives off the wire and `nodestime` multiplies it by up to 10,000.
+        if self.use_nodes_time {
+            limits.move_time = limits.move_time.map(|mt| mt.saturating_mul(npmsec.unsigned_abs()));
+        }
 
         let side = us.index();
         // ZERO is the only clock that skips the rest, exactly as upstream's
@@ -402,6 +411,39 @@ mod tests {
         assert_eq!(l.time[Color::White.index()], Some(600 * 60_000));
         assert_eq!(l.inc[Color::White.index()], 600 * 100);
         assert_eq!(l.npmsec, 600);
+    }
+
+    /// `movetime` is measured against the same clock as everything else, so it converts too.
+    ///
+    /// `check_time` compares `movetime` against an elapsed count that IS nodes under
+    /// `nodestime`, so an unconverted millisecond figure makes `go movetime 1000` stop after
+    /// a thousand nodes. Upstream carried the same crossing and `ceb059eb` closed it.
+    #[test]
+    fn nodestime_converts_movetime_as_well() {
+        let opts = SearchOptions { nodestime: 600, ..SearchOptions::default() };
+
+        let mut l = limits_with_clock(60_000, 100, None);
+        l.move_time = Some(1000);
+        TimeManagement::default().init(&mut l, Color::White, GamePly::new(20), &opts);
+        assert_eq!(l.move_time, Some(600 * 1000));
+
+        // And on the path that takes the no-clock return, where `movetime` is the only
+        // bound the search has.
+        let mut bare =
+            Limits { move_time: Some(1000), start: Some(Instant::now()), ..Limits::default() };
+        TimeManagement::default().init(&mut bare, Color::White, GamePly::new(20), &opts);
+        assert_eq!(bare.move_time, Some(600 * 1000));
+
+        // Without `nodestime` it stays milliseconds.
+        let mut plain =
+            Limits { move_time: Some(1000), start: Some(Instant::now()), ..Limits::default() };
+        TimeManagement::default().init(
+            &mut plain,
+            Color::White,
+            GamePly::new(20),
+            &SearchOptions::default(),
+        );
+        assert_eq!(plain.move_time, Some(1000));
     }
 
     #[test]
