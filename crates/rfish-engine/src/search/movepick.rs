@@ -604,8 +604,11 @@ impl MovePicker {
         // upstream never does: its `ss->continuationHistory` is a pointer settled at the
         // node. Planes one, two, three, four and SIX — five is deliberately absent upstream.
         let main_row = h.main.row(us);
-        let pawn_plane = h.pawn.plane(self.pawn_row);
-        let cont = [0usize, 1, 2, 3, 5].map(|s| h.continuation.plane(self.continuations[s]));
+        // Every one of these six is read at the same `[pc][to]`, so each is held as the one
+        // contiguous run it is and indexed once. See `history::piece_to_index`.
+        let pawn_plane = super::history::flatten_plane(h.pawn.plane(self.pawn_row));
+        let cont = [0usize, 1, 2, 3, 5]
+            .map(|s| super::history::flatten_plane(h.continuation.plane(self.continuations[s])));
         let low_ply = (self.ply.index() < super::history::LOW_PLY_HISTORY_SIZE)
             .then(|| h.low_ply.row(self.ply));
 
@@ -618,10 +621,11 @@ impl MovePicker {
             let pc = pos.moved_piece(mv);
             let pt = pc.piece_type();
 
+            let hi = super::history::piece_to_index(pc, to);
             let mut score = 2 * i32::from(main_row[mv.raw() as usize]);
-            score += 2 * i32::from(pawn_plane[pc.index()][to.index()]);
+            score += 2 * i32::from(pawn_plane[hi]);
             for plane in cont {
-                score += i32::from(plane[pc.index()][to.index()]);
+                score += i32::from(plane[hi]);
             }
 
             // A quiet move that gives check is worth trying early: it is forcing, so the

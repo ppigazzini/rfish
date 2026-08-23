@@ -33,6 +33,40 @@ use crate::board::types::{
 /// outer index — and its bounds check — once per move.
 pub type PieceToPlane = [[i16; SQUARE_NB]; PIECE_NB];
 
+/// A [`PieceToPlane`] as the one contiguous run it is, for a caller reading SEVERAL planes
+/// at the same `[pc][to]`.
+pub type FlatPlane = [i16; PIECE_NB * SQUARE_NB];
+
+/// The element `[pc][to]` names in a [`PieceToPlane`], as a flat index.
+///
+/// A plane is a `[[i16; SQUARE_NB]; PIECE_NB]` -- one contiguous run -- so `[pc][to]` is its
+/// element `pc * SQUARE_NB + to`. A two-level index makes the compiler carry one subscript in
+/// the addressing mode and the other in an add, and the quiet scoring loop reads SIX planes at
+/// the same `[pc][to]`, so it pays that add six times a move. Naming the element once leaves
+/// `base + hi * 2` at every read.
+#[inline(always)]
+#[must_use]
+pub fn piece_to_index(pc: Piece, to: Square) -> usize {
+    pc.index() * SQUARE_NB + to.index()
+}
+
+/// A plane addressed as one run, so [`piece_to_index`] indexes it directly.
+///
+/// The result is a fixed-size ARRAY reference rather than a slice: the length is then a
+/// property of the type, and an index a caller has bounded is one the compiler can discharge
+/// without loading a length. See [08-idiomatic-rust.md]'s rule about stating a guard against
+/// the slice actually indexed.
+#[inline(always)]
+#[must_use]
+pub fn flatten_plane(plane: &PieceToPlane) -> &FlatPlane {
+    let flat: &[i16] = plane[..].as_flattened();
+    match flat.try_into() {
+        Ok(a) => a,
+        // `PieceToPlane` is `PIECE_NB * SQUARE_NB` elements by construction.
+        Err(_) => unreachable!("a PieceToPlane flattens to exactly PIECE_NB * SQUARE_NB"),
+    }
+}
+
 /// One raw-move-indexed row, as the butterfly and low-ply tables store it.
 pub type MoveRow = [i16; MOVE_HISTORY_SIZE];
 
