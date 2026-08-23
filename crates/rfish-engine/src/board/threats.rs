@@ -183,6 +183,31 @@ pub fn update_piece_threats(
     no_rays: Bitboard,
     compute_ray: bool,
 ) {
+    update_piece_threats_sharing(pos, pc, put, s, out, no_rays, compute_ray, None);
+}
+
+/// [`update_piece_threats`] with the slider lookup from `s` handed IN rather than taken.
+///
+/// Two scans over the same square see the same slider rays whatever sits on `s` itself:
+/// every set either reads is masked by an attack set computed FROM `s`, and no attack set
+/// from `s` contains `s`. [`Position::swap_piece_dirty`] is the one caller that can use
+/// that -- its two scans are adjacent and on one square.
+///
+/// The pair travels as an `Option` and not as a runtime branch: `inline(always)` with a
+/// literal at every call site folds the `match` away, which is what the `bool` parameters
+/// above already rely on.
+#[inline(always)]
+#[expect(clippy::too_many_arguments, reason = "one shared body, specialised per call site")]
+pub fn update_piece_threats_sharing(
+    pos: &Position,
+    pc: Piece,
+    put: bool,
+    s: Square,
+    out: &mut Vec<DirtyThreat>,
+    no_rays: Bitboard,
+    compute_ray: bool,
+    attacks: Option<(Bitboard, Bitboard)>,
+) {
     let occupied = pos.occupied();
     let rook_queens = pos.pieces(PieceType::Rook) | pos.pieces(PieceType::Queen);
     let bishop_queens = pos.pieces(PieceType::Bishop) | pos.pieces(PieceType::Queen);
@@ -190,7 +215,10 @@ pub fn update_piece_threats(
     // `piece_attacks` arms below each re-derefed the `LazyLock`, and this function makes
     // that call dozens of times per node.
     let sl = slider_tables();
-    let (b_attacks, r_attacks) = sl.both(s, occupied);
+    let (b_attacks, r_attacks) = match attacks {
+        Some(a) => a,
+        None => sl.both(s, occupied),
+    };
     let occupied_no_k = occupied ^ pos.pieces(PieceType::King);
     let sliders = (rook_queens & r_attacks) | (bishop_queens & b_attacks);
 
