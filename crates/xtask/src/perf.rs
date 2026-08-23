@@ -2108,15 +2108,23 @@ fn warm_moves(root: &Path) -> Result<Vec<String>, String> {
 /// One `ucinewgame` at the top and NONE between moves: the accumulated transposition table
 /// and the populated history, pawn and correction banks are the whole point. A `ucinewgame`
 /// per move measures the cold regime `bench` already measures.
-fn warm_script(root: &Path, depth: &str) -> Result<Vec<String>, String> {
+fn warm_script(root: &Path, depth: &str, cold: bool) -> Result<Vec<String>, String> {
     let moves = warm_moves(root)?;
-    let mut script = Vec::with_capacity(moves.len() * 2 + 6);
+    let mut script = Vec::with_capacity(moves.len() * 3 + 6);
     for (name, value) in WARM_ENGINE {
         script.push(format!("setoption name {name} value {value}"));
     }
     script.push("ucinewgame".to_string());
     script.push("isready".to_string());
     for ply in 0..moves.len() {
+        // `--cold` throws the table and the banks away before every move and leaves
+        // everything else identical, so the difference between the two runs is what a
+        // game's accumulated state is worth. It is what makes the claim that `bench` and a
+        // move are different workloads reproducible rather than asserted.
+        if cold && ply > 0 {
+            script.push("ucinewgame".to_string());
+            script.push("isready".to_string());
+        }
         let played = &moves[..ply];
         script.push(if played.is_empty() {
             "position startpos".to_string()
@@ -2166,14 +2174,19 @@ fn warm_nodes(text: &str, want: usize) -> Result<u64, String> {
 }
 
 /// One profiled replay: the whole-process count, the node total, and the net it loaded.
-fn warm_round(bin: &Path, cwd: &Path, depth: &str) -> Result<(u64, u64, Option<String>), String> {
+fn warm_round(
+    bin: &Path,
+    cwd: &Path,
+    depth: &str,
+    cold: bool,
+) -> Result<(u64, u64, Option<String>), String> {
     let out = std::env::temp_dir().join(format!("rfish-cg-warm-{}.out", scratch_key(bin)));
     let mut cmd = Command::new("valgrind");
     cmd.current_dir(cwd)
         .args(["--tool=callgrind", "--cache-sim=no", "--branch-sim=no"])
         .arg(format!("--callgrind-out-file={}", out.display()))
         .arg(bin);
-    let script = warm_script(&workspace_root(), depth)?;
+    let script = warm_script(&workspace_root(), depth, cold)?;
     let text = capture_piped(&mut cmd, &script)?;
     let net = text
         .lines()
@@ -2184,9 +2197,9 @@ fn warm_round(bin: &Path, cwd: &Path, depth: &str) -> Result<(u64, u64, Option<S
 }
 
 /// The replay's instruction count with startup subtracted, and the node total it searched.
-fn warm_ir(bin: &Path, cwd: &Path, depth: &str) -> Result<(u64, u64, u64), String> {
+fn warm_ir(bin: &Path, cwd: &Path, depth: &str, cold: bool) -> Result<(u64, u64, u64), String> {
     let startup = startup_ir(bin, cwd, false)?;
-    let (total, nodes, net) = warm_round(bin, cwd, depth)?;
+    let (total, nodes, net) = warm_round(bin, cwd, depth, cold)?;
     if net.is_none() {
         return Err(format!(
             "the engine loaded no NNUE network from {} — it fell back to the classical \
@@ -2223,6 +2236,8 @@ pub(crate) fn warm_ab(args: &[&str]) -> Result<Outcome, String> {
     }
     let base = arg_value(args, "--base").unwrap_or("HEAD");
     let depth = arg_value(args, "--depth").unwrap_or(WARM_DEPTH).to_string();
+    // Both sides run the same regime; the flag chooses which one is being compared.
+    let cold = args.contains(&"--cold");
 
     // The refusal `budget-ab` and `codegen-equiv` both make, for the same reason: with a
     // clean checkout the two sides are one tree, and a zero that was never in doubt reads
@@ -2242,8 +2257,9 @@ pub(crate) fn warm_ab(args: &[&str]) -> Result<Outcome, String> {
 
     let flags = format!("-C target-cpu={}", tier.rustc);
     println!(
-        "warm-ab: building {base} and the working tree at tier {} (warm replay, depth {depth})",
-        tier.name
+        "warm-ab: building {base} and the working tree at tier {} ({} replay, depth {depth})",
+        tier.name,
+        if cold { "cold" } else { "warm" }
     );
     let base_bin = build_release_at(&tree, &scratch.join("base-target"), &flags)?;
     let head_bin = build_release_at(&workspace_root(), &scratch.join("head-target"), &flags)?;
@@ -2251,8 +2267,8 @@ pub(crate) fn warm_ab(args: &[&str]) -> Result<Outcome, String> {
 
     // Both sides run from THIS repository's resources/, never from the worktree's: the net is
     // a runtime input, and two sides reading two files would be two engines.
-    let (base_ir, base_nodes, base_startup) = warm_ir(&base_bin, &resources_dir(), &depth)?;
-    let (head_ir, head_nodes, head_startup) = warm_ir(&head_bin, &resources_dir(), &depth)?;
+    let (base_ir, base_nodes, base_startup) = warm_ir(&base_bin, &resources_dir(), &depth, cold)?;
+    let (head_ir, head_nodes, head_startup) = warm_ir(&head_bin, &resources_dir(), &depth, cold)?;
 
     if base_nodes != head_nodes {
         return Ok(Outcome::Fail(format!(
@@ -2293,7 +2309,7 @@ mod tests {
     /// resets the game between them.
     #[test]
     fn the_warm_script_walks_the_game_without_resetting_it() {
-        let script = warm_script(&workspace_root(), "12").expect("the move list reads");
+        let script = warm_script(&workspace_root(), "12", false).expect("the move list reads");
         let moves = warm_moves(&workspace_root()).expect("the move list reads");
 
         assert_eq!(script.iter().filter(|l| l.starts_with("go depth 12")).count(), moves.len());
@@ -2315,6 +2331,20 @@ mod tests {
             "the final search sees every move but the one it is looking for"
         );
         assert_eq!(script.last().map(String::as_str), Some("quit"));
+
+        // `--cold` resets before every move but the first, which is what makes the run it
+        // is compared against the same workload from a cleared table.
+        let cold = warm_script(&workspace_root(), "12", true).expect("the move list reads");
+        assert_eq!(
+            cold.iter().filter(|l| l.as_str() == "ucinewgame").count(),
+            moves.len(),
+            "one reset at the top and one before every later move"
+        );
+        assert_eq!(
+            cold.iter().filter(|l| l.starts_with("go depth 12")).count(),
+            moves.len(),
+            "the two regimes search the same positions"
+        );
     }
 
     /// Every ply is searched, and a replay that stopped early is refused rather than summed.

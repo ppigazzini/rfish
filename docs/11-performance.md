@@ -235,21 +235,25 @@ the same shape `perf-budget`'s own calibration has, without a row to keep.
 
 Every axis above measures `bench`: a COLD search of an unrelated position at depth 8, from an
 empty transposition table and empty history, pawn and correction banks. **A move in a real
-game is a different workload**, and the difference is not a nuance. `tools/cases/warm.moves`
-is one 60-ply game; replayed move by move with no `ucinewgame` between the moves, this port
-searches **728,110 nodes at depth 12**, where the same game searched cold needs **1,424,756**.
-A warm node is cheaper as well as rarer, because more of them end at a table cutoff before
-reaching an evaluation, and the share that do rises as the table fills.
+game is a different workload.** `tools/cases/warm.moves` is one 60-ply game, replayed move by
+move with no `ucinewgame` between the moves, and it needs roughly HALF the nodes the same game
+searched cold needs. A warm node is cheaper as well as rarer, because more of them end at a
+table cutoff before reaching an evaluation, and the share that do rises as the table fills.
 
-What follows from that is the reason the axis exists rather than a curiosity about it. A
-change on a per-move path — the move picker's staging, the reduction arithmetic, anything
-whose cost scales with moves scored rather than with nodes visited — is a SMALLER fraction of
-the cold bench than of a real move, so the bench axis understates it. A change whose whole
-effect is on a warm search's ordering can read as nothing at all.
+Run both regimes and read the node totals the runs print; `--cold` resets before every move
+and changes nothing else, so the gap between the two is what a game's accumulated state is
+worth:
 
 ```sh
-cargo xtask warm-ab --tier avx2 --base HEAD~1     # the ratio; --depth D moves the clock
+cargo xtask warm-ab --tier avx2 --base HEAD~1            # the ratio; --depth D moves the clock
+cargo xtask warm-ab --tier avx2 --base HEAD~1 --cold     # the same game from a cleared table
 ```
+
+What follows from that is the reason the axis exists. A change on a per-move path — the move
+picker's staging, the reduction arithmetic, anything whose cost scales with moves SCORED
+rather than with nodes visited — is a smaller fraction of the cold bench than of a real move,
+so the bench axis understates it. A change whose whole effect is on a warm search's ordering
+can read as nothing at all.
 
 Three properties it holds, each the failure of one way a replay stops being a measurement:
 
@@ -267,8 +271,15 @@ Three properties it holds, each the failure of one way a replay stops being a me
   hash size and the net, so a stored row would expire on every net bump. Inventing a
   tolerance for it would be inventing a threshold nothing measured.
 
-**It is the heaviest step here** — `budget-ab`'s two builds plus a warm replay under
-callgrind on both sides — and it is excused from every CI lane for that reason.
+**It is the heaviest step here** — `budget-ab`'s two builds plus a replay under callgrind on
+both sides — and it is excused from every CI lane for that reason.
+
+**What it does not cover.** One opening, one hash size, one thread and one depth. A change
+whose effect depends on the move ordering a different opening produces, on a table under
+pressure at a larger `Hash`, or on contention between workers, is outside this axis as much as
+it is outside `bench`. It counts retired instructions and it is not a strength instrument:
+nothing here converts to Elo, and [12-references.md](12-references.md) records what sizing an
+Elo run costs instead.
 
 ## `codegen-equiv` — the gate for a "no functional change" claim
 
@@ -412,17 +423,24 @@ An axis that cannot resolve the effect in front of it does not report "unknown".
 number, and the number is the box. Two properties separate the columns here, and they decide
 which one may carry a claim.
 
-**Retired instructions are deterministic, across independently built binaries.** Not
-approximately: the startup column of seven `budget-ab` and `warm-ab` runs in one session, over
-five separately compiled binaries, spanned 1,059,327,060 to 1,059,331,477 — a range of 4,417
-on 1.06 billion, **0.0004%**. A ratio on that column is therefore a fact about the code, and a
-change too small to move it has not been shown to cost or save anything.
+Measure the floor the way you measure a change — same revision on both sides, or a revision
+against one that touches no source:
+
+```sh
+cargo xtask budget-ab --tier avx2 --base HEAD~1     # the A/A: both columns should read flat
+```
+
+**Retired instructions are deterministic, across independently built binaries.** The startup
+column is the control that is always there: every run of `budget-ab` and `warm-ab` prints it,
+both sides load the same net, and it reproduces to within **0.0004%** across separately
+compiled binaries in one session. A ratio on the instruction column is therefore a fact about
+the code, and a change too small to move it has not been shown to cost or save anything.
 
 **Every other column is a hardware counter sampling a shared machine.** Cycles, cache misses
 and branch mispredicts vary between two runs of the SAME binary by more than most refactors
-move them — the nps figures elsewhere on this page (240k–275k on one unchanged binary) are the
-same statement in the units a reader recognises. Report those columns beside a control taken
-the same session, and claim nothing from them alone.
+move them; the nps spread recorded under *Measurement, and each instrument's blind spots* is
+the same statement in the units a reader recognises. Report those columns beside a control
+taken the same session, and claim nothing from them alone.
 
 **The instruction axis has a layout floor, and it is not scatter.** A semantically null change
 — two statements writing disjoint state, exchanged — can move the count, reproducibly, because
@@ -435,20 +453,20 @@ genuinely retires more instructions, whether or not it retires them for the reas
 Two consequences, and the second is the one that has cost sibling ports a published number.
 
 **Ratios multiply only along the chain they were measured on.** A stack figure is a
-measurement, not a product: three ratios each taken against a COMMON base multiply to
-something the stack does not read, because each one describes a different starting binary. A
-product is valid only where each factor was measured against the previous factor's result.
-Measured that way it holds tightly — this repository's three-commit divide-and-walk stack read
-−0.0255%, −0.0474% and −0.0276% at avx2, each against the commit before it, for a product of
-−0.1005% against a direct assembled reading of **−0.1004%**. In a fleet the condition fails by
-construction: every agent measures from the base it was chartered on, so none of their ratios
-is the stack's and the set of them does not add. The assembled stack is a separate
-measurement, and it belongs to whoever assembles it.
+measurement, not a product: ratios each taken against a COMMON base multiply to something the
+stack does not read, because each one describes a different starting binary. A product is
+valid only where each factor was measured against the previous factor's result — measured that
+way, a three-commit product and the direct assembled reading agree to four decimal places
+here. In a fleet the condition fails by construction: every agent measures from the base it
+was chartered on, so none of their ratios is the stack's and the set of them does not add.
+**The assembled stack is a separate measurement and belongs to whoever assembles it** — run
+`budget-ab --base <the commit the first change branched from>` on the finished tree rather than
+multiplying the reports.
 
 **A deterministic ratio can still be about the base.** The same source delta reads differently
-against two different bases, with no A/A able to see it, because the reading is perfectly
-reproducible on each. Quote the base beside the number, which is why every figure in this
-repository's commit bodies names the ref it was taken against.
+against two different bases, and no A/A can see it, because the reading is perfectly
+reproducible on each. Name the ref beside every figure — `budget-ab` and `warm-ab` both print
+theirs in the left column for that reason.
 
 ## Measurement, and each instrument's blind spots
 
