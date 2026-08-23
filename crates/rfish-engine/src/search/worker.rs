@@ -845,7 +845,13 @@ impl SearchWorker {
     /// than this function: see [`Self::reduction_window`].
     fn reduction(&self, improving: bool, d: i32, mn: i32, window: i32) -> i32 {
         let scale = self.reductions[d as usize] * self.reductions[mn as usize];
-        scale - window + i32::from(!improving) * scale * 197 / 512 + 982
+        // The entries are `int(2872 / 128 * ln(i))`, 0 through 124, so the product and the
+        // improving term are non-negative -- which the type does not say, so the signed
+        // `/ 512` would carry the round-toward-zero correction. Dividing at `u32` is the
+        // same quotient for a non-negative dividend and is the shift alone.
+        debug_assert!(scale >= 0, "the reduction table is a scaled logarithm, never negative");
+        let improving_term = (i32::from(!improving) * scale * 197) as u32 / 512;
+        scale - window + improving_term as i32 + 982
     }
 
     /// The window term [`Self::reduction`] subtracts, for the window `alpha..beta`.
