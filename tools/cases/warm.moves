@@ -1,0 +1,19 @@
+# One 60-ply game, as long-algebraic moves, replayed move by move by `cargo xtask warm-ab`.
+#
+# The AXIS, not a golden: nothing here is compared against upstream. What the file has to be
+# is FIXED, because a warm replay's node total is a function of the move list and the table
+# alone, and two revisions that search the same tree must report the same total. A run whose
+# totals differ is VOID rather than slow.
+#
+# Produced by this engine playing itself at `go depth 12`, Hash 16, Threads 1, from the start
+# position -- a real game rather than a position list, because the regime being measured is a
+# search that INHERITS a filled transposition table and populated history banks. `bench` is
+# the opposite: a cold search of an unrelated position, and it is a different workload. At
+# depth 12 over these plies this port searches 728,110 nodes warm and 1,424,756 cold.
+#
+# Moves are read in order and the comment lines are stripped before the script is piped, so
+# unlike a `.uci` fixture a `#` line here is a comment and not a command.
+e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6 e1g1 f6e4 d2d4 b7b5 a4b3 d7d5 d4e5 c8e6
+c2c3 f8e7 b1d2 e4c5 b3c2 d5d4 d2b3 d4d3 c2b1 c5b3 a2b3 e6f5 b3b4 e8g8 f1e1 f8e8
+h2h3 d8d7 c1f4 e7f8 g2g4 f5g6 f3h4 d3d2 d1d2 d7d2 f4d2 g6b1 a1b1 c6e5 d2f4 f7f6
+f4e5 f6e5 h4f3 c7c5 b4c5 f8c5 e1e5 e8e5 f3e5 a6a5 e5d3 c5d6

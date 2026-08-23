@@ -45,6 +45,12 @@ const EXCUSED: &[(&str, &str)] = &[
          checkout gives it nothing to compare",
     ),
     (
+        "warm-ab",
+        "LOCAL, and the heaviest step here -- `budget-ab`'s refusal plus a warm 60-ply \
+         replay under callgrind on BOTH sides, which a hosted runner would spend its \
+         whole budget on and then measure the hypervisor",
+    ),
+    (
         "codegen-equiv",
         "LOCAL -- it proves a WORKING-TREE refactor against a git ref, and inside parity \
          (where a clean checkout makes the two the same tree) it has nothing to compare",

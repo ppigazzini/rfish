@@ -91,6 +91,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "fingerprint" => perf::fingerprint(args),
         "codegen-equiv" => codegen::codegen_equiv(args),
         "budget-ab" => perf::budget_ab(args),
+        "warm-ab" => perf::warm_ab(args),
         "fuzz" => fuzz::fuzz(args),
         "lane-coverage" => meta::lane_coverage(),
         "fixture-coverage" => meta::fixture_coverage(),
@@ -128,6 +129,13 @@ cargo xtask <step> — the rfish build driver
     budget-ab [--tier T] [--base REF] [--rounds N] [--syzygy]
                           the instruction budget with NO stored golden: build the WORKING
                           TREE and REF, count both, compare. Refuses unequal node counts
+    warm-ab [--tier T] [--base REF] [--depth D]
+                          the same A/B on a WARM GAME rather than on `bench`: one 60-ply
+                          replay, no `ucinewgame` between moves, so every search inherits a
+                          filled table and populated history banks. That is the regime a
+                          move is played in and `bench` is the opposite of it -- the same
+                          game costs 728,110 nodes warm and 1,424,756 cold. Reports a ratio
+                          and no verdict: there is no stored row to regress against
     codegen-equiv [--tier T] [--base REF]
                           the gate for a no-functional-change claim: disassemble the WORKING TREE
                           and REF and compare symbol by symbol. Refuses a clean checkout,

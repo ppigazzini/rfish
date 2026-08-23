@@ -2071,8 +2071,280 @@ fn callgrind_events(path: &Path) -> Result<HashMap<String, u64>, String> {
     Ok(map)
 }
 
+// -- the warm-game axis ----------------------------------------------------------------
+
+/// Hash and threads for the warm replay. One thread, so the node total is a function of the
+/// move list and the table alone and two revisions searching the same tree MUST agree on it.
+const WARM_ENGINE: [(&str, &str); 2] = [("Hash", "16"), ("Threads", "1")];
+
+/// The depth each move of the replay is searched to.
+///
+/// Deep enough that the search is the profile and shallow enough that callgrind finishes:
+/// 728,110 nodes here against `bench 16 1 8`'s 182,697. A long clock reaches depth 20 and
+/// more, which is four times this under an instrumented run and buys no property the axis
+/// does not already have -- what separates this workload from `bench` is WARMTH, not depth.
+const WARM_DEPTH: &str = "12";
+
+/// The move list, with its header stripped.
+///
+/// See `tools/cases/warm.moves` for why the list is fixed.
+fn warm_moves(root: &Path) -> Result<Vec<String>, String> {
+    let src = root.join("tools/cases/warm.moves");
+    let text = std::fs::read_to_string(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+    let moves: Vec<String> = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .flat_map(str::split_whitespace)
+        .map(str::to_string)
+        .collect();
+    if moves.is_empty() {
+        return Err(format!("{}: the move list is empty", src.display()));
+    }
+    Ok(moves)
+}
+
+/// The replay, as the UCI script that produces it.
+///
+/// One `ucinewgame` at the top and NONE between moves: the accumulated transposition table
+/// and the populated history, pawn and correction banks are the whole point. A `ucinewgame`
+/// per move measures the cold regime `bench` already measures.
+fn warm_script(root: &Path, depth: &str) -> Result<Vec<String>, String> {
+    let moves = warm_moves(root)?;
+    let mut script = Vec::with_capacity(moves.len() * 2 + 6);
+    for (name, value) in WARM_ENGINE {
+        script.push(format!("setoption name {name} value {value}"));
+    }
+    script.push("ucinewgame".to_string());
+    script.push("isready".to_string());
+    for ply in 0..moves.len() {
+        let played = &moves[..ply];
+        script.push(if played.is_empty() {
+            "position startpos".to_string()
+        } else {
+            format!("position startpos moves {}", played.join(" "))
+        });
+        script.push(format!("go depth {depth}"));
+    }
+    script.push("quit".to_string());
+    Ok(script)
+}
+
+/// The nodes the replay searched, summed over its moves.
+///
+/// Each search's last `info` line carries its own total, so the sum is the replay's. Read
+/// per move rather than from a footer because a replay has none: `bench` prints one and this
+/// workload is N separate `go` commands in one process.
+fn warm_nodes(text: &str, want: usize) -> Result<u64, String> {
+    let mut total = 0u64;
+    let mut latest: Option<u64> = None;
+    let mut searched = 0usize;
+    for line in text.lines() {
+        if line.starts_with("info ")
+            && let Some((_, rest)) = line.split_once(" nodes ")
+            && let Some(n) = rest.split_whitespace().next().and_then(|n| n.parse::<u64>().ok())
+        {
+            latest = Some(n);
+        }
+        if line.starts_with("bestmove") {
+            total += latest.take().ok_or_else(|| {
+                "a search ended with no `info` line carrying a node count".to_string()
+            })?;
+            searched += 1;
+        }
+    }
+    // A `position` the engine rejects leaves the board where it was and the `go` still
+    // answers, so a wrong move list produces a complete, plausible, entirely wrong
+    // measurement. Counting the searches against the list is what sees it -- the same
+    // failure `bench` has when its fen path does not resolve.
+    if searched != want {
+        return Err(format!(
+            "the replay searched {searched} positions and the move list holds {want}: the \
+             engine did not play the game this axis is named for"
+        ));
+    }
+    Ok(total)
+}
+
+/// One profiled replay: the whole-process count, the node total, and the net it loaded.
+fn warm_round(bin: &Path, cwd: &Path, depth: &str) -> Result<(u64, u64, Option<String>), String> {
+    let out = std::env::temp_dir().join(format!("rfish-cg-warm-{}.out", scratch_key(bin)));
+    let mut cmd = Command::new("valgrind");
+    cmd.current_dir(cwd)
+        .args(["--tool=callgrind", "--cache-sim=no", "--branch-sim=no"])
+        .arg(format!("--callgrind-out-file={}", out.display()))
+        .arg(bin);
+    let script = warm_script(&workspace_root(), depth)?;
+    let text = capture_piped(&mut cmd, &script)?;
+    let net = text
+        .lines()
+        .find_map(|l| l.split_once("NNUE evaluation using "))
+        .map(|(_, name)| name.trim().to_string());
+    let want = warm_moves(&workspace_root())?.len();
+    Ok((callgrind_total(&out)?, warm_nodes(&text, want)?, net))
+}
+
+/// The replay's instruction count with startup subtracted, and the node total it searched.
+fn warm_ir(bin: &Path, cwd: &Path, depth: &str) -> Result<(u64, u64, u64), String> {
+    let startup = startup_ir(bin, cwd, false)?;
+    let (total, nodes, net) = warm_round(bin, cwd, depth)?;
+    if net.is_none() {
+        return Err(format!(
+            "the engine loaded no NNUE network from {} — it fell back to the classical \
+             evaluation, and that is a different engine. Run `cargo xtask net`",
+            cwd.display()
+        ));
+    }
+    Ok((total.saturating_sub(startup), nodes, startup))
+}
+
+/// The instruction A/B on a WARM game -- the regime `bench` is not.
+///
+/// `perf-budget` and `budget-ab` both measure `bench`: a COLD search of an unrelated position
+/// at depth 8, from an empty table and empty history banks. A move in a real game is a
+/// different workload, and measurably so here -- this move list needs 728,110 nodes warm
+/// where the same game searched cold needs 1,424,756. A per-move saving therefore reads
+/// SMALLER on the bench axis than it is worth in play, and a change whose whole effect is on
+/// a warm search's ordering can read as nothing at all.
+///
+/// It has no stored row and never will. A warm total is a function of the move list, the
+/// hash size and the net, so a golden would expire on every net bump; the question this
+/// answers is a RATIO between two builds, which is what `--base` is for.
+pub(crate) fn warm_ab(args: &[&str]) -> Result<Outcome, String> {
+    let tier = tier_of(args)?;
+    if !tier.callgrind_safe {
+        return Err(format!(
+            "tier '{}' cannot be counted: callgrind implements no AVX-512 and SIGILLs on the \
+             first instruction it does not know",
+            tier.name
+        ));
+    }
+    if !have("valgrind") {
+        return Ok(Outcome::Skipped("valgrind is needed to count instructions".to_string()));
+    }
+    let base = arg_value(args, "--base").unwrap_or("HEAD");
+    let depth = arg_value(args, "--depth").unwrap_or(WARM_DEPTH).to_string();
+
+    // The refusal `budget-ab` and `codegen-equiv` both make, for the same reason: with a
+    // clean checkout the two sides are one tree, and a zero that was never in doubt reads
+    // exactly like a change that cost nothing.
+    let changed = crate::runner::tracked_rust_diff(base)?;
+    if changed.is_empty() {
+        return Ok(Outcome::Skipped(format!(
+            "nothing to measure: no tracked Rust source differs from {base}. This step counts \
+             the WORKING TREE against a ref, so on a clean checkout both sides are one build"
+        )));
+    }
+
+    let scratch = workspace_root().join("target/warm-ab");
+    std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+    let tree = scratch.join("base-tree");
+    crate::runner::worktree_at(base, &tree)?;
+
+    let flags = format!("-C target-cpu={}", tier.rustc);
+    println!(
+        "warm-ab: building {base} and the working tree at tier {} (warm replay, depth {depth})",
+        tier.name
+    );
+    let base_bin = build_release_at(&tree, &scratch.join("base-target"), &flags)?;
+    let head_bin = build_release_at(&workspace_root(), &scratch.join("head-target"), &flags)?;
+    crate::runner::worktree_remove(&tree);
+
+    // Both sides run from THIS repository's resources/, never from the worktree's: the net is
+    // a runtime input, and two sides reading two files would be two engines.
+    let (base_ir, base_nodes, base_startup) = warm_ir(&base_bin, &resources_dir(), &depth)?;
+    let (head_ir, head_nodes, head_startup) = warm_ir(&head_bin, &resources_dir(), &depth)?;
+
+    if base_nodes != head_nodes {
+        return Ok(Outcome::Fail(format!(
+            "the two sides searched different trees ({base} {base_nodes} nodes, working tree \
+             {head_nodes}), so there is no instruction comparison to make. A replay whose \
+             totals differ is VOID rather than slow: settle the node count with `signature` \
+             first"
+        )));
+    }
+
+    let base_per = base_ir as f64 / base_nodes as f64;
+    let head_per = head_ir as f64 / head_nodes as f64;
+    let ratio = head_per / base_per;
+
+    println!(
+        "warm-ab: {base_nodes} nodes on both sides, {} plies",
+        warm_moves(&workspace_root())?.len()
+    );
+    println!("  {:>14}  {:>15}  {:>12}  {:>12}", "", "search", "Ir/node", "startup");
+    println!("  {base:>14}  {base_ir:>15}  {base_per:>12.2}  {base_startup:>12}");
+    println!("  {:>14}  {head_ir:>15}  {head_per:>12.2}  {head_startup:>12}", "working tree");
+    println!("  {:>14}  {:>15}  {:>12.5}", "ratio", head_ir as i64 - base_ir as i64, ratio);
+
+    // No tolerance and no verdict on the number. This axis has no stored row to regress
+    // against, and the instruction column is deterministic, so the ratio IS the result --
+    // reporting a pass or a fail on it would be inventing a threshold nothing measured.
+    println!(
+        "warm-ab: {:+.4}% retired instructions per node on a warm game",
+        (ratio - 1.0) * 100.0
+    );
+    Ok(Outcome::Pass)
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// The replay searches one position per ply, from the start position forward, and never
+    /// resets the game between them.
+    #[test]
+    fn the_warm_script_walks_the_game_without_resetting_it() {
+        let script = warm_script(&workspace_root(), "12").expect("the move list reads");
+        let moves = warm_moves(&workspace_root()).expect("the move list reads");
+
+        assert_eq!(script.iter().filter(|l| l.starts_with("go depth 12")).count(), moves.len());
+        assert_eq!(
+            script.iter().filter(|l| l.as_str() == "ucinewgame").count(),
+            1,
+            "a `ucinewgame` per move would measure the COLD regime `bench` already measures"
+        );
+        assert_eq!(
+            script.iter().filter(|l| l.as_str() == "position startpos").count(),
+            1,
+            "only the first ply plays no moves"
+        );
+        let last = script.iter().rfind(|l| l.starts_with("position startpos moves "));
+        let last = last.expect("the replay reaches the last ply");
+        assert_eq!(
+            last.split_whitespace().count() - 3,
+            moves.len() - 1,
+            "the final search sees every move but the one it is looking for"
+        );
+        assert_eq!(script.last().map(String::as_str), Some("quit"));
+    }
+
+    /// Every ply is searched, and a replay that stopped early is refused rather than summed.
+    #[test]
+    fn the_warm_node_total_sums_each_search_and_counts_them() {
+        let text = [
+            "info depth 1 nodes 10 pv e2e4",
+            "info depth 2 nodes 40 pv e2e4",
+            "bestmove e2e4",
+            "info depth 1 nodes 7 pv e7e5",
+            "bestmove e7e5",
+        ]
+        .join("\n");
+        let text = text.as_str();
+        assert_eq!(warm_nodes(text, 2), Ok(47), "the LAST info of each search carries its total");
+
+        let err = warm_nodes(text, 60).expect_err("a short replay is not a measurement");
+        assert!(err.contains("searched 2 positions"), "{err}");
+    }
+
+    /// The corpus is a comment header and a move list, and the header never reaches the pipe.
+    #[test]
+    fn the_move_list_strips_its_header() {
+        let moves = warm_moves(&workspace_root()).expect("the move list reads");
+        assert_eq!(moves.len(), 60, "the axis is named for a 60-ply game");
+        assert!(
+            moves.iter().all(|m| (4..=5).contains(&m.len()) && m.is_ascii()),
+            "every entry is a long-algebraic move"
+        );
+    }
     use super::*;
 
     /// The oracle-side stub and the engine-side one are a PAIR, and half a pair is worse
