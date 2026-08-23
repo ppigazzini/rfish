@@ -5,7 +5,7 @@ while the same tree gets slower: the anchor pins the NODE count and says nothing
 node costs. This page owns the instruments that can see cost, and the conditions under which
 a ratio taken with one of them means anything at all.
 
-There are six, and they are not substitutes for each other. The pages that use their output —
+There are seven, and they are not substitutes for each other. The pages that use their output —
 [03-engine-eval.md](03-engine-eval.md)'s ledger, [08-idiomatic-rust.md](08-idiomatic-rust.md)'s
 shapes, [05-tablebases.md](05-tablebases.md)'s probing cost — quote figures produced here.
 
@@ -19,13 +19,14 @@ over-trusted.
 |---|---|---|
 | "it costs the same as the recorded row" | `perf-budget` | cache, branches and latency; a tier callgrind cannot execute; and without `--syzygy`, the tablebase reader entirely |
 | "it costs the same as that commit" | `budget-ab` | the same, plus nothing at all on a clean checkout or a moved node count — it refuses both rather than reporting a comparison it did not make |
+| "it costs the same as that commit, in the regime a move is played in" | `warm-ab` | the same blind spots, and it carries NO verdict — there is no stored row for a warm total, so the ratio is the whole result |
 | "the compiler emitted what it emitted before" | `codegen-equiv` | anything that changes a SIGNATURE, because it matches bodies by name; and anything in DATA rather than in `.text` |
 | "the hardware behaves the same" | `counters` | where the cost is per component, and the three AVX-512 tiers |
 | "it is faster" | `perf` | anything under ~10% on this box; a spread that straddles 1.000 has established no direction |
 | "it reaches its answer the same way" | `fingerprint` | a callee inlined INTO its caller, and any code the workload never reaches |
 | "both sides searched the same tree" | `signature` | cost — which is what every row above exists for ([10-tooling-ci.md](10-tooling-ci.md)) |
 
-Two of the six take `--syzygy`, and it is not a refinement: the bench list never enters the
+Two of the seven take `--syzygy`, and it is not a refinement: the bench list never enters the
 prober, so without the flag a whole zone of the port sits outside every row here.
 
 ## Comparability: what must be held equal before a ratio means anything
@@ -230,6 +231,45 @@ Verified both directions on this box, `--rounds 1` at `avx2`, 172,793 nodes on b
 The floor is nine instructions in 1.5e9, and the mutation is nineteen times the tolerance —
 the same shape `perf-budget`'s own calibration has, without a row to keep.
 
+## `warm-ab` — the regime `bench` is not
+
+Every axis above measures `bench`: a COLD search of an unrelated position at depth 8, from an
+empty transposition table and empty history, pawn and correction banks. **A move in a real
+game is a different workload**, and the difference is not a nuance. `tools/cases/warm.moves`
+is one 60-ply game; replayed move by move with no `ucinewgame` between the moves, this port
+searches **728,110 nodes at depth 12**, where the same game searched cold needs **1,424,756**.
+A warm node is cheaper as well as rarer, because more of them end at a table cutoff before
+reaching an evaluation, and the share that do rises as the table fills.
+
+What follows from that is the reason the axis exists rather than a curiosity about it. A
+change on a per-move path — the move picker's staging, the reduction arithmetic, anything
+whose cost scales with moves scored rather than with nodes visited — is a SMALLER fraction of
+the cold bench than of a real move, so the bench axis understates it. A change whose whole
+effect is on a warm search's ordering can read as nothing at all.
+
+```sh
+cargo xtask warm-ab --tier avx2 --base HEAD~1     # the ratio; --depth D moves the clock
+```
+
+Three properties it holds, each the failure of one way a replay stops being a measurement:
+
+- **The node total is the fidelity check.** One thread over a fixed move list makes the total
+  a function of the position and the table alone, so two revisions that search the same tree
+  MUST report the same total. A run whose totals differ is VOID rather than slow, and it
+  refuses rather than dividing. That is a wider net than the anchor, which visits its own
+  fixed position list from a cold table.
+- **Every ply is counted, not just summed.** A `position` the engine rejects leaves the board
+  where it was and the `go` still answers, so a wrong move list yields a complete, plausible,
+  entirely wrong measurement. The count of searches is compared with the list — the same
+  failure `bench` has when its fen path does not resolve, which this repository has already
+  been bitten by once.
+- **It reports a ratio and no verdict.** A warm total is a function of the move list, the
+  hash size and the net, so a stored row would expire on every net bump. Inventing a
+  tolerance for it would be inventing a threshold nothing measured.
+
+**It is the heaviest step here** — `budget-ab`'s two builds plus a warm replay under
+callgrind on both sides — and it is excused from every CI lane for that reason.
+
 ## `codegen-equiv` — the gate for a "no functional change" claim
 
 Every other instrument here answers a question about BEHAVIOUR, and all of them stay green
@@ -413,6 +453,7 @@ that a push lane cannot afford.
 |---|---|---|
 | `perf-budget` | retired instructions against a recorded row, on two axes — the search at 0.005% and startup at 1% | this page |
 | `budget-ab` | the same two axes against a git ref, with both sides built and nothing stored | this page |
+| `warm-ab` | retired instructions per node on a WARM 60-ply replay, against a git ref — the regime `bench` is the opposite of | this page |
 | `codegen-equiv` | per-symbol machine-code identity between the working tree and a ref | this page |
 | `counters` | what the hardware did: reads, writes, D1 and icache misses, branches and their mispredicts | this page |
 | `perf` | the interleaved paired wall clock, reported as a median ratio with its spread | this page |
