@@ -159,6 +159,21 @@ impl MoveSink for MoveBuf {
 /// Quiet moves scoring at or below this are deferred behind the bad captures.
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
 
+/// The quiet sort's limit, for a list generated at `depth`.
+///
+/// Saturating because `depth` is a caller's value and the product is not otherwise bounded.
+fn quiet_sort_limit(depth: i32) -> i32 {
+    -3560i32.saturating_mul(depth)
+}
+
+/// True when the quiet sort's limit is at or below `threshold`, so the sorted prefix runs
+/// out before the threshold does and a walk may stop at the first move that fails it.
+///
+/// See [`MovePicker::select_while_above`], which this decides.
+fn sorted_past(depth: i32, threshold: i32) -> bool {
+    quiet_sort_limit(depth) <= threshold
+}
+
 /// Sort every entry descending — [`partial_insertion_sort`] with a limit nothing can fail.
 ///
 /// The capture and evasion stages pass `i32::MIN`, which no `i32` score is below, so the
@@ -355,7 +370,7 @@ impl MovePicker {
         self.end_generated = buf.len();
         let from = self.cur;
         let to = self.end_cur;
-        partial_insertion_sort(&mut buf[from..to], -3560i32.saturating_mul(self.depth));
+        partial_insertion_sort(&mut buf[from..to], quiet_sort_limit(self.depth));
     }
 
     /// Generate, score and sort the evasions. Outlined for the reason above.
@@ -418,8 +433,7 @@ impl MovePicker {
 
                 Stage::GoodQuiet => {
                     if !self.skip_quiets
-                        && let Some(m) =
-                            self.select(pos, buf, |sm, _| sm.score > GOOD_QUIET_THRESHOLD)
+                        && let Some(m) = self.select_while_above(pos, buf, GOOD_QUIET_THRESHOLD)
                     {
                         return m;
                     }
@@ -472,6 +486,47 @@ impl MovePicker {
                 Stage::Done => return Move::NONE,
             }
         }
+    }
+
+    /// The next move in `[cur, end_cur)` scoring above `threshold`, stopping at the first
+    /// move that is not -- where [`Self::select`] would walk the rest of the list to find
+    /// nothing.
+    ///
+    /// [`partial_insertion_sort`] leaves the list in two pieces: a prefix that descends, and
+    /// a tail every member of which scores below the sort's own limit. So once the walk has
+    /// seen one move at or below the threshold, the rest of the prefix is at or below it BY
+    /// THE ORDERING and the tail is below it BY THE LIMIT -- and there is nothing left to
+    /// find.
+    ///
+    /// **The tail half of that argument holds only while the limit is at or below the
+    /// threshold.** The limit is `-3560 * depth` and the threshold is
+    /// [`GOOD_QUIET_THRESHOLD`], so the limit first reaches it at depth 4; below that a tail
+    /// move can still outscore the threshold and the walk has to run to the end.
+    /// [`Self::good_quiets_are_sorted_past_the_threshold`] is the test that decides which
+    /// form the stage takes, and it is a test of the CONSTANTS rather than of a position.
+    fn select_while_above(
+        &mut self,
+        pos: &Position,
+        buf: &MoveBuf,
+        threshold: i32,
+    ) -> Option<Move> {
+        if !sorted_past(self.depth, threshold) {
+            return self.select(pos, buf, |sm, _| sm.score > threshold);
+        }
+        while self.cur < self.end_cur {
+            let sm = buf[self.cur];
+            if sm.score <= threshold {
+                // Everything from here down is at or below the threshold, so the stage is
+                // finished -- but `cur` stays where it is: the BAD_QUIET stage resumes from
+                // `end_captures` and wants these moves.
+                return None;
+            }
+            self.cur += 1;
+            if sm.mv != self.tt_move {
+                return Some(sm.mv);
+            }
+        }
+        None
     }
 
     /// The next move in `[cur, end_cur)` that is not the transposition move and satisfies
@@ -622,10 +677,72 @@ pub fn continuation_to(m: Move) -> Square {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::board::movegen::generate_legal;
     use crate::board::position::START_FEN;
     use crate::board::types::Rank;
+
+    /// The depth at which the quiet sort's limit falls to the good-quiet threshold, which is
+    /// what decides whether the stage may stop at the first move below the bar.
+    ///
+    /// A test of the CONSTANTS, not of a position: `select_while_above`'s tail argument is
+    /// sound exactly while the sort's limit is at or below the threshold, and both numbers
+    /// are tuned values a sync can move. If either moves, this says which way.
+    #[test]
+    fn good_quiets_are_sorted_past_the_threshold() {
+        for depth in 1..=3 {
+            assert!(
+                !sorted_past(depth, GOOD_QUIET_THRESHOLD),
+                "at depth {depth} the limit is {} and a TAIL move can still outscore {}",
+                quiet_sort_limit(depth),
+                GOOD_QUIET_THRESHOLD
+            );
+        }
+        for depth in 4..=64 {
+            assert!(
+                sorted_past(depth, GOOD_QUIET_THRESHOLD),
+                "at depth {depth} the limit is {}, so nothing below the threshold can follow \
+                 something above it",
+                quiet_sort_limit(depth)
+            );
+        }
+        // The limit saturates rather than wrapping, so a caller's depth cannot invert the
+        // test by overflowing the product.
+        assert!(sorted_past(i32::MAX, GOOD_QUIET_THRESHOLD));
+    }
+
+    /// The stage yields exactly the moves `select` would, on a list the sort has arranged.
+    ///
+    /// The two forms have to agree move for move: the early stop is an optimisation of the
+    /// walk and not a change to what the stage picks.
+    #[test]
+    fn the_early_stop_yields_what_the_full_walk_yields() {
+        let pos = Position::from_fen(START_FEN, false).expect("valid");
+        let h = Histories::default();
+        for depth in [1, 3, 4, 8, 20] {
+            let mut full = Vec::new();
+            let mut early = Vec::new();
+            for (out, stop_early) in [(&mut full, false), (&mut early, true)] {
+                let mut buf = MoveBuf::new();
+                let mut mp =
+                    MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, depth, Ply::ROOT);
+                mp.init_quiets(&pos, &h, &mut buf);
+                loop {
+                    let m = if stop_early {
+                        mp.select_while_above(&pos, &buf, GOOD_QUIET_THRESHOLD)
+                    } else {
+                        mp.select(&pos, &buf, |sm, _| sm.score > GOOD_QUIET_THRESHOLD)
+                    };
+                    match m {
+                        Some(m) => out.push(m),
+                        None => break,
+                    }
+                }
+            }
+            assert_eq!(full, early, "the two walks disagree at depth {depth}");
+        }
+    }
 
     fn collect(pos: &Position, h: &Histories, tt: Move) -> Vec<Move> {
         let mut mp = MovePicker::new(pos, [ContKey::UNREAD; 6], tt, 4, Ply::ROOT);
