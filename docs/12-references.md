@@ -251,6 +251,47 @@ goes. Both are in the table above with their numbers.
 | its 08-19 docs reorganisation — `bd75ed8d` through `fa8b64ab` giving each page the gates that hold it, `775a279c` splitting the axes onto their own page, `e8340484` renumbering | **already here, and gated.** `docs-lint` has held every page's `## The gates` section to the tree in both directions since 2026-08-19, which is the property that block was building toward |
 | `c349f888`, an idiomatic-C++ page the sibling ports all carry | **already here** as [08-idiomatic-rust.md](08-idiomatic-rust.md), which is the page their commit says it is copying |
 
+**The 2026-08-23 second window was eleven commits and every one of them is `perf(engine)`.**
+It is the first window with no docs and no gate commit in it at all, so the sweep is a
+straight cost sweep — and the shape it settles is **which of the two compilers a sibling's
+perf commit was actually written against.** Six of the eleven name gcc or clang in their own
+body; four of those six are inapplicable here for exactly the reason they name, and one is
+refuted BY ITS OWN AUTHOR on the compiler this port uses. The instrument that answers the
+question is the disassembly, not the diff: three of the entries below were closed by counting
+instructions at a source line in a `--profile profiling` build before anything was written.
+
+| probed, `refish` `6c1274a3..41a65845` | verdict |
+|---|---|
+| `f1bab075`, three divisions in the search node that are shifts by construction | **one of three taken; the other two were already shifts and it was CHECKED rather than assumed.** Step 14's `(3 + depth * depth) / (2 - improving)` is hoisted out of the move loop by LLVM and emitted with no `idiv` at all, and the child-node futility margin's `/ 1024` is a bare `shr $0xa` — gcc's `idiv` for both is what their commit is against. The null-move reduction's `/ 256` does carry the round-toward-zero correction here, and the shift is the `sar` alone: −0.0004% at avx2, −0.0015% at sse41, −0.0004% warm. A whole-binary census finds exactly **two** hardware divides on a search path, movepick's low-ply term and the LMR divisor table, and both are already refuted rows above |
+| `08b76d10`, one slider lookup shared across a swap's two scans | **taken, and its decomposition reproduced.** −0.0156% at avx2, −0.0059% at sse41, −0.0079% warm. The site is promotions here where it is every CAPTURE there, because this port's `do_move` decomposes a capture as remove-victim plus move-piece where upstream's is remove-mover plus `swap_piece` — equivalent, since `threat_delta` applies a sum and duplicate add/sub rows cancel, but it leaves the two scans on the capture path looking at different occupancies at `from`. Their own control holds here with the same sign: **adjacency alone is +0.0099%**, because rustc does not common-subexpression the scan across the stores the first scan makes into the dirty-threat list either |
+| `602d92e6`, the state machine split so only the generating stages pay a frame | **built THREE ways and REFUSED on all three**, and it is the largest number this sweep produced in either direction. `walk_lists` out of line: **+0.1845%**. `walk_lists` `inline(always)` into a `next_move` that LLVM then folds into `node` at nine sites: **+0.2844%**. `next_move` forced out of line with `walk_lists` folded into it — their exact emitted shape: **+0.3383%**. All bit-exact at avx2. Half their motivation does not exist here: rfish's `MoveBuf` is owned by the WORKER and lent per call, so `next_move` never held the 512-byte `MoveList<>` that made their frame worth splitting, and what is left is five pushes and 72 bytes against a call, a return and a second prologue |
+| `3a70eac6`, the sort whose limit admits every move | **already here** as `full_insertion_sort`, with the self-assignment and the dead limit compare gone and the permutation argument in its doc comment |
+| `41a65845`, the check-square planes hoisted beside the threat ones | **no analogue, and the disassembly is the reason.** Their `st` is a POINTER the scoring loop has no register left to hold, so `st->checkSquares[pt]` is two instructions; `StateInfo` is an inline field of `Position` here and `pos` is live across the loop for `moved_piece` and `see_ge`, so `pos.check_squares(pt)` is already the single `mov 0x208(%r8,%rbx,8),%rax` their hoist is trying to buy — the same one instruction as the `threat_by_lesser` local beside it |
+| `f84dfbee`, the scored move list walked by index instead of two cursors | **no analogue.** Their `score()` reads a generated `MoveList` and writes an `ExtMove` list through `*it++`, which is two induction variables and no trip count. All three `score_*` here score IN PLACE over one `&mut buf[start..]`, so there is one cursor and the length is the slice's |
+| `f71fc615`, the history value narrowed between load and update | **already correct.** `apply_gravity` widens once with `let v = i32::from(*entry)` and does every term of the gravity expression at `i32`; there is no `T val = *this` to truncate and re-extend |
+| `31e89cfa` the shared history read widened inside the load, `d745b174` the same for the transposition entry's two value fields | **no analogue, twice over.** Both are inline asm, which `forbid(unsafe_code)` makes unreachable and which is the constraint this port exists to keep — and the defect they route around is LLVM having no sextload pattern for `ATOMIC_LOAD`, which this tree does not meet: its history banks are plain `i16`, not atomics. The transposition entry's fields are `AtomicU64` words unpacked by shift, not narrow atomic loads |
+| `6050b7c8`, the rank solved in the lane the other rays leave empty | **no analogue, structurally.** It puts a rank's hyperbola-quintessence mask in `DualMagic`'s fourth lane using `vgf2p8affineqb`; this port uses magic bitboards, so there is no vector lane going to waste — and `std::arch`'s GFNI intrinsics are `unsafe fn` and `std::simd` has no bit-reversal, so the instruction is unreachable here whatever the layout |
+| `24e7a1a9`, the accumulator's index lists walked down to zero | **refuted by its own author on this compiler.** The commit gates itself to gcc and records **+0.048%** for clang at depth 20 under PGO, with the reason: clang peels those loops and outlines the remainder, and the reversed shape costs it. rustc's backend is LLVM, so the guard excludes this port by construction |
+
+**The assembled stack is −0.0160% at avx2**, `d7e3112` against the finished tree, 182,697
+nodes on both sides — the exact sum of the two rows above, each of which was measured against
+the previous one. That is what the chain rule predicts when it holds, and it is a separate
+measurement rather than an arithmetic claim.
+
+**A perf commit that names its compiler has already told you whether it transfers.** Six of
+these eleven do, and the answer was in the body every time: two are gcc-only by their own
+guard, two are inline asm working around an LLVM ISel gap, one is an ISA extension reached
+through intrinsics, and one is a division only gcc expands. The three that did transfer named
+no compiler at all. **Read the guard before building the candidate** — the two refuted here
+cost a build and a callgrind pair each, and both said so in their first paragraph.
+
+**And the one that named no compiler was still the biggest refutation.** `602d92e6` is pure
+structure, applies verbatim, is bit-exact in all three shapes it was built in, and every shape
+was worse. What differs is not the language: it is that this port had already made the change
+that motivated theirs, by moving the move buffer to the worker. **A sibling's frame-size
+finding is a hypothesis about YOUR frame**, and the first thing to measure is what is actually
+in it.
+
 ## Rust
 
 - **The Rust Reference** — <https://doc.rust-lang.org/reference/>. Particularly the

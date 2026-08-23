@@ -336,6 +336,17 @@ intuition:
   −12.37M at avx2 and −12.17M at sse41, bit-exact. The cost never appears as a line — it lands
   on the caller's prologue, which reads as overhead nobody wrote. The test is whether the body
   runs on a DIFFERENT SCHEDULE from its caller, not whether it is large.
+- **The converse does not follow: measure what is IN a frame before splitting it.** The same
+  `next_move` was split three ways so its list-walking half would stop paying the generating
+  half's prologue — the sibling's own change, verbatim — and all three shapes were WORSE:
+  +0.1845%, +0.2844% and +0.3383%, bit-exact. Their frame held a 512-byte move list; this
+  one holds five pushes and 72 bytes, against a call, a return and a second prologue. A
+  sibling's frame-size finding is a hypothesis about YOUR frame.
+- **A sibling's perf commit that names its compiler has already told you whether it
+  transfers.** Six of the eleven in the 2026-08-23 second window name gcc or clang; two are
+  gcc-only by their own guard, two are inline asm routing around an LLVM ISel gap, one is an
+  ISA extension reached through intrinsics, and one is a division only gcc expands. The three
+  that transferred named no compiler at all. Read the guard before building the candidate.
 - **A candidate sized from a `--profile profiling` build is a ceiling, not an estimate.** That
   profile gives up inlining to keep symbols, so a `Vec::push` the release build hoists out of a
   loop entirely still shows there, line by line, in exactly the shape the defect table tells

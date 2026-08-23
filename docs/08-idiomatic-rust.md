@@ -348,9 +348,10 @@ Keep this list current. Re-deriving a dead idea costs a session.
 
 | Idea | Status |
 |---|---|
-| Replacing an integer division with a reciprocal multiply | **Refuted here, at three sites, on two axes.** The LMR divisor reads +0.0323% cold and +0.0406% warm; the low-ply term, whose divisor is invariant for a whole move list so the reciprocal is built once outside it, reads +0.0952% and +0.0346%. What the shape costs is the widening multiply at the USE, and the use is per move whatever the divisor does. The quantity it is FOR is divider latency, which no instruction count can see and this box has no instrument for. Remove a division instead of reciprocating it: hoisting a quotient that cannot change is −0.0255% and proving the dividend non-negative so the round-toward-zero correction goes is −0.0474%. |
+| Replacing an integer division with a reciprocal multiply | **Refuted here, at three sites, on two axes.** The LMR divisor reads +0.0323% cold and +0.0406% warm; the low-ply term, whose divisor is invariant for a whole move list so the reciprocal is built once outside it, reads +0.0952% and +0.0346%. What the shape costs is the widening multiply at the USE, and the use is per move whatever the divisor does. The quantity it is FOR is divider latency, which no instruction count can see and this box has no instrument for. Remove a division instead of reciprocating it: hoisting a quotient that cannot change is −0.0255%, and proving the dividend non-negative so the round-toward-zero correction goes is −0.0474% at the reduction's improving term and −0.0004% at the null-move margin, where the `max(., 0)` around it makes the proof unnecessary. |
 | Narrowing a TABLE so its values prove a range | **Refuted where the table is read more than once per use.** `reductions` as `u16` costs +0.0191%: `reduction` reads it twice per move and the two `movzwl` exceed the correction they remove. State the proof on the DIVIDEND instead — the same fact, at the point it is used, is −0.0474%. |
 | Taking the move picker's three list-walking stages out of its `match` | **Refuted, +0.0206% at avx2.** The sibling's −1.61% is a clang-PGO layout effect its own commit body attributes to layout, and its claim is about indirect mispredicts — a sampled column here. rustc reproduces neither. |
+| Splitting `next_move` so only the generating stages carry a frame | **Refuted, in all THREE shapes it was built in**, bit-exact at avx2 each time: the walking half out of line **+0.1845%**, that half `inline(always)` into a `next_move` LLVM then folds into `node` at nine sites **+0.2844%**, and `next_move` forced out of line with the walk folded into it — ../Stockfish `refish` `602d92e6`'s exact emitted shape — **+0.3383%**. Half its motivation does not exist here: the `MoveBuf` is owned by the WORKER (§9), so `next_move` never held the 512-byte move list that made their frame worth splitting, and what is left is five pushes and 72 bytes against a call, a return and a second prologue. **Measure what is IN the frame before splitting it.** |
 | `std::simd` / `stdarch` intrinsics for the NNUE kernels | **Rejected by constraint**, not by measurement — nightly and `unsafe` respectively. Not a measurement result; do not cite it as one. |
 | Comparing autovectorised NNUE kernels against upstream's intrinsics | **Now worth doing.** The accumulator no longer dominates the way it did; see `docs/03-engine-eval.md` for the current split. |
 | Recomputing the NNUE accumulator per evaluation | **Superseded, with a measurement.** Diffing the recomputed feature sets is 1.48x faster at a bit-identical node count. Do not go back without beating 21.2 s of CPU on the depth-11 bench. |
@@ -1058,6 +1059,16 @@ generator's innermost read. The generator therefore takes the occupancy, own, en
 checker sets once at the top and threads them down, at **−0.9M**.
 `clippy::too_many_arguments` is suppressed rather than restructured; a struct of the four
 sets would read better and has not been measured.
+
+**And `&T` being `noalias` does not rescue it — hand the shared value IN.** The threat scan is
+the same shape one layer down: `update_piece_threats` reads only `&Position`, which carries
+`noalias`, and pushes only into `&mut Vec<DirtyThreat>`, which cannot alias it — so two
+adjacent scans over one square ought to share their slider lookup by construction. They do
+not. Making them adjacent and leaving them to the compiler is **+0.0099%**; passing the
+attack pair in as an argument is **−0.0156%**, and the two measurements are the same tree at
+the same tier. A `push` may reallocate, and that is enough to end every load's live range
+whatever the reference types promise. ../Stockfish's `refish` `08b76d10` reports the same
+split with the same sign under clang, so this is not a rustc property.
 
 **A comparable rewrite of the activations was worth about the same, and the smallness is the
 finding.** Narrowing `clipped_relu` and `sqr_clipped_relu` sixteen `i32` at a step — two AVX2
