@@ -255,18 +255,19 @@ intuition:
 - **Measure whole-binary, at a named `--arch` tier.** Instruction arithmetic over a diff is
   a guess, never a measurement, and the tier changes the answer.
 - **`bench` is a COLD search and a move is not.** Every axis but one measures `bench 16 1 8`:
-  an unrelated position at depth 8, from an empty table and empty history banks. The same
-  60-ply game costs 728,110 nodes warm and 1,424,756 cold here, so a change on a per-move
-  path is a smaller fraction of the bench than of a real move and the bench axis UNDERSTATES
-  it — measured, not argued: the good-quiet early stop reads −0.0276% on the cold bench and
-  −0.0849% on `cargo xtask warm-ab`, 3.1x. Run the warm axis for anything whose cost scales
-  with moves SCORED rather than with nodes visited.
-- **Ratios multiply only along the chain they were measured on.** Three ratios against a
-  COMMON base multiply to a figure the stack does not read. In a fleet this binds hardest:
-  every agent measures from the base it was chartered on, so none of their numbers is the
-  stack's and the set of them does not add. The assembled stack is a separate measurement,
-  owned by whoever assembles it — and a deterministic ratio is a fact about the code AND the
-  base, so name the ref beside every number.
+  an unrelated position at depth 8, from an empty table and empty history banks. A warm game
+  needs about half the nodes the same game needs cold, so a per-move cost is a smaller
+  fraction of the bench than of a real move and the bench axis UNDERSTATES it — by a factor
+  of three on the one change measured on both. Run `cargo xtask warm-ab` for anything whose
+  cost scales with moves SCORED rather than with nodes visited, and `--cold` beside it to see
+  what the accumulated state is worth.
+- **Ratios multiply only along the chain they were measured on.** Ratios against a COMMON
+  base multiply to a figure the stack does not read; a product is valid only where each
+  factor was taken against the previous factor's result. In a fleet the condition fails by
+  construction — every agent measures from the base it was chartered on — so the assembled
+  stack is a separate measurement, run on the finished tree by whoever assembles it. A
+  deterministic ratio is a fact about the code AND the base, so name the ref beside every
+  number.
 - **Hold the TOOLCHAIN equal, not just the tier.** Both sides clang/LLVM at rustc's major,
   both sides PGO on top of LTO — `cargo xtask pgo` and `cargo xtask oracle`. This is not a
   detail: it is worth more than most rows in the eval ledger, and every ratio measured

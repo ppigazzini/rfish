@@ -224,15 +224,18 @@ and every verdict below is a measurement on this tree rather than a reading of t
 | `23174aae`, the lmr divisor by reciprocal multiply | **NOT taken, and it is the first entry this repository can PRICE ON BOTH REGIMES.** Built, proved bit-exact, checked by exhaustion over \|h\| ≤ 2^21 for all sixteen divisors, and it costs instructions on both axes here: **+0.0323% cold, +0.0406% warm.** refish reads +0.0636% on their bench axis and −0.112% on their warm PGO game, so the sign flip that justifies it there does not occur here — rustc pays more for the widening multiply than clang under PGO does. The quantity the change is FOR is divider latency, and this box has no cycle instrument that can resolve it: the same shape as the transposition-table clear below, with the sign the other way round |
 | the low-ply term dividing by a loop INVARIANT, the second half of `78115f0b`'s row | **built and REFUSED, and it is the strongest case the class had.** The divisor is the ply, fixed for a whole move list, so the reciprocal is built ONCE outside the loop where the LMR one is a per-use table read — and it still costs **+0.0952% cold and +0.0346% warm**. Bit-exact, and the identity checked by exhaustion over \|n\| ≤ 2^20 at every ply the table exists at. Hoisting the reciprocal does not rescue the trade: what the class pays is the widening multiply at the USE, and the use is per move either way |
 | `d0e85ffc` the fail-high average's divisor, `1a602df2` the all-node reduction, `477b61fe` the root window | **not attempted, on the entry above.** All three are the same trade against the same non-pipelined divider, and the one that was built measured the cost and could not measure the benefit. Building three more of them would produce three more numbers of the same kind |
-**Three reciprocal-multiply candidates were built here and all three measured WORSE, on both
-axes.** The pattern is upstream's and it pays there; it does not pay under rustc at any of the
-three sites this tree has for it — the LMR divisor at +0.0323% cold and +0.0406% warm, the
-low-ply term at +0.0952% and +0.0346%, and those are the two whose divisor is most nearly
-free. **Treat "replace an integer division with a reciprocal multiply" as REFUTED on this
-port** unless a cycle instrument arrives that can price divider latency, which is the quantity
-the change is for and the one no instruction count can see. What DOES pay at a division is
-removing it outright — hoisting a quotient that cannot change (−0.0255%) or proving the
-dividend's sign so the correction goes (−0.0474%).
+**Two reciprocal-multiply candidates were built here and both measured WORSE, on both axes** —
+the LMR divisor at +0.0323% cold and +0.0406% warm, and the low-ply term at +0.0952% and
++0.0346%. The second is the stronger case of the two: its divisor is invariant for a whole
+move list, so the reciprocal is built once outside the loop, and it still lost. What the shape
+pays for is the widening multiply at the USE, and the use is per move whichever way the
+divisor is obtained, so the sites left unattempted are the same trade again.
+
+**Treat "replace an integer division with a reciprocal multiply" as REFUTED on this port**
+until an instrument arrives that can price divider latency — that is the quantity the change
+is for, and no instruction count can see it. What pays at a division is removing it: hoist a
+quotient that cannot change, or prove the dividend's sign so the round-toward-zero correction
+goes. Both are in the table above with their numbers.
 
 | `c6633ad3`, asserting a reciprocal table cannot round the wrong way | **taken WITH the entry above and reverted with it**, and it is the part worth keeping in view: the `+ (h < 0)` correction is uniform only while the magic's error term is strictly positive, which fails exactly where a divisor divides the shift. It is a property of four tuned numbers, so a tuner moving one onto a power of two gets a silently different search. Whoever revisits the reciprocals owes that assert |
 | `f4b00b55`, the good-quiet walk stopped at the first move below the bar | **taken.** Live here in the same shape, including the depth-4 crossing where the sort's limit falls to the threshold. −0.0276% cold and **−0.0849% warm**, bit-exact |
