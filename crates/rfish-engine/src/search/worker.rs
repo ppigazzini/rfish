@@ -1823,7 +1823,13 @@ impl SearchWorker {
                 // Give the opponent a free move; if the position still beats beta, the
                 // real move would too. Skipped in a pawn endgame, where zugzwang makes
                 // "pass" a genuinely good option and the assumption fails.
-                let r = 7 + depth / 3 + ((self.stack[si.index()].static_eval - beta) / 256).max(0);
+                // `>> 8` rather than `/ 256`, and the two agree here with no precondition
+                // on the sign: for a non-negative margin they are the same value, and for a
+                // negative one both are at most zero, so the `max` returns zero either way.
+                // Moving the `max` off it is what would break the identity. rustc pays the
+                // round-toward-zero correction for the division -- `lea 0xff(%rax),%edx`,
+                // `test`, `cmovns` ahead of the `sar $0x8` -- and the shift is the sar alone.
+                let r = 7 + depth / 3 + ((self.stack[si.index()].static_eval - beta) >> 8).max(0);
                 self.do_null_move(si);
                 let null_value = -self.node::<NonPv>(
                     -beta,
@@ -3603,6 +3609,22 @@ mod tests {
         // At depth one the root's twenty moves are made, plus whatever quiescence needs.
         // The start position has no captures, so quiescence makes none.
         assert_eq!(r.nodes, 20);
+    }
+
+    #[test]
+    fn the_null_move_margin_shift_is_the_division_under_the_max() {
+        // The null-move reduction takes `max(margin / 256, 0)`, and `>> 8` is the same
+        // value there for every margin two scores can produce: equal for a non-negative
+        // margin, and at most zero for a negative one, which the max floors either way.
+        // Checked by exhaustion over the whole reachable domain -- both operands are
+        // bounded by VALUE_INFINITE, so the margin cannot leave twice it.
+        let bound = 2 * crate::board::types::VALUE_INFINITE.get();
+        for m in -bound..=bound {
+            assert_eq!((m / 256).max(0), (m >> 8).max(0), "margin {m}");
+        }
+        // The two DISAGREE without the max, which is what makes moving it a bug rather
+        // than a rearrangement.
+        assert_ne!(-1i32 / 256, -1i32 >> 8);
     }
 
     #[test]
