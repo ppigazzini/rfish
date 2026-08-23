@@ -646,19 +646,43 @@ impl Position {
     /// Replace the man on `sq`, recording the threat change — upstream's `swap_piece`.
     ///
     /// **Both scans run with the ray half OFF, and that is what makes the ordering legal.**
-    /// The removal is recorded while `sq` is already empty, which would break the
-    /// occupancy invariant if anything read it — but a square's own occupancy cannot block a
-    /// ray leaving it, so only the discovered half could care, and that half is not computed.
-    /// The two placements are on the same square, so their ray effects cancel anyway.
-    fn swap_piece_dirty(&mut self, sq: Square, pc: Piece, mut dts: Option<&mut Vec<DirtyThreat>>) {
+    /// The removal is recorded while `sq` already holds the REPLACEMENT, which would break
+    /// the occupancy invariant if anything read it — but a square's own occupancy cannot
+    /// block a ray leaving it, so only the discovered half could care, and that half is not
+    /// computed. The two placements are on the same square, so their ray effects cancel
+    /// anyway.
+    ///
+    /// **Both placements happen first so the two scans are adjacent**, which is what lets
+    /// them share one slider lookup from `sq`. Every set either scan reads is masked by an
+    /// attack set computed from `sq`, and no attack set from `sq` contains `sq`, so the one
+    /// bit that separates "empty" from "holds `pc`" is the one bit none of those masks can
+    /// select.
+    fn swap_piece_dirty(&mut self, sq: Square, pc: Piece, dts: Option<&mut Vec<DirtyThreat>>) {
         let old = self.board[sq.index()];
         self.remove_piece(sq);
-        if let Some(out) = dts.as_deref_mut() {
-            threats::update_piece_threats(self, old, false, sq, out, Bitboard::ALL, false);
-        }
         self.put_piece(pc, sq);
         if let Some(out) = dts {
-            threats::update_piece_threats(self, pc, true, sq, out, Bitboard::ALL, false);
+            let attacks = Some(super::attacks::both_attacks_bb(sq, self.occupied()));
+            threats::update_piece_threats_sharing(
+                self,
+                old,
+                false,
+                sq,
+                out,
+                Bitboard::ALL,
+                false,
+                attacks,
+            );
+            threats::update_piece_threats_sharing(
+                self,
+                pc,
+                true,
+                sq,
+                out,
+                Bitboard::ALL,
+                false,
+                attacks,
+            );
         }
     }
 
