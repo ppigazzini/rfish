@@ -406,6 +406,47 @@ warning at all.
 Both commands also refuse a pair that loaded **different nets**, for the same reason both
 sibling ports added that check: a node count is a property of the net as much as of the
 
+## What each axis can resolve
+
+An axis that cannot resolve the effect in front of it does not report "unknown". It reports a
+number, and the number is the box. Two properties separate the columns here, and they decide
+which one may carry a claim.
+
+**Retired instructions are deterministic, across independently built binaries.** Not
+approximately: the startup column of seven `budget-ab` and `warm-ab` runs in one session, over
+five separately compiled binaries, spanned 1,059,327,060 to 1,059,331,477 — a range of 4,417
+on 1.06 billion, **0.0004%**. A ratio on that column is therefore a fact about the code, and a
+change too small to move it has not been shown to cost or save anything.
+
+**Every other column is a hardware counter sampling a shared machine.** Cycles, cache misses
+and branch mispredicts vary between two runs of the SAME binary by more than most refactors
+move them — the nps figures elsewhere on this page (240k–275k on one unchanged binary) are the
+same statement in the units a reader recognises. Report those columns beside a control taken
+the same session, and claim nothing from them alone.
+
+**The instruction axis has a layout floor, and it is not scatter.** A semantically null change
+— two statements writing disjoint state, exchanged — can move the count, reproducibly, because
+it is a register-allocation shift rather than noise. It bounds ATTRIBUTION rather than
+measurement: below it a change has not been shown to cost anything; above it the change
+genuinely retires more instructions, whether or not it retires them for the reason claimed.
+
+### A ratio is a fact about the code AND the base
+
+Two consequences, and the second is the one that has cost sibling ports a published number.
+
+**Ratios multiply only along the chain they were measured on.** A stack figure is a
+measurement, not a product: three ratios each taken against a COMMON base multiply to
+something the stack does not read, because each one describes a different starting binary. A
+product is valid only where each factor was measured against the previous factor's result. In
+a fleet this binds hard — every agent measures from the base it was chartered on, so none of
+their ratios is the stack's and the set of them does not add. The assembled stack is a
+separate measurement, and it belongs to whoever assembles it.
+
+**A deterministic ratio can still be about the base.** The same source delta reads differently
+against two different bases, with no A/A able to see it, because the reading is perfectly
+reproducible on each. Quote the base beside the number, which is why every figure in this
+repository's commit bodies names the ref it was taken against.
+
 ## Measurement, and each instrument's blind spots
 
 - **`perf stat` / `cachegrind` count the whole process**, which includes the magic-table
