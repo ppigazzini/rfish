@@ -437,10 +437,13 @@ Two consequences, and the second is the one that has cost sibling ports a publis
 **Ratios multiply only along the chain they were measured on.** A stack figure is a
 measurement, not a product: three ratios each taken against a COMMON base multiply to
 something the stack does not read, because each one describes a different starting binary. A
-product is valid only where each factor was measured against the previous factor's result. In
-a fleet this binds hard — every agent measures from the base it was chartered on, so none of
-their ratios is the stack's and the set of them does not add. The assembled stack is a
-separate measurement, and it belongs to whoever assembles it.
+product is valid only where each factor was measured against the previous factor's result.
+Measured that way it holds tightly — this repository's three-commit divide-and-walk stack read
+−0.0255%, −0.0474% and −0.0276% at avx2, each against the commit before it, for a product of
+−0.1005% against a direct assembled reading of **−0.1004%**. In a fleet the condition fails by
+construction: every agent measures from the base it was chartered on, so none of their ratios
+is the stack's and the set of them does not add. The assembled stack is a separate
+measurement, and it belongs to whoever assembles it.
 
 **A deterministic ratio can still be about the base.** The same source delta reads differently
 against two different bases, with no A/A able to see it, because the reading is perfectly
