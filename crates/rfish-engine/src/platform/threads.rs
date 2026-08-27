@@ -31,6 +31,13 @@ use crate::search::tt::TranspositionTable;
 use crate::search::worker::{InfoSink, SearchResult, SearchWorker, SilentSink};
 use crate::state::{Limits, SearchOptions, SharedState};
 
+/// The stack a search thread gets, matching upstream `thread_native.h`'s `TH_STACK_SIZE`.
+///
+/// State this rather than take the default: `Search::Worker::node` recurses to `MAX_PLY`,
+/// and the platform default is 512 KiB on macOS -- below what that recursion needs. Rust's
+/// own default is above it, so this is upstream's number rather than a fix for a crash.
+const TH_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 /// A set of search threads and the state they keep between searches.
 ///
 /// The histories survive from one `go` to the next — that is most of what makes the second
@@ -170,9 +177,23 @@ impl ThreadPool {
             let mut handles = Vec::with_capacity(helpers.len());
             for w in helpers.iter_mut() {
                 let (pos, limits) = (pos, limits);
-                handles.push(
-                    scope.spawn(move || w.search(pos, limits, tt, opts, budget, &mut SilentSink)),
-                );
+                let spawned = std::thread::Builder::new()
+                    .stack_size(TH_STACK_SIZE)
+                    .spawn_scoped(scope, move || {
+                        w.search(pos, limits, tt, opts, budget, &mut SilentSink)
+                    });
+                match spawned {
+                    Ok(handle) => handles.push(handle),
+                    // Name the refusal and stop. A host that will not give one more thread
+                    // (RLIMIT_NPROC, a cgroup quota) and a host out of memory reach here
+                    // alike, so the errno is the only thing that tells them apart -- and a
+                    // pool short one helper would search a different tree under the same
+                    // `Threads`. Upstream `thread.cpp`'s Thread::Thread.
+                    Err(e) => {
+                        eprintln!("Failed to create search thread: {e}");
+                        std::process::exit(1);
+                    }
+                }
             }
             // The main thread searches on this thread rather than a spawned one, so a
             // single-threaded run has no thread involved at all.
