@@ -207,10 +207,18 @@ pub struct RootMove {
     pub previous_score: Value,
     /// True when `previous_score` came from a completed, in-window search.
     pub previous_score_exact: bool,
-    /// True when the reported score is a lower bound (a fail high).
-    pub score_lowerbound: bool,
-    /// True when the reported score is an upper bound (a fail low).
-    pub score_upperbound: bool,
+    /// True when the search could not pin this score down from below (a fail high), so
+    /// what is reported is one-sided rather than exact.
+    ///
+    /// "Inexact", not "bound": `Bound` is already the transposition table's word for the
+    /// kind of a STORED value, and a root move flagged with the other vocabulary reads as
+    /// an entry kind rather than as a claim about how far the search got.
+    pub inexact_lower: bool,
+    /// The same one-sided claim from above (a fail low). Never true alongside
+    /// `inexact_lower` — a score cannot be bounded in both directions at once, and the
+    /// reporter tests `inexact_lower` first, so a move that set both would be reported as
+    /// a lower bound rather than as anything true.
+    pub inexact_upper: bool,
     /// An exponential moving average of this move's scores across iterations.
     ///
     /// The aspiration window opens around this rather than around the last score: one
@@ -255,8 +263,8 @@ impl RootMove {
             uci_score: -VALUE_INFINITE,
             previous_score: -VALUE_INFINITE,
             previous_score_exact: false,
-            score_lowerbound: false,
-            score_upperbound: false,
+            inexact_lower: false,
+            inexact_upper: false,
             average_score: -VALUE_INFINITE,
             mean_squared_score: MEAN_SQUARED_SENTINEL,
             sel_depth: 0,
@@ -268,25 +276,25 @@ impl RootMove {
         }
     }
 
-    /// Clear both bound flags, so the score reads as exact.
-    pub fn unset_bound_flags(&mut self) {
-        self.score_lowerbound = false;
-        self.score_upperbound = false;
+    /// Clear both flags, so the score reads as exact.
+    pub fn unset_inexact(&mut self) {
+        self.inexact_lower = false;
+        self.inexact_upper = false;
     }
 
-    /// True when the score is reported as a bound rather than an exact value.
+    /// True when the score is one-sided rather than exact.
     #[must_use]
-    pub fn score_is_bound(&self) -> bool {
-        self.score_lowerbound || self.score_upperbound
+    pub fn is_inexact(&self) -> bool {
+        self.inexact_lower || self.inexact_upper
     }
 
-    /// True when this move has an exact — not bounded — proven loss.
+    /// True when this move has an exact — not one-sided — proven loss.
     ///
     /// An aborted search can produce a loss score that a completed one would refute, so
     /// the two are kept distinct: only an exact loss may be trusted.
     #[must_use]
-    pub fn score_is_exact_loss(&self) -> bool {
-        !self.score_is_bound()
+    pub fn is_exact_loss(&self) -> bool {
+        !self.is_inexact()
             && self.score != -VALUE_INFINITE
             && crate::board::types::is_loss(self.score)
     }
