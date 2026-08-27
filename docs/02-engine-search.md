@@ -221,6 +221,14 @@ The pruning set, in the order the node applies it:
 8. **Late move reductions**, with a re-search at full depth when the reduced search beats
    alpha.
 
+**A mate hunt changes two of them.** `seek_mate` is one predicate asked of the ROOT — the
+iteration is at depth 16 or more and the line being reported already scores past 2000, so the
+search is chasing a mate rather than an advantage — and every node of that iteration reads
+the same answer. While it holds, reverse futility prunes only below depth 6 instead of below
+19, and the singular extension stands down entirely. Both readers exist so the tree collapses
+onto the mating line instead of re-proving the moves around it; upstream states that the
+futility cutoff is not a tuning knob, and the constants are its.
+
 The static evaluation is **corrected** before any of it: five terms record how far the
 evaluation of positions like this one has historically been from what the search found, and
 the node starts from the corrected value. Four are keyed by a summary of the position — the
