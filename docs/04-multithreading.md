@@ -27,6 +27,13 @@ seconds. What it buys is that "a worker used after the search ended" is not a bu
 be written: the scope's lifetime bound is what lets `&mut SearchWorker` and
 `&TranspositionTable` coexist without a lock.
 
+Each helper is spawned through `std::thread::Builder`, not `Scope::spawn`, for two reasons
+the default hides. The stack is set to upstream `thread_native.h`'s `TH_STACK_SIZE`, because
+`node` recurses to `MAX_PLY` and the platform default is 512 KiB on macOS. And the spawn is
+**fallible**: a host that refuses one more thread and a host out of memory both land here,
+so `threads.rs` names the errno and exits rather than searching a different tree under the
+same `Threads`.
+
 See [08-idiomatic-rust.md](08-idiomatic-rust.md) §3.
 
 ## What is shared, and how
