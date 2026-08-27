@@ -1526,7 +1526,7 @@ impl SearchWorker {
         }
 
         if !N::ROOT {
-            // Step 2. Check for aborted search and immediate draw
+            // Step 2. Check for aborted search or immediate draw
             if self.shared.stopped() || self.pos.is_draw(ply) || ply >= Ply::MAX {
                 return if ply >= Ply::MAX && !in_check {
                     self.evaluate(ply)
@@ -1659,8 +1659,8 @@ impl SearchWorker {
             depth -= 1;
         }
 
-        // At non-N::PV nodes a stored score searched deep enough, whose bound is on the right
-        // side of the window, answers the node outright.
+        // Step 6. At non-N::PV nodes a stored score searched deep enough, whose bound is on
+        // the right side of the window, answers the node outright.
         if !N::PV
             && excluded_move.is_none()
             && tt_depth > depth - i32::from(tt_value <= beta)
@@ -1733,7 +1733,7 @@ impl SearchWorker {
             tt.penalize(probe, 1);
         }
 
-        // Step 6. Tablebases probe
+        // Step 7. Tablebases probe
         if !N::ROOT
             && excluded_move.is_none()
             && self.tb_cardinality > 0
@@ -1775,13 +1775,13 @@ impl SearchWorker {
                 }
             }
 
-            // Step 7. Razoring. So far below alpha that the full search is very unlikely to
+            // Step 8. Razoring. So far below alpha that the full search is very unlikely to
             // recover; ask quiescence instead, which is far cheaper.
             if !N::PV && eval < alpha - 482 * depth * depth {
                 return self.qsearch::<NonPv>(alpha, beta, ply, tt);
             }
 
-            // Step 8. Futility pruning at a child node. Far enough above beta that even
+            // Step 9. Futility pruning at a child node. Far enough above beta that even
             // giving material away could not bring the position below it.
             //
             // The depth cutoff is dynamic, and it is what keeps mates findable. Test it LAST:
@@ -1809,7 +1809,7 @@ impl SearchWorker {
                 }
             }
 
-            // Step 9. Null move search with verification search
+            // Step 10. Null move search with verification search
             if cut_node.is_cut()
                 && self.stack[si.index()].static_eval
                     >= beta - 13 * depth - 47 * i32::from(improving) + 365
@@ -1859,13 +1859,13 @@ impl SearchWorker {
 
             improving |= self.stack[si.index()].static_eval >= beta;
 
-            // Step 10. Internal iterative reductions. A node with no transposition move has
+            // Step 11. Internal iterative reductions. A node with no transposition move has
             // no ordering to work with, so the depth mostly buys a badly ordered tree.
             if !self.stack[si.index()].follow_pv && !all_node && depth >= 6 && tt_move.is_none() {
                 depth -= 1;
             }
 
-            // Step 11. ProbCut. A capture good enough to beat a raised beta on a shallow
+            // Step 12. ProbCut. A capture good enough to beat a raised beta on a shallow
             // search is good enough to prune the whole node: whatever the opponent was
             // hoping for, this refutes it.
             prob_cut_beta = beta + 241 - 64 * i32::from(improving);
@@ -1927,7 +1927,7 @@ impl SearchWorker {
             }
         }
 
-        // Step 12. A small ProbCut idea. A stored lower bound far above beta, at nearly
+        // Step 13. A small ProbCut idea. A stored lower bound far above beta, at nearly
         // this depth, is enough on its own.
         prob_cut_beta = beta + 428;
         if (tt_bound == Bound::Lower || tt_bound == Bound::Exact)
@@ -1956,7 +1956,7 @@ impl SearchWorker {
         let mut move_count = 0i32;
         let mut reduction_window = self.reduction_window(alpha, beta);
 
-        // Step 13. Loop through all pseudo-legal moves until no moves remain or a beta
+        // Step 14. Loop through all pseudo-legal moves until no moves remain or a beta
         // cutoff occurs.
         loop {
             let mv = mp.next_move(&self.pos, &self.histories, &mut self.move_pool[slot]);
@@ -2008,7 +2008,7 @@ impl SearchWorker {
                 r += 929;
             }
 
-            // Step 14. Pruning at shallow depths.
+            // Step 15. Pruning at shallow depths.
             if !N::ROOT && self.pos.non_pawn_material(us) > 0 && !is_loss(best_value) {
                 if move_count >= (3 + depth * depth) / (2 - i32::from(improving)) {
                     mp.skip_quiet_moves();
@@ -2087,7 +2087,7 @@ impl SearchWorker {
                 }
             }
 
-            // Step 15. Extensions. If every move but the transposition move fails low on a
+            // Step 16. Singular extensions. If every move but the transposition move fails low on a
             // narrowed window, the node hinges on that one move and is worth a deeper look.
             if !N::ROOT
                 && mv == tt_move
@@ -2163,9 +2163,12 @@ impl SearchWorker {
 
             let node_count = if N::ROOT { self.nodes } else { 0 };
 
-            // Step 16. Make the move
+            // Step 17. Make the move
             self.do_move(mv, gives_check, si);
             new_depth += extension;
+
+            // Step 18. Compute the late-move reduction, which a negative `r` turns into an
+            // extension. Applied below, after every term has been accumulated.
 
             // A node the table considers important is worth a fuller look once it has been
             // reached, which is why this undoes more than the pre-move increase added.
@@ -2234,7 +2237,7 @@ impl SearchWorker {
                 r += r * 276 / (256 * depth + 268);
             }
 
-            // Step 17. Late moves reduction / extension (LMR)
+            // Apply the computed reduction.
             if depth >= 2 && move_count > 1 {
                 // Cap the reduced depth at `newDepth`, but allow a NEGATIVE reduction to
                 // extend a little beyond it. Written as nested min/max rather than a clamp
@@ -2271,7 +2274,7 @@ impl SearchWorker {
                     self.update_continuation_histories(si, moved_piece, mv.to(), Bonus::new(1334));
                 }
             }
-            // Step 18. Full-depth search when LMR is skipped
+            // Step 19. Full-depth search when LMR is skipped
             else if !N::PV || move_count > 1 {
                 if tt_move.is_none() {
                     r += 1127;
@@ -2288,8 +2291,8 @@ impl SearchWorker {
                 );
             }
 
-            // For N::PV nodes only, do a full N::PV search on the first move or after a fail
-            // high; otherwise let the parent fail low and try another move.
+            // Step 20. For N::PV nodes only, do a full N::PV search on the first move or
+            // after a fail high; otherwise let the parent fail low and try another move.
             if N::PV && (move_count == 1 || value > alpha) {
                 self.stack[si.next().index()].pv.clear();
                 self.stack[si.next().index()].pv_valid = true;
@@ -2307,10 +2310,10 @@ impl SearchWorker {
                 value = -self.node::<Pv>(-beta, -alpha, new_depth, ply.next(), Expect::All, tt, ());
             }
 
-            // Step 19. Undo move
+            // Step 21. Undo move
             self.undo_move(mv);
 
-            // Step 20. Check for a new best move
+            // Step 22. Check for a new best move
             if self.shared.stopped() {
                 return VALUE_ZERO;
             }
@@ -2378,7 +2381,7 @@ impl SearchWorker {
             }
         }
 
-        // Step 21. Check for mate and stalemate
+        // Step 23. Check for mate and stalemate
         //
         // A fail-high value is pulled back toward beta in proportion to how shallow the
         // node was: a shallow search that overshot is claiming more than it proved.
@@ -2478,6 +2481,8 @@ impl SearchWorker {
                 self.stack[si.index()].tt_pv || self.stack[si.back(1).index()].tt_pv;
         }
 
+        // Step 24. Write the gathered information to the transposition table. The static
+        // evaluation stored is the one from BEFORE correction history adjusted it.
         if excluded_move.is_none() && !(N::ROOT && self.pv_index > 0) {
             let bound = if best_value >= beta {
                 Bound::Lower
@@ -2879,6 +2884,8 @@ impl SearchWorker {
             best_value = Value::new((462 * best_value.get() + 562 * beta.get()) / 1024);
         }
 
+        // Step 10. Save the gathered information in the transposition table. The static
+        // evaluation stored is the one from BEFORE correction history adjusted it.
         tt.store(
             probe,
             best_move,
