@@ -49,6 +49,19 @@ own allocators return a null that the placement-new after them would write throu
 Syzygy prober reads with positioned file reads instead; see
 [05-tablebases.md](05-tablebases.md).
 
+**Converting a path from the system code page.** Upstream's `path_from_utf8` reads a
+Windows path as UTF-8 and, when that fails, again as ANSI (`CP_ACP`), because an old GUI —
+Arena is the reported one — sends the path in the system code page the moment it holds an
+accented character. rfish has the first half and cannot have the second: the conversion is
+`MultiByteToWideChar`, `std` exposes no equivalent, and `OsStringExt` on Windows offers only
+`from_wide` — so the only route is an `unsafe extern` declaration, which the workspace
+`forbid` rejects. This is the same kind of absence as thread affinity below: impossible under
+the constraint, not merely undone. What rfish does instead is refuse to make it worse — the
+reader decodes lossily rather than treating the bad bytes as end of stream, so the path fails
+visibly at the option (`Found 0 WDL and 0 DTZ tablebase files`) instead of deafening the
+session. ../zfish ports the ANSI branch, declaring the kernel32 entry point directly; that
+route is open there and closed here.
+
 **Cross-process shared network weights.** Upstream's `src/shm.h` and `src/shm_unix.h` let
 several engine processes on one box map a single copy of the network, so N concurrent games
 cost one 109 MiB blob instead of N. rfish has no counterpart and will not grow one. The
