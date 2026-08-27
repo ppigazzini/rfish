@@ -194,17 +194,15 @@ gate go red, and a gate that has quietly stopped being able to fail is invisible
 success, which is what everyone was hoping for. ../mcfish found two in one month: an empty
 transcript corpus scored as agreement, and a docs check that read no subject.
 
-Four rows, one representative mutant per gate. Each applies one behavioural mutation,
-requires the named gate to exit non-zero, restores the file, and the run ends by rebuilding
-and running `signature` green — the tree is proven clean by running a gate, not by asserting
-it. Measured here:
+One representative mutant per gate, and `MUTANTS` in
+[`crates/xtask/src/meta.rs`](../crates/xtask/src/meta.rs) owns the set — the rows are not
+listed here, because a list a gate computes drifts and reads exactly like one that has not.
+Each row applies one behavioural mutation, requires the named gate to exit non-zero, restores
+the file, and the run ends by rebuilding and running `signature` green: the tree is proven
+clean by running a gate, not by asserting it.
 
-```
-negative-control: signature   -- futility margin base 45 -> 46        ok, red (1)
-negative-control: golden      -- the board display omits `Checkers:`  ok, red (1)
-negative-control: perft       -- no knight under-promotion            ok, red (1)
-negative-control: nnue-check  -- network output scale 16 -> 17        ok, red (1)
-4 of 4 gate(s) detected their mutation, tree restored     EXIT=0, 96s
+```sh
+cargo xtask negative-control          # ... of ... gate(s) detected their mutation, restored
 ```
 
 **Perturb the value, do not remove the bound.** A mutant aimed at an evaluation must leave
@@ -223,6 +221,16 @@ error or a panic anywhere in the run still puts the sources back.
 
 It is **local and in no lane**: it edits tracked sources and rebuilds per row, so it cannot
 share a checkout with anything. Run it when a gate is edited.
+
+**Being in no lane is what makes a rotted row expensive**, and the refusal above does not fix
+that on its own: a rig fault is only reported to whoever runs the rig, so an engine rename can
+leave a gate unproven for as long as nobody does. `async-check`'s row named a `"quit"` match
+arm the reader had replaced, and the row sat dead through nineteen days of green `parity`
+runs. `meta::tests::every_mutation_still_matches_the_file_it_targets_exactly_once` closes
+that: it reads each row's file and requires the pattern exactly once — the runner replaces
+*every* occurrence, so an ambiguous pattern mutates more than the row describes — and checks
+the row's gate is still a step. It costs a file read per row and runs inside `test`, which
+`parity` runs, so the rot is now reported by the cheap gate and not only by the expensive one.
 
 ### `arch-determinism`
 
