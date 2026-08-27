@@ -221,6 +221,15 @@ Two things follow from it, and both had to move together:
   there would make a node count depend on scheduling. `go infinite` has no answer to wait
   for, so that one is stopped.
 
+  **The reader takes BYTES, and decodes them lossily.** `BufRead::lines` reports a line that
+  is not UTF-8 as an `InvalidData` error, and the reader's only two answers to an error are
+  dispatch and stop — so one stray byte ended the session, and every command after it was
+  read by nobody. `read_until` plus `String::from_utf8_lossy` drops the offending characters
+  and keeps the line, which is as close to upstream's `path_from_utf8` as a port with no
+  Win32 call gets: an ANSI `SyzygyPath` still fails to open, but it now fails where the
+  operator can see it. `uci::tests::a_line_that_is_not_utf8_ends_the_line_and_not_the_session`
+  is the gate, and it reddens the moment the reader stops on a decode error again.
+
   **The reader latches the `quit`; `SharedState::set_searching_unbounded` decides it.** That
   split is the whole of the invariant, because the reader cannot answer the question: it sees
   `quit` in the same buffer as the `go` in front of it, before the main loop has dispatched

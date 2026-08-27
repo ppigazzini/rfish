@@ -1303,8 +1303,22 @@ pub(crate) fn run(input: impl BufRead + Send + 'static, output: impl Write) -> b
     // Detached on purpose: it owns only stdin and a sender, and blocking on a read that
     // will never complete is precisely what it is for.
     std::thread::spawn(move || {
-        for line in input.lines() {
-            let Ok(line) = line else { break };
+        let mut input = input;
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            // Bytes, then a LOSSY decode -- not `BufRead::lines`, which hands back an
+            // `InvalidData` error for a line that is not UTF-8 and consumes it either way.
+            // Treating that error as end-of-stream made one stray byte deafen the engine
+            // for the rest of the session: an old GUI that sends an ANSI `SyzygyPath` got
+            // no `readyok` and no `bestmove` ever again. Upstream reads bytes and retries
+            // the conversion (`misc.cpp`'s path_from_utf8); what matters here is that the
+            // line is dropped and the session is not.
+            match input.read_until(b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let line = String::from_utf8_lossy(&buf).trim_end_matches(['\n', '\r']).to_string();
             let trimmed = line.trim();
             let starts_search = trimmed == "go"
                 || trimmed == "bench"
@@ -1357,6 +1371,24 @@ mod tests {
             engine.handle(line, &mut out);
         }
         String::from_utf8(out).expect("the engine writes UTF-8")
+    }
+
+    /// One line that is not UTF-8 drops that line, and nothing else.
+    ///
+    /// Driven through [`run`] rather than through `drive`, because the defect is in the
+    /// READER: `BufRead::lines` reports a non-UTF-8 line as an `InvalidData` error, and
+    /// treating that as end-of-stream deafened the engine for the rest of the session --
+    /// no `readyok`, no `bestmove`, no diagnostic. That is what an old GUI sending an ANSI
+    /// `SyzygyPath` produces (upstream `misc.cpp`'s `path_from_utf8`).
+    #[test]
+    fn a_line_that_is_not_utf8_ends_the_line_and_not_the_session() {
+        let mut script: Vec<u8> = Vec::new();
+        script.extend_from_slice(b"setoption name SyzygyPath value \xe9\xe8\n");
+        script.extend_from_slice(b"isready\nquit\n");
+        let mut out = Vec::new();
+        run(std::io::Cursor::new(script), &mut out);
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("readyok"), "the reader stopped at the bad line: {text}");
     }
 
     /// A clock UCI permits and the time manager's arithmetic cannot hold.
