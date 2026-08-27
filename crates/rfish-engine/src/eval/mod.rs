@@ -118,7 +118,11 @@ fn nnue_value(
 
     let material =
         534 * i64::from(pos.count_both(PieceType::Pawn)) + i64::from(pos.non_pawn_material_total());
-    Value::new(((nnue * (91000 + material) + optimism * 7675) / 91000) as i32)
+    // `nnue +` rather than folding 91000 into the multiplicand. The two are equal over the
+    // rationals and not over integer division: the fold rounds the WHOLE blend toward zero,
+    // this rounds only the part that scales, so the truncation lands on a term a hundredth
+    // the size and the node count moves. Upstream's form, and its rounding.
+    Value::new((nnue + (nnue * material + optimism * 7675) / 91000) as i32)
 }
 
 /// True when neither side has enough material to force mate.

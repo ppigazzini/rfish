@@ -117,7 +117,7 @@ optimism += optimism * complexity / 476;
 nnue     -= nnue     * complexity / 18236;
 
 let material = 534 * pawns + non_pawn_material_total;
-let v = (nnue * (91000 + material) + optimism * 7675) / 91000;
+let v = nnue + (nnue * material + optimism * 7675) / 91000;
 
 let v = v - (v * pos.rule50_count() / 199).get();
 v.clamp(VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1)
@@ -129,6 +129,11 @@ Each line is doing something specific, and none of them is a scale factor:
   positional head are far apart the position is sharp, so the network is trusted less and the
   search's own expectation is trusted more — which is why the same term amplifies `optimism`
   and damps `nnue`.
+- **`nnue +` is outside the division on purpose.** Folding it back in as
+  `(nnue * (91000 + material) + …) / 91000` is the same number over the rationals and a
+  different one in integers: the fold truncates the whole blend toward zero, while this form
+  truncates only the part that scales with material. The node count moves between the two,
+  which is what makes this a ported rounding rather than a formatting choice.
 - **Optimism is the search's disposition, not the position's.** It arrives per colour from
   the worker and is blended in at a fixed weight, while only the network's own term scales
   with material. It is one of the things that make Lazy-SMP threads explore differently from
