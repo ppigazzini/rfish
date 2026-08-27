@@ -125,6 +125,15 @@ from depth 3 on — the shallow PVs were short enough that there was nothing lef
 `tools/cases/tbpv.uci` pins both, and `cargo xtask golden-audit` adjudicates it against
 upstream rather than against a previous run of rfish.
 
+**The deadline is half of `Move Overhead`, shared across the whole report.** Every reported
+line is extended, so the budget is divided by `MultiPV`: N lines each granted half the
+overhead would spend N/2 of it and lose the game on time. `nodestime` switches the deadline
+off completely, because the walk's `do_move` calls never reach the node counter that mode
+spends its clock in — the wall clock was then measuring the box rather than the budget, and
+the PV a run reported depended on how fast that box was. And with the budget already spent
+before the first step, `Move Overhead 0` under a clock, the walk refuses rather than doing
+work every later check would abort.
+
 **The extension is capped at `MAX_PLY`, and under one reachable configuration that cap is
 its only guard.** Step 2 walks the tables playing the shortest win until the line mates, and
 its three exits are not the three they look like:
@@ -132,7 +141,7 @@ its three exits are not the three they look like:
 | exit | when it is dead |
 |---|---|
 | `while !(rule50 && pos.is_draw(..))` | `Syzygy50MoveRule false` reduces the whole guard to `while true` |
-| `if timed_out(&start)` | `timed_out` is `uses_clock && ...`, so `go infinite` makes it constantly false |
+| `if timed_out(&start)` | `timed_out` is `uses_clock && ...`, so `go infinite` — and `nodestime`, which switches the deadline off outright — makes it constantly false |
 | `if legal.is_empty()` — mate | the only one left, and it assumes the tables always rank a move that shortens the win |
 
 That last assumption is about FILE DATA, which is the same class this prober refuses

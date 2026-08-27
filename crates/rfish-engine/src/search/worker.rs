@@ -3121,17 +3121,31 @@ impl SearchWorker {
     ///
     /// The result is a plausible continuation, NOT a proven mating line: only for simple
     /// endgames like `KRvK` is minimal DTZ also minimal distance to mate.
-    fn syzygy_extend_pv(&mut self, v: &mut Value) {
+    fn syzygy_extend_pv(&mut self, v: &mut Value, multi_pv: usize) {
         let Some(tb) = self.tablebases.clone() else { return };
         let rule50 = self.tb_use_rule50.applies();
         let start = Instant::now();
 
-        // Never spend more than half the move overhead on this. It is presentation, and a
-        // game lost on time because the PV looked nice is not a trade worth making.
+        // Never spend more than half the move overhead on the WHOLE report. It is
+        // presentation, and a game lost on time because the PV looked nice is not a trade
+        // worth making. Every reported line is extended, so the budget is divided by the
+        // number of them: N lines each granted half the overhead spend N/2 of it.
+        //
+        // Under `nodestime` there is no budget at all. The walk's `do_move` calls never
+        // reach the node counter this mode spends its clock in, so the only thing the
+        // deadline could measure is how fast the box is -- which made the reported PV
+        // nondeterministic for no gain in strength.
         let overhead = self.opts.move_overhead;
-        let uses_clock = self.limits.uses_time_management();
-        let timed_out =
-            |start: &Instant| uses_clock && 2 * start.elapsed().as_millis() as u64 > overhead;
+        let uses_clock = self.limits.npmsec == 0 && self.limits.uses_time_management();
+        let timed_out = |start: &Instant| {
+            uses_clock && 2 * multi_pv as u64 * start.elapsed().as_millis() as u64 >= overhead
+        };
+
+        // Refuse before doing any work when the budget is already spent -- `Move Overhead 0`
+        // under a clock, where every later check would abort the walk anyway.
+        if timed_out(&start) {
+            return;
+        }
 
         let mut pos = self.pos.clone();
         let mut pv = self.root_moves[self.pv_index].pv.clone();
@@ -3346,7 +3360,7 @@ impl SearchWorker {
                 && (bound.is_none() || is_tb_score)
             {
                 self.pv_index = i;
-                self.syzygy_extend_pv(&mut score);
+                self.syzygy_extend_pv(&mut score, lines);
             }
 
             // Rendered against the ROOT, because that is all the notation needs. Upstream is
