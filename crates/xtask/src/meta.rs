@@ -774,10 +774,15 @@ const MUTANTS: &[Mutant] = &[
         // by the gate rather than by the engine: `async-check` bounds its own wait at 30s
         // and reports a broken invariant, so a search that ignores `quit` reddens in seconds
         // instead of hanging the run.
+        //
+        // The LATCH is what it removes, because that is where the decision now lives: the
+        // reader cannot answer whether a search is running, so it records the `quit` and
+        // `set_searching_unbounded` answers it when the search declares itself. Dropping
+        // the latch leaves nothing for the search to find.
         label: "quit no longer stops an unbounded search",
         file: "crates/rfish/src/uci.rs",
-        find: "\"quit\" if shared.searching_unbounded() => shared.request_stop(),",
-        replace: "\"quit\" if false => shared.request_stop(),",
+        find: "\"quit\" => shared.latch_quit(),",
+        replace: "\"quit\" => {}",
         gate: "async-check",
     },
     Mutant {
@@ -1203,6 +1208,52 @@ mod tests {
         );
         // Not a comment: no whitespace before the hash.
         assert_eq!(strip_yaml_comment("      seconds || '#600'"), "      seconds || '#600'");
+    }
+
+    /// A mutation row whose pattern has rotted is a gate nobody is exercising.
+    ///
+    /// `negative-control` already refuses such a row -- it reports a RIG FAULT and exits 2
+    /// rather than a verdict -- but that step is not in `parity`, so a rename in the engine
+    /// can leave a gate unproven until somebody runs it by hand. One did: the `async-check`
+    /// row named a `"quit"` match arm the reader replaced, and nothing said so for nineteen
+    /// days. This costs a file read per row and says it on the next `cargo xtask test`.
+    ///
+    /// EXACTLY once, not at least once. The runner replaces every occurrence, so a pattern
+    /// that has become ambiguous mutates more sites than the row describes and the gate that
+    /// reddens is answering a different question.
+    ///
+    /// The text is read with its line endings NORMALISED, because two rows span a line and a
+    /// Windows checkout separates those lines with CRLF -- a `find` written with `\n` then
+    /// matches zero times and the row reads as rotted on that runner alone. This is a
+    /// question about the SOURCE, not about the working copy, so it must answer the same on
+    /// all three. `negative-control` needs no such treatment: it is Linux-local by
+    /// construction, and normalising there would rewrite every line ending in the file it
+    /// mutates.
+    #[test]
+    fn every_mutation_still_matches_the_file_it_targets_exactly_once() {
+        let root = workspace_root();
+        let steps = dispatch_steps(&root).expect("the dispatch table");
+        for m in MUTANTS {
+            let path = root.join(m.file);
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+                .replace("\r\n", "\n");
+            assert_eq!(
+                text.matches(m.find).count(),
+                1,
+                "{}: the pattern for {:?} does not match {} exactly once -- \
+                 negative-control would report a rig fault rather than a verdict",
+                m.gate,
+                m.label,
+                m.file
+            );
+            assert!(
+                steps.contains(&m.gate.to_string()),
+                "{:?} names gate `{}`, which the dispatch table no longer has",
+                m.label,
+                m.gate
+            );
+        }
     }
 
     #[test]
