@@ -1235,7 +1235,7 @@ impl SearchWorker {
             let forgotten_mate = last_best_score != -VALUE_INFINITE
                 && is_mate_or_mated(last_best_score)
                 && (self.root_moves[0].score.abs() < last_best_score.abs()
-                    || self.root_moves[0].score_is_bound());
+                    || self.root_moves[0].is_inexact());
 
             if !self.shared.stopped() {
                 if last_best_pv.is_empty() || last_best_pv[0] != self.root_moves[0].pv[0] {
@@ -1251,9 +1251,8 @@ impl SearchWorker {
                 self.completed_depth = self.root_depth;
             }
 
-            let aborted_loss_search = self.shared.stopped()
-                && self.pv_index == 0
-                && self.root_moves[0].score_is_exact_loss();
+            let aborted_loss_search =
+                self.shared.stopped() && self.pv_index == 0 && self.root_moves[0].is_exact_loss();
 
             // An exact loss from an aborted search cannot be trusted: the loss could be
             // delayed, or refuted outright, by the root moves that were never reached.
@@ -1269,13 +1268,13 @@ impl SearchWorker {
                     self.root_moves[0].score = last_best_score;
                     self.root_moves[0].uci_score = last_best_score;
                     self.root_moves[0].pv.clone_from(&last_best_pv);
-                    self.root_moves[0].unset_bound_flags();
+                    self.root_moves[0].unset_inexact();
                     if main_thread {
                         // The reported line is now the wrong one.
                         uci_pv_sent = false;
                     }
                 } else if aborted_loss_search {
-                    self.root_moves[0].score_lowerbound = true;
+                    self.root_moves[0].inexact_lower = true;
                 }
             }
 
@@ -1409,14 +1408,14 @@ impl SearchWorker {
     /// A search stopped part-way through a PV slot can report a loss it never proved, and
     /// because the slots are sorted against each other that unproven loss can displace a
     /// line the search DID finish. The previous iteration's score is used when it is
-    /// trustworthy; otherwise the score is capped and marked as a bound, which is also a
+    /// trustworthy; otherwise the score is capped and marked inexact, which is also a
     /// valid excuse for the incomplete PV.
     fn repair_aborted_multipv_line(&mut self, pv_idx: usize) {
         let prev_score = self.root_moves[pv_idx - 1].score;
         let overtakes = is_loss(prev_score)
             && self.root_moves[pv_idx].cmp(&self.root_moves[pv_idx - 1])
                 == core::cmp::Ordering::Less;
-        if overtakes || self.root_moves[pv_idx].score_is_exact_loss() {
+        if overtakes || self.root_moves[pv_idx].is_exact_loss() {
             if self.root_moves[pv_idx].previous_score != -VALUE_INFINITE
                 && self.root_moves[pv_idx].previous_score_exact
                 && self.root_moves[pv_idx].previous_score <= prev_score
@@ -1428,7 +1427,7 @@ impl SearchWorker {
                 rm.uci_score = ps;
                 rm.previous_score = -VALUE_INFINITE;
                 rm.pv = ppv;
-                rm.unset_bound_flags();
+                rm.unset_inexact();
             } else {
                 if is_loss(prev_score) {
                     let rm = &mut self.root_moves[pv_idx];
@@ -1436,19 +1435,18 @@ impl SearchWorker {
                     rm.uci_score = prev_score;
                     rm.previous_score = -VALUE_INFINITE;
                     rm.pv.truncate(1);
-                    rm.score_upperbound = true;
+                    rm.inexact_upper = true;
                 } else {
-                    self.root_moves[pv_idx].score_upperbound = false;
+                    self.root_moves[pv_idx].inexact_upper = false;
                 }
-                self.root_moves[pv_idx].score_lowerbound =
-                    !self.root_moves[pv_idx].score_upperbound;
+                self.root_moves[pv_idx].inexact_lower = !self.root_moves[pv_idx].inexact_upper;
             }
         }
 
-        // Every loss score from a partially searched move is a bound, not a fact.
+        // Every loss score from a partially searched move is inexact, not a fact.
         for i in pv_idx + 1..self.multi_pv {
-            if self.root_moves[i].score_is_exact_loss() {
-                self.root_moves[i].score_lowerbound = true;
+            if self.root_moves[i].is_exact_loss() {
+                self.root_moves[i].inexact_lower = true;
             }
         }
     }
@@ -2588,13 +2586,13 @@ impl SearchWorker {
             self.root_moves[idx].score = value;
             self.root_moves[idx].uci_score = value;
             self.root_moves[idx].sel_depth = self.sel_depth;
-            self.root_moves[idx].unset_bound_flags();
+            self.root_moves[idx].unset_inexact();
 
             if value >= beta {
-                self.root_moves[idx].score_lowerbound = true;
+                self.root_moves[idx].inexact_lower = true;
                 self.root_moves[idx].uci_score = beta;
             } else if value <= alpha {
-                self.root_moves[idx].score_upperbound = true;
+                self.root_moves[idx].inexact_upper = true;
                 self.root_moves[idx].uci_score = alpha;
             }
 
@@ -3319,9 +3317,16 @@ impl SearchWorker {
                 score = VALUE_ZERO;
             }
 
-            let bound = if self.root_moves[i].score_lowerbound {
+            // A one-sided score cannot be one-sided in both directions, and this reader
+            // tests `inexact_lower` first: a move that somehow set both would be reported
+            // as a lower bound rather than as anything true.
+            debug_assert!(
+                !(self.root_moves[i].inexact_lower && self.root_moves[i].inexact_upper),
+                "a root score is inexact from at most one side"
+            );
+            let bound = if self.root_moves[i].inexact_lower {
                 Some(true)
-            } else if self.root_moves[i].score_upperbound {
+            } else if self.root_moves[i].inexact_upper {
                 Some(false)
             } else {
                 None
