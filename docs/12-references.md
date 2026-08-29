@@ -151,6 +151,42 @@ shell gates, 7 Python harnesses and 5 C++ harnesses against this tree's 39 `xtas
 | `instrumented.py`, `match.sh`, `npsab.sh`, `npsthreads.sh`, `perfcounters.sh`, `perfdecomp.sh` | **covered or deliberately absent.** `tsan` and `fuzz` cover the sanitizer half; `perf` and `counters` cover the differential and the cache/branch axes; `match.sh` needs cutechess and a games budget this repository does not spend |
 | `malformed.sh`, `leb128.sh` | **built and DROPPED** at the 2026-08-15 sweep, with the reason recorded above: the fixtures could not be made to fail here |
 
+**A window that is almost all perf commits is swept by MEASURING, and the tier split is the
+instrument.** The 2026-08-29 sweep took `refish b10fcef5..37b74804` — 30 commits, seventeen of
+them `perf(engine)`. The compiler-guard rule from the previous sweep could not screen them:
+refish now reports gcc AND clang on every performance claim by its own docs rule, so naming a
+compiler no longer distinguishes a guard from a measurement, and the bodies have to be read.
+
+Three candidates were built. **Two moved avx2 and sse41 in OPPOSITE directions**, which is
+code layout rather than work removed, and either tier alone would have read as a verdict.
+
+| probed, the perf window | verdict |
+|---|---|
+| `8bc5caa2`, the halfka fold peeled to the one or two rows a ply can carry | **built and refused.** avx2 +0.1985%, sse41 −0.2577%, in two independent shapes that cost the same number — see [03-engine-eval.md](03-engine-eval.md). It is also upstream master's, and the pin crossed it |
+| `fe3490cc`, the weight ROW offset carried instead of the feature number | **built and refused.** avx2 +0.1098%, sse41 −0.1745%. The scale moved into `KaIndex` so the six tile subscripts index directly and the PSQT head shifts back down; bit-exact, and the same split as the peel on the same kernel. `TpIndex` cannot take it either way — `collect_diff` marks threat features in a bitset sized by their dimension count, and scaling the index scales that bitset with it |
+| `56c6bfdd`, a conthist counter read once and scaled by one multiply | **TAKEN, on the half that transfers.** Tabling `weight * multiplier` is −233,645 at avx2 and −217,428 at sse41, both tiers the same sign. Its other half has no analogue: the counter is loaded twice because a relaxed atomic may not be folded, and these histories are plain `i16` |
+| `be9ffd90` + `11349960`, a plane asked for one bit rather than built into a mask | **REFUTED by measurement.** refish gets `bt` for `plane >> sq & 1` where gcc built the mask, and reports `gives_check` −30.8%. Writing `Bitboard::contains` that way here is avx2 −83 Ir and sse41 +1 Ir, and the binary holds the same 246 `bt` either way: LLVM canonicalises the two forms, so the win does not exist to be had |
+| `e487c5c1`, a `ss != nullptr` guard no caller can take | **already correct by construction.** `Worker::do_move` takes `si: StackIx`, and AGENTS.md already records that a `Stack*` is an index here. There is no null to guard |
+| `8fe0b92c`, `st` reloaded three times because a `memcpy` may have aliased it | **no analogue.** The reload is what C++ must assume and Rust's ownership makes unrepresentable |
+| the `fc_0` cluster — `4539c537`, `668f7623`, `327fefb2`, `9b54e98f`, `37b74804`, `d2ca8e8b`, `21178bf1` | **no analogue.** gcc's register allocator answering an array live across a loop with a memory image, its frame, its alloca, its dependency break, a VNNI chain that needs four distinct zero seeds, and eight reference arguments against SysV's six registers |
+| `fecd6188`, naming the main history's row | **not taken, on its own evidence.** The body says gcc reassociates `table + colour` straight back out of the name and still spills both halves; 60 instructions per move to 59 |
+| `f75b3707`, pinning the accumulator's two inlining decisions | **no analogue as stated.** It closes gcc's LTO inliner being BISTABLE across unrelated commits. The general lesson is already this tree's practice |
+| `98b6b23c`, rolling the walks that return on their first move | **no analogue.** The cost is `-funroll-loops` computing a trip count for a counted exit and spending it on an eight-way dispatch; that flag is upstream's Makefile, and rustc passes nothing like it |
+| `c004d583`, a node's slider attacks carried from captures to quiets | **OPEN, and the only algorithmic candidate in the window.** Compiler-independent: `CAPTURE_INIT` computes every slider set and `QUIET_INIT` computes it again from the same square and occupancy, 0.512 attack computations a node on refish's census. Not attempted here, because it needs a sixteen-entry cache threaded from the picker into `generate`, and [08-idiomatic-rust.md](08-idiomatic-rust.md) §9 records that an inline array mirroring upstream's field measured WORSE in this port for the reason this one would pay too: safe Rust must initialise it |
+| `bf8b2044`, castling rights closed under their own operations | **already done.** `CastlingRights::without` and `::union` are the operations, and the mask never leaves the type |
+| `482645af`, naming the question the bound lattice is asked | **already type-safe.** The sites here compare enumerators by name rather than ANDing integers, so the defect that motivates it — an `int` result nobody named — does not arise. Naming the predicate stays available as a readability change, not a fix |
+| `ed4d420a`, two gate defaults that silently mismeasure | **TAKEN, in the other half of the class.** Its `perfbudget.sh` stops reading options at the first positional; position cannot matter here, because every reader scans the whole vector — what was missing was any question about whether the flag was KNOWN. See [10-tooling-ci.md](10-tooling-ci.md) |
+| `9f2932a7`, MAP_FAILED from a failed large-page map | **no counterpart**, and it is upstream master's `5cae0fab` — crossed when the pin advanced |
+| `3d05cca8`, `c17780e3`, `20ff69ed`, `7d6e5f77`, and the six docs commits | **no analogue.** Two C++ includes, an imported msvc lane, imported cache steps, refish's own gitignore, and prose about refish's own pages — the two that generalise (an instruction ratio is not a time claim; what the instruction axis proves) are already this tree's rules in [11-performance.md](11-performance.md) |
+
+**The sweep's largest finding was in this tree's own gate, not in the sibling's code.** Reading
+`ed4d420a` as a CLASS rather than as a site — which is the rule the 2026-08-15 sweep paid for —
+asked what else here decides something silently, and `parity` was returning `Pass` while naming
+three gates it had skipped. AGENTS.md had documented exit 2 and `main.rs` had mapped it; the one
+function that decides read only the failures. That is the same shape as the sibling's finding
+arriving at a different address, and it is the second time a sweep's yield has been an
+instrument rather than a change.
+
 ### Three findings from that sweep that are NOT changes
 
 **The transposition table's clear is instruction-cheap and latency-expensive, and no instrument
