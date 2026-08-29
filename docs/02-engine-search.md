@@ -56,6 +56,15 @@ wrapped silently while the gate profile PANICKED on the same input — the split
 exists to catch. It is spelled at that one site and not in `Bonus`'s `Mul`, so every other
 bonus formula keeps the gate profile's detection.
 
+The two factors are REGROUPED, and only the outer product is left at run time. Both are
+decided before the bonus is — the weight is a constant of the ply and the multiplier a
+run-time index into a constant — so `CMHC_SCALED` tables `weight * multiplier` and
+`continuation_delta` takes the product. Wrapping multiplication is associative, so the wrap
+above and the sign flip it produces are unchanged; the inner product cannot itself wrap, at
+1040 * 126 = 131,040. Worth −233,645 instructions at avx2 and −217,428 at sse41, bit-exact,
+from ../Stockfish `refish` 56c6bfdd — whose other half, a shared counter loaded twice because
+a relaxed atomic may not be folded, has no analogue: these tables are plain `i16`.
+
 The width is reproduced, not repaired: widening to `i64` removes the sign flip and diverges
 from the golden on every input that overflows. The bench never reaches the wrap, so no gated
 number depends on it — a search on a real clock does, which is why no gate could have found

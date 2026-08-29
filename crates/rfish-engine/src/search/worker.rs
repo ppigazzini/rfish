@@ -667,8 +667,8 @@ impl SearchWorker {
     /// clock does. Widening to `i64` would remove the sign flip and diverge from the golden on
     /// every input that overflows, which is why the width is reproduced rather than repaired.
     #[inline(always)]
-    fn continuation_delta(bonus: Bonus, weight: i32, multiplier: i32) -> Bonus {
-        Bonus::new(bonus.get().wrapping_mul(weight).wrapping_mul(multiplier) / 131_072)
+    fn continuation_delta(bonus: Bonus, scale: i32) -> Bonus {
+        Bonus::new(bonus.get().wrapping_mul(scale) / 131_072)
     }
 
     /// Reward or punish the follow-ups to the moves played one to six plies back.
@@ -678,6 +678,35 @@ impl SearchWorker {
     /// one only the immediate parent likes.
     fn update_continuation_histories(&mut self, si: StackIx, pc: Piece, to: Square, bonus: Bonus) {
         const CMHC_MULTIPLIERS: [i32; 7] = [94, 103, 110, 106, 119, 126, 121];
+        /// The per-ply weight, in the order the plies are visited.
+        const CMHC_WEIGHTS: [i32; 6] = [1040, 780, 290, 502, 132, 418];
+        /// `weight * multiplier`, which is a table rather than an `imul`.
+        ///
+        /// Both factors are decided before the bonus is: the weight is a constant of the
+        /// ply and the multiplier is a run-time index into a constant, so their product
+        /// never depends on `bonus`. Regrouping `(bonus * weight) * multiplier` as
+        /// `bonus * (weight * multiplier)` is bit-identical HERE and the reason has to be
+        /// stated, because the outer product wraps on purpose — see
+        /// [`SearchWorker::continuation_delta`]. Wrapping multiplication is associative, so
+        /// the wrap and the sign flip it produces are the same either way, and the inner
+        /// product cannot wrap: the largest is 1040 * 126 = 131,040.
+        ///
+        /// ../Stockfish `refish` 56c6bfdd, whose other half — a shared counter loaded twice
+        /// because a relaxed atomic may not be folded — has no analogue: these histories are
+        /// plain `i16`.
+        const CMHC_SCALED: [[i32; 7]; 6] = {
+            let mut scaled = [[0i32; 7]; 6];
+            let mut ply = 0;
+            while ply < CMHC_WEIGHTS.len() {
+                let mut seen = 0;
+                while seen < CMHC_MULTIPLIERS.len() {
+                    scaled[ply][seen] = CMHC_WEIGHTS[ply] * CMHC_MULTIPLIERS[seen];
+                    seen += 1;
+                }
+                ply += 1;
+            }
+            scaled
+        };
 
         let in_check = self.stack[si.index()].in_check;
         let mut positive_count = 0usize;
@@ -692,7 +721,7 @@ impl SearchWorker {
         // Skipping each late ply individually is the same thing as breaking out of the loop
         // at the first one: `in_check` does not change within a call.
         macro_rules! ply_back {
-            ($i:literal, $weight:literal) => {{
+            ($i:literal) => {{
                 if !(in_check && $i > 2) {
                     let entry = &self.stack[si.back($i).index()];
                     if entry.current_move.is_ok() {
@@ -700,9 +729,8 @@ impl SearchWorker {
                         if histories.continuation.get(plane, pc, to) > 0 {
                             positive_count += 1;
                         }
-                        let multiplier = CMHC_MULTIPLIERS[positive_count];
-                        let delta = Self::continuation_delta(bonus, $weight, multiplier)
-                            + 73 * i32::from($i < 2);
+                        let scale = CMHC_SCALED[$i - 1][positive_count];
+                        let delta = Self::continuation_delta(bonus, scale) + 73 * i32::from($i < 2);
                         histories.continuation.update(plane, pc, to, delta);
                     }
                 }
@@ -710,12 +738,12 @@ impl SearchWorker {
         }
         // In check only the two nearest plies are updated: the rest of the line was forced,
         // so crediting it teaches the ordering nothing.
-        ply_back!(1, 1040);
-        ply_back!(2, 780);
-        ply_back!(3, 290);
-        ply_back!(4, 502);
-        ply_back!(5, 132);
-        ply_back!(6, 418);
+        ply_back!(1);
+        ply_back!(2);
+        ply_back!(3);
+        ply_back!(4);
+        ply_back!(5);
+        ply_back!(6);
     }
 
     /// Reward or punish a quiet move across every table that orders quiet moves.
@@ -3453,7 +3481,7 @@ mod tests {
         let bonus = Bonus::new(31_978);
         let (weight, multiplier) = (1040, 126);
 
-        let got = SearchWorker::continuation_delta(bonus, weight, multiplier).get();
+        let got = SearchWorker::continuation_delta(bonus, weight * multiplier).get();
         let want = (i64::from(bonus.get()) * i64::from(weight) * i64::from(multiplier)) as i32;
         assert_eq!(got, want / 131_072, "the i32 product, then the divide");
 
@@ -3464,7 +3492,7 @@ mod tests {
         // Every value the bench reaches is below the wrap, which is why no gated number
         // moves: the widened product and the wrapped one agree there.
         for b in [-2210, -1563, 1334, 16_000] {
-            let narrow = SearchWorker::continuation_delta(Bonus::new(b), weight, multiplier).get();
+            let narrow = SearchWorker::continuation_delta(Bonus::new(b), weight * multiplier).get();
             let wide = (i64::from(b) * i64::from(weight) * i64::from(multiplier) / 131_072) as i32;
             assert_eq!(narrow, wide, "bonus {b} fits and must not differ");
         }
