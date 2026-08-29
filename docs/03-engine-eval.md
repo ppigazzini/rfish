@@ -382,6 +382,19 @@ attempt starts past them rather than at them.
 | the fold rewritten with `std::simd`, one vector and two | a wash at `native`, worse at `nehalem` |
 | refreshing the king-square cache on every evaluation | 3,202M → 3,199M, i.e. nothing |
 | the sparse layer in groups of four, folded by `vpmaddwd` | 2,108M → 2,759M (32 lanes) / 2,698M (64) |
+| `fold_into`'s halfka walks peeled to two, as upstream 8bc5caa2 peels its own | avx2 +0.1985%, sse41 **−0.2577%** |
+
+The last row is the one to read before taking a perf commit off upstream. `fold_into`
+serves the roll-forward and nothing else, so its two king-piece lists hold at most two rows
+— exactly the fact upstream 8bc5caa2 peels `apply_psq_features` on. Both shapes of the peel
+were measured against the same base and left `cargo xtask signature` green both times: an
+iterator bounded to two, and upstream's own conditional pair behind `#[inline(always)]`
+helpers. They cost
++3,091,433 and +3,091,554 instructions, which is the same number twice and says the cost is
+the peel rather than the form. The second tier then answered what the first could not: sse41
+GAINS 5,841,381 on the identical diff. A change that improves one tier and regresses the
+other moved code layout rather than removing work, so there is nothing here to keep — and
+one tier alone would have read as a win or as a loss depending on which one was run.
 
 ### Groups of four, with the fold this time — and it still loses
 
