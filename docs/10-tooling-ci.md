@@ -287,6 +287,31 @@ inherit it.
 
 **A perf number without its tier is not a number.**
 
+### A flag the step does not read is REFUSED, not ignored
+
+Every flag reader in `xtask` is `arg_value`/`has_flag`, which scan the whole argument vector
+for a literal and fall back to a default when they do not find it. Nothing asked whether a
+flag was one the step knows, so `--teir avx2` completed, exited 0, and reported a number
+measured at the default tier — under a heading naming the tier it resolved rather than the
+one it was given. `STEP_FLAGS` in `crates/xtask/src/main.rs` declares what each step reads
+and `check_flags` refuses the rest before the step runs, because a step that reaches its own
+defaults has already decided what to measure.
+
+Three unit tests hold it, and each was seen to fail on its own mutation: the table names
+only steps `dispatch` still has, every flag the sources read is declared somewhere, and the
+refusal itself is exercised as a pure function. The second is the direction the table cannot
+police alone — a step that gains a flag nobody declares would be refused its own documented
+usage.
+
+Positionals are deliberately not policed: `bench` forwards them to the engine,
+`golden-audit` takes case names and `negative-control` takes gate names, so there is no
+shared rule to apply.
+
+../Stockfish `refish` ed4d420a is the same class at a different site. Its `perfbudget.sh`
+stops reading options at the first positional, so a flag written after one is dropped —
+position cannot matter here, because the readers scan the whole vector, and what was missing
+was any question about whether the flag was known.
+
 ### The tiers are enumerated, and `native` only SELECTS one
 
 | tier | `-C target-cpu` | upstream `ARCH=` | callgrind |
