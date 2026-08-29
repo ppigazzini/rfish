@@ -27,7 +27,14 @@ expensive mistake in their histories.
 | **SKIPPED** | **2** | the gate could not run |
 
 A skipped gate has proven **nothing**. `parity` names every gate it skipped, separately
-from the passes, and never counts one as green.
+from the passes, and **returns 2 itself** when any member skipped and none failed — a
+failure outranks a skip, because exit 1 says the tree is wrong where exit 2 only says the
+question was not asked.
+
+That last clause is written as a number because the vaguer version of it — "never counts one
+as green" — was true of the printing and false of the exit code for as long as both existed.
+The aggregate named its three unrun differential gates, on the same run that returned 0 to
+the shell. `gates::parity_outcome` is the decision, and a unit test holds all three cases.
 
 ## The gates
 

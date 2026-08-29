@@ -1948,7 +1948,40 @@ pub(crate) fn parity() -> Result<Outcome, String> {
         // fixed.
         println!("\x1b[33mSKIPPED: {}\x1b[0m — these prove nothing", skipped.join(", "));
     }
-    Ok(Outcome::check(failed.is_empty(), format!("failed gates: {}", failed.join(", "))))
+    Ok(parity_outcome(&failed, &skipped))
+}
+
+/// What the aggregate reports, given what its members did.
+///
+/// A separate function because it is the whole verdict and `parity` itself cannot be unit
+/// tested -- it runs the suite. The three cases are the point: a failure outranks a skip, a
+/// skip is NOT a pass, and only an all-green run is one.
+///
+/// A skip returning `Pass` is how this repository nearly filed a green baseline over three
+/// unrun differential gates. AGENTS.md has said "`parity` names any gate it skipped for a
+/// missing tool and exits 2 for it" for as long as the sentence has existed, `main.rs` has
+/// mapped `Skipped` to exit 2 for as long as the mapping has, and the aggregate in between
+/// returned `Pass` -- so the contract was stated in the prose, honoured by the caller and
+/// dropped by the one function that decides. Printing the names is what let it survive: the
+/// run LOOKS wrong to a reader and reads as 0 to a script, and `cargo xtask parity | tail -1`
+/// was already the documented way to be lied to.
+///
+/// `parity` is local. CI runs its members as separate jobs on purpose -- `rfish_parity.yml`
+/// says in its own comment that `nnue-check` and `tb` are deliberately not steps there,
+/// because a gate that can only SKIP in CI teaches contributors to ignore a skip -- so no
+/// lane changes shape here.
+pub(crate) fn parity_outcome(failed: &[&str], skipped: &[&str]) -> Outcome {
+    if !failed.is_empty() {
+        return Outcome::Fail(format!("failed gates: {}", failed.join(", ")));
+    }
+    if !skipped.is_empty() {
+        return Outcome::Skipped(format!(
+            "{} did not run, so the aggregate proves less than it did last time: {}",
+            skipped.len(),
+            skipped.join(", ")
+        ));
+    }
+    Outcome::Pass
 }
 
 fn arg_value<'a>(args: &'a [&'a str], flag: &str) -> Option<&'a str> {
@@ -1969,6 +2002,22 @@ fn capture_version() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skipped_member_makes_the_aggregate_skip_rather_than_pass() {
+        assert!(matches!(parity_outcome(&[], &[]), Outcome::Pass));
+        // The case that motivated this: everything that ran was green, and three gates
+        // could not run at all.
+        let skipped = parity_outcome(&[], &["golden-audit", "nnue-check", "tb"]);
+        assert!(matches!(skipped, Outcome::Skipped(_)), "a skip must not read as a pass");
+        // A failure outranks a skip: exit 1 says the tree is wrong, exit 2 only says the
+        // question was not asked.
+        assert!(matches!(parity_outcome(&["signature"], &["tb"]), Outcome::Fail(_)));
+        assert!(matches!(parity_outcome(&["signature"], &[]), Outcome::Fail(_)));
+        // The names travel, because a reader has to know WHICH question went unasked.
+        let Outcome::Skipped(why) = parity_outcome(&[], &["tb"]) else { panic!("skipped") };
+        assert!(why.contains("tb"), "{why}");
+    }
 
     #[test]
     fn two_blank_sides_are_a_rig_fault_rather_than_agreement() {
