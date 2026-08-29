@@ -1191,6 +1191,81 @@ fn invokes(text: &str, step: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// The flag table names steps that exist, and refuses a flag no step reads.
+    ///
+    /// The same shape as the dead-excuse test above and for the same reason: a table naming
+    /// a step is an allowance, and an allowance with no owner outlives what it allowed. A
+    /// renamed step would leave its flags declared against nothing, and `check_flags` would
+    /// then fall through to "no flags" and refuse the flags the step still reads.
+    #[test]
+    fn every_flag_table_entry_names_a_step_that_dispatch_still_has() {
+        let steps = dispatch_steps(&crate::workspace_root()).expect("dispatch steps");
+        for (step, flags) in crate::STEP_FLAGS {
+            assert!(
+                steps.iter().any(|s| s == step),
+                "STEP_FLAGS names '{step}', which is not a step"
+            );
+            assert!(!flags.is_empty(), "STEP_FLAGS gives '{step}' an empty list; drop the row");
+        }
+    }
+
+    /// Every flag the sources actually READ is declared for some step.
+    ///
+    /// This is the direction the table cannot police on its own. A step that gains a
+    /// `--flag` and is not added here keeps working -- `arg_value` finds it -- while
+    /// `check_flags` refuses it, so the gate would go red on its own documented usage. The
+    /// scan is by literal rather than by owner: it cannot say WHICH step should declare a
+    /// flag, only that no flag is read that nothing declares, and that is the half that
+    /// fails closed.
+    #[test]
+    fn every_flag_the_steps_read_is_declared_in_the_table() {
+        let root = crate::workspace_root();
+        let declared: Vec<&str> =
+            crate::STEP_FLAGS.iter().flat_map(|(_, flags)| flags.iter().copied()).collect();
+        for file in ["gates.rs", "perf.rs", "codegen.rs", "meta.rs", "net.rs", "fuzz.rs"] {
+            let path = root.join("crates/xtask/src").join(file);
+            let text = std::fs::read_to_string(&path).expect("xtask source");
+            for line in text.lines() {
+                for reader in ["arg_value(args, \"", "has_flag(args, \"", "args.contains(&\""] {
+                    let Some(rest) = line.split_once(reader).map(|(_, r)| r) else { continue };
+                    let Some((flag, _)) = rest.split_once('"') else { continue };
+                    if !flag.starts_with("--") || flag == "--" {
+                        continue;
+                    }
+                    assert!(
+                        declared.contains(&flag),
+                        "{file} reads '{flag}' and STEP_FLAGS declares it for no step"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The behaviour itself, as a pure function -- no binary is driven to ask it.
+    #[test]
+    fn a_flag_a_step_does_not_read_is_refused() {
+        // The typo that motivated this: one letter, and the run reports a number for the
+        // tier it defaulted to rather than the one that was asked for.
+        assert!(crate::check_flags("perf-budget", &["--teir", "sse41"]).is_err());
+        assert!(crate::check_flags("perf-budget", &["--tier", "sse41"]).is_ok());
+        // A flag that is real for another step is still wrong for this one.
+        assert!(crate::check_flags("perf-budget", &["--base", "HEAD"]).is_err());
+        // A step that reads no flag refuses every flag, and still takes its positionals.
+        assert!(crate::check_flags("perft", &["--tier", "avx2"]).is_err());
+        assert!(crate::check_flags("bench", &["16", "1", "8"]).is_ok());
+        assert!(crate::check_flags("negative-control", &["golden", "signature"]).is_ok());
+        assert!(crate::check_flags("golden-audit", &["--write", "search"]).is_ok());
+        // Every declared flag is accepted by the step that declares it.
+        for (step, flags) in crate::STEP_FLAGS {
+            for flag in *flags {
+                assert!(
+                    crate::check_flags(step, &[flag]).is_ok(),
+                    "'{step}' refuses its own '{flag}'"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_hyphenated_neighbour_does_not_lane_the_shorter_name() {
         assert!(!invokes("- run: cargo xtask net-fetch", "net"));

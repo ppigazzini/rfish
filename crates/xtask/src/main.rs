@@ -54,7 +54,57 @@ fn main() -> ExitCode {
     }
 }
 
+/// The flags each step reads. A step absent from this table reads none.
+///
+/// The table exists so an unrecognised flag can be REFUSED. Every reader here is
+/// `arg_value`/`has_flag`, which scan the whole argument vector for a literal and fall back
+/// to a default when they do not find it — so a typo, or a flag meant for another step,
+/// left the run to complete, exit 0, and report a number taken under the default it had
+/// silently chosen. `--tier` is the expensive one: AGENTS.md says a perf number without its
+/// tier is not a number, and `--teir avx2` measured avx2 while the operator read sse41.
+///
+/// ../Stockfish `refish` ed4d420a is the same class at a different site: its `perfbudget.sh`
+/// stops reading options at the first positional, so a flag written after one is dropped.
+/// Position cannot matter here, because the readers scan the whole vector; what does is that
+/// nothing ever asked whether a flag was one the step knows.
+///
+/// Positionals are NOT policed. `bench` forwards them to the engine, `golden-audit` takes
+/// case names and `negative-control` takes gate names, so there is no shared rule to apply.
+const STEP_FLAGS: &[(&str, &[&str])] = &[
+    ("build", &["--profile", "--arch"]),
+    ("arch-determinism", &["--host-tiers"]),
+    ("golden-audit", &["--write"]),
+    ("pgo", &["--tier", "--spine"]),
+    ("oracle", &["--tier", "--spine"]),
+    ("perf", &["--tier", "--spine", "--rounds"]),
+    ("counters", &["--tier", "--spine", "--syzygy"]),
+    ("perf-budget", &["--tier", "--rounds", "--syzygy"]),
+    ("perf-budget-update", &["--tier", "--rounds", "--syzygy"]),
+    ("upstream-nodes", &["--positions", "--depth", "--seed"]),
+    ("fingerprint", &["--tier"]),
+    ("codegen-equiv", &["--tier", "--base"]),
+    ("budget-ab", &["--tier", "--base", "--rounds", "--syzygy"]),
+    ("warm-ab", &["--tier", "--base", "--depth", "--cold"]),
+];
+
+/// Refuse an argument that looks like a flag and is not one `step` reads.
+pub(crate) fn check_flags(step: &str, args: &[&str]) -> Result<(), String> {
+    let allowed = STEP_FLAGS.iter().find(|(s, _)| *s == step).map_or(&[][..], |(_, flags)| *flags);
+    for arg in args {
+        if arg.starts_with("--") && !allowed.contains(arg) {
+            let takes = if allowed.is_empty() { "no flags".to_string() } else { allowed.join(" ") };
+            return Err(format!("`{step}` does not read `{arg}`; it takes {takes}"));
+        }
+    }
+    Ok(())
+}
+
 fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
+    // Before the step runs, not inside it: a step that reaches its own defaults has already
+    // decided what to measure.
+    if !matches!(step, "help" | "--help" | "-h") {
+        check_flags(step, args)?;
+    }
     match step {
         "help" | "--help" | "-h" => {
             print_help();
