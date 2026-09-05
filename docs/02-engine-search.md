@@ -45,37 +45,49 @@ The continuation planes start at **−40**, not zero: an untouched follow-up mus
 a move that has merely never worked. A plane of zeros would make "unknown" look as good as
 "neutral".
 
-**The per-ply continuation bonus WRAPS, and the wrap is upstream's.**
-`bonus * weight * multiplier / 131_072` is three `i32`s: `weight` reaches 1040 and
-`multiplier` 126, so any `|bonus|` above ~16,400 leaves the type, and the fail-low caller
-reaches it — `scaled_bonus * 263 / 16384` passes 30,000 once the histories saturate. Upstream
-computes all three in `int`, a release build wraps, and the intended bonus is applied at
-nearly full magnitude with the OPPOSITE sign. `SearchWorker::continuation_delta` spells the
-wrap with `wrapping_mul` rather than inheriting it from the profile, because a release build
-wrapped silently while the gate profile PANICKED on the same input — the split that profile
-exists to catch. It is spelled at that one site and not in `Bonus`'s `Mul`, so every other
-bonus formula keeps the gate profile's detection.
+**The per-ply continuation bonus no longer wraps, and it is still spelled as if it might.**
+`bonus * weight * multiplier / 65_536` is three `i32`s. It USED to overflow one: against the
+weights before upstream 47be34c5 the largest scale was 1040 * 126, so any `|bonus|` above
+~16,400 left the type and the fail-low caller reached it — `scaled_bonus * 263 / 16384` passes
+30,000 once the histories saturate. Upstream computed all three in `int`, a release build
+wrapped, and the intended bonus landed at nearly full magnitude with the OPPOSITE sign. That
+port reproduced the wrap rather than repairing it, because repairing it would have diverged
+from the golden on every input that overflowed.
+
+47be34c5 halves every weight and the divisor with them. The quotient is unchanged — each
+weight is even, so halving numerator and denominator together is exact and no history entry
+moves — while the largest intermediate drops to 520 * 126 = 65,520 and the bound moves out to
+~32,776, past the 30,000 the caller can reach. Upstream's own sweep puts the worst case it
+could find at 1,060,970,040, a margin of 1,086,513,607.
+
+`SearchWorker::continuation_delta` keeps `wrapping_mul` anyway, and the reason changed with the
+fix. It is no longer reproducing anything: there is no reachable wrap left. It is a floor under
+the divergence — on an input past the new bound, a release build of upstream still wraps, and
+the gate profile's overflow checks would make this port PANIC instead, which is not a closer
+match to upstream than a wrap is. It stays at that one site rather than in `Bonus`'s `Mul`, so
+every other bonus formula keeps the gate profile's detection.
 
 The two factors are REGROUPED, and only the outer product is left at run time. Both are
 decided before the bonus is — the weight is a constant of the ply and the multiplier a
 run-time index into a constant — so `CMHC_SCALED` tables `weight * multiplier` and
-`continuation_delta` takes the product. Wrapping multiplication is associative, so the wrap
-above and the sign flip it produces are unchanged; the inner product cannot itself wrap, at
-1040 * 126 = 131,040. Worth −233,645 instructions at avx2 and −217,428 at sse41, bit-exact,
-from ../Stockfish `refish` 56c6bfdd — whose other half, a shared counter loaded twice because
-a relaxed atomic may not be folded, has no analogue: these tables are plain `i16`.
+`continuation_delta` takes the product. Wrapping multiplication is associative, so the
+regrouping is bit-identical whether or not the outer product wraps; the inner product cannot
+itself wrap, at 520 * 126 = 65,520. Worth −233,645 instructions at avx2 and −217,428 at sse41,
+bit-exact, from ../Stockfish `refish` 56c6bfdd — whose other half, a shared counter loaded
+twice because a relaxed atomic may not be folded, has no analogue: these tables are plain
+`i16`.
 
-The width is reproduced, not repaired: widening to `i64` removes the sign flip and diverges
-from the golden on every input that overflows. The bench never reaches the wrap, so no gated
-number depends on it — a search on a real clock does, which is why no gate could have found
-it. `../Stockfish refish` measured six exact repairs in C++ and every one cost ~0.08%, because
-signed overflow is UB there: the compiler derives `|quotient| < 16384`, proves the clamp in
-`operator<<` dead and deletes it, and any repair that widens the provable range brings it
-back. Rust grants no such licence, so `apply_gravity` clamps either way and the repair that
-costs them 0.08% costs this port nothing — `codegen-equiv` reports all 1030 symbols
-byte-identical. The one divergence left cannot be closed: upstream's deleted clamp lets a
-wrapped bonus reach its tables raw, where this port clamps it, and there is no defined
-behaviour to be exact to.
+The width stays upstream's even where the overflow is gone: widening to `i64` would remove the
+sign flip and diverge on exactly the inputs past the bound. The bench never reached the wrap
+even before the fix, so no gated number ever depended on it — a search on a real clock did,
+which is why no gate could have found it. `../Stockfish refish` measured six exact repairs in
+C++ and every one cost ~0.08%, because signed overflow is UB there: the compiler derives
+`|quotient| < 16384`, proves the clamp in `operator<<` dead and deletes it, and any repair that
+widens the provable range brings it back. Rust grants no such licence, so `apply_gravity`
+clamps either way and the repair that costs them 0.08% costs this port nothing — `codegen-equiv`
+reports all 1030 symbols byte-identical. The one divergence left cannot be closed: upstream's
+deleted clamp lets a wrapped bonus reach its tables raw, where this port clamps it, and there
+is no defined behaviour to be exact to.
 
 The tables are large and per-worker, and are boxed so a `SearchWorker` stays movable and a
 thread does not need a megabyte-deep stack.

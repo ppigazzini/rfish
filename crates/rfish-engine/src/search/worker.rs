@@ -655,20 +655,29 @@ impl SearchWorker {
 
     /// The per-ply continuation bonus, at the width upstream computes it at.
     ///
-    /// **The product WRAPS, and the wrap is upstream's.** `weight` reaches 1040 and `multiplier`
-    /// 126, so any `|bonus|` above ~16,400 puts `bonus * weight * multiplier` past `i32`, and the
-    /// fail-low caller reaches it: `scaled_bonus * 263 / 16384` passes 30,000 once the histories
-    /// saturate. Upstream computes all three in `int`, a release build wraps, and the intended
-    /// bonus is applied at nearly full magnitude with the OPPOSITE sign. Spelled here rather than
-    /// inherited from the profile, because the gate profile's overflow checks turn the same input
-    /// into a panic while release wraps silently — the exact split the profile exists to catch.
+    /// **The product no longer wraps at the bonuses the search produces, and the multiplication
+    /// stays wrapping anyway.** Those are two claims and they need separating.
     ///
-    /// The bench never reaches it, so no gated number depends on the wrap; a search on a real
-    /// clock does. Widening to `i64` would remove the sign flip and diverge from the golden on
-    /// every input that overflows, which is why the width is reproduced rather than repaired.
+    /// It USED to wrap, and reproducing that was the point: `weight` reached 1040 and
+    /// `multiplier` 126, so any `|bonus|` above ~16,400 put `bonus * weight * multiplier` past
+    /// `i32`, and the fail-low caller reached it — `scaled_bonus * 263 / 16384` passes 30,000
+    /// once the histories saturate. Upstream computed all three in `int`, a release build
+    /// wrapped, and the intended bonus landed at nearly full magnitude with the OPPOSITE sign.
+    /// Upstream 47be34c5 halves every weight and the divisor with them, which is exactly the
+    /// same quotient with half the numerator: the largest scale is now 520 * 126 = 65,520, so
+    /// the bound moves to ~32,776 and the 30,000 above clears it. Upstream's own sweep puts the
+    /// worst case it could find at 1,060,970,040, a margin of 1,086,513,607.
+    ///
+    /// The multiplication is still `wrapping_mul` because the gate profile's overflow checks
+    /// would otherwise turn an input upstream WRAPS on into a panic here, and a panic is not a
+    /// closer match to a release build than a wrap is. Nothing is being reproduced now — there
+    /// is no reachable wrap left to reproduce — so this is a floor under the divergence rather
+    /// than a behaviour: on any input past the bound, rfish keeps doing what upstream's release
+    /// build does. Widening to `i64` would instead remove the sign flip and diverge on exactly
+    /// those inputs, which is why the WIDTH is upstream's even where the overflow is gone.
     #[inline(always)]
     fn continuation_delta(bonus: Bonus, scale: i32) -> Bonus {
-        Bonus::new(bonus.get().wrapping_mul(scale) / 131_072)
+        Bonus::new(bonus.get().wrapping_mul(scale) / 65_536)
     }
 
     /// Reward or punish the follow-ups to the moves played one to six plies back.
@@ -679,17 +688,17 @@ impl SearchWorker {
     fn update_continuation_histories(&mut self, si: StackIx, pc: Piece, to: Square, bonus: Bonus) {
         const CMHC_MULTIPLIERS: [i32; 7] = [94, 103, 110, 106, 119, 126, 121];
         /// The per-ply weight, in the order the plies are visited.
-        const CMHC_WEIGHTS: [i32; 6] = [1040, 780, 290, 502, 132, 418];
+        const CMHC_WEIGHTS: [i32; 6] = [520, 390, 145, 251, 66, 209];
         /// `weight * multiplier`, which is a table rather than an `imul`.
         ///
         /// Both factors are decided before the bonus is: the weight is a constant of the
         /// ply and the multiplier is a run-time index into a constant, so their product
         /// never depends on `bonus`. Regrouping `(bonus * weight) * multiplier` as
         /// `bonus * (weight * multiplier)` is bit-identical HERE and the reason has to be
-        /// stated, because the outer product wraps on purpose — see
+        /// stated, because the outer product is a WRAPPING one — see
         /// [`SearchWorker::continuation_delta`]. Wrapping multiplication is associative, so
         /// the wrap and the sign flip it produces are the same either way, and the inner
-        /// product cannot wrap: the largest is 1040 * 126 = 131,040.
+        /// product cannot wrap: the largest is 520 * 126 = 65,520.
         ///
         /// ../Stockfish `refish` 56c6bfdd, whose other half — a shared counter loaded twice
         /// because a relaxed atomic may not be folded — has no analogue: these histories are
@@ -3469,34 +3478,44 @@ pub fn searching_side(pos: &Position) -> Color {
 #[cfg(test)]
 mod tests {
 
-    /// The continuation bonus wraps rather than trapping, at the width upstream uses.
+    /// The continuation bonus clears the wrap it used to take, at the same quotient.
     ///
     /// A pure function, deliberately: the input that reaches this is a real clock on a long
     /// search, and driving the binary to it costs two minutes and proves nothing this does
-    /// not. Red before the wrap was spelled — the gate profile panicked on the multiply.
+    /// not. It was red before the wrap was spelled — the gate profile panicked on the
+    /// multiply — and upstream 47be34c5 has since moved the bound out from under it.
     #[test]
-    fn the_continuation_bonus_wraps_the_way_upstream_does() {
+    fn the_continuation_bonus_clears_the_wrap_it_used_to_take() {
         // The largest bonus the fail-low caller can hand over: `scaled_bonus * 263 / 16384`
-        // once the histories have saturated.
+        // once the histories have saturated. It wrapped against the old weights and does
+        // not against the halved ones, which is the whole of the upstream fix.
         let bonus = Bonus::new(31_978);
-        let (weight, multiplier) = (1040, 126);
+        let (weight, multiplier) = (520, 126);
 
         let got = SearchWorker::continuation_delta(bonus, weight * multiplier).get();
-        let want = (i64::from(bonus.get()) * i64::from(weight) * i64::from(multiplier)) as i32;
-        assert_eq!(got, want / 131_072, "the i32 product, then the divide");
+        let wide = (i64::from(bonus.get()) * i64::from(weight) * i64::from(multiplier)) / 65_536;
+        assert_eq!(i64::from(got), wide, "no wrap left to reproduce at the halved width");
+        assert!(got > 0, "a positive bonus must stay positive, got {got}");
 
-        // The sign flip is the defect this reproduces rather than repairs: the intended
-        // bonus is positive and what the tables receive is not.
-        assert!(got < 0, "wrapped to {got}");
-
-        // Every value the bench reaches is below the wrap, which is why no gated number
-        // moves: the widened product and the wrapped one agree there.
-        for b in [-2210, -1563, 1334, 16_000] {
-            let narrow = SearchWorker::continuation_delta(Bonus::new(b), weight * multiplier).get();
-            let wide = (i64::from(b) * i64::from(weight) * i64::from(multiplier) / 131_072) as i32;
-            assert_eq!(narrow, wide, "bonus {b} fits and must not differ");
+        // Same quotient as the weights it replaced. Halving the numerator and the divisor
+        // together is exact because every weight is even, so no history entry moves and no
+        // gated number with it.
+        for b in [-31_978, -2210, -1563, 0, 1334, 16_000, 31_978] {
+            for (half, full) in
+                [(520, 1040), (390, 780), (145, 290), (251, 502), (66, 132), (209, 418)]
+            {
+                for m in CMHC_MULTIPLIERS_FOR_TEST {
+                    let now = SearchWorker::continuation_delta(Bonus::new(b), half * m).get();
+                    let then = (i64::from(b) * i64::from(full) * i64::from(m)) / 131_072;
+                    assert_eq!(i64::from(now), then, "bonus {b}, weight {full} -> {half}");
+                }
+            }
         }
     }
+
+    /// The multipliers the table above is indexed by, so the sweep covers every scale.
+    const CMHC_MULTIPLIERS_FOR_TEST: [i32; 7] = [94, 103, 110, 106, 119, 126, 121];
+
     use std::time::Instant;
 
     use super::*;
