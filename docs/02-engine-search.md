@@ -80,14 +80,42 @@ twice because a relaxed atomic may not be folded, has no analogue: these tables 
 The width stays upstream's even where the overflow is gone: widening to `i64` would remove the
 sign flip and diverge on exactly the inputs past the bound. The bench never reached the wrap
 even before the fix, so no gated number ever depended on it — a search on a real clock did,
-which is why no gate could have found it. `../Stockfish refish` measured six exact repairs in
-C++ and every one cost ~0.08%, because signed overflow is UB there: the compiler derives
-`|quotient| < 16384`, proves the clamp in `operator<<` dead and deletes it, and any repair that
-widens the provable range brings it back. Rust grants no such licence, so `apply_gravity`
-clamps either way and the repair that costs them 0.08% costs this port nothing — `codegen-equiv`
-reports all 1030 symbols byte-identical. The one divergence left cannot be closed: upstream's
-deleted clamp lets a wrapped bonus reach its tables raw, where this port clamps it, and there
-is no defined behaviour to be exact to.
+which is why no gate could have found it.
+
+**The repair costs what it cost upstream, and the page said it would cost nothing.** That claim
+was wrong, and the reason it was wrong is worth more than the number. `../Stockfish refish`
+measured six exact repairs in C++ at ~0.08% each and attributed the cost to UB: signed overflow
+is undefined there, so the compiler derives `|quotient| < 16384`, proves the clamp in
+`operator<<` dead, deletes it, and any repair that widens the provable range brings it back.
+This page then reasoned that Rust grants no such licence, so `apply_gravity` would clamp either
+way and the repair would be free here.
+
+**The deletion never needed UB.** LLVM derives the same bound from the WRAPPING multiply and
+the power-of-two divisor, with no undefined behaviour anywhere in the chain: a wrapped `i32`
+over `131_072` is provably in ±16,384, `+73` takes it to 16,456, and `CONTINUATION_LIMIT` is
+30,000 — so the clamp was provably dead on all six plies and LLVM deleted all six. Halving the
+divisor doubles the provable range to ±32,768, past the limit, and all six come back:
+
+    cargo xtask codegen-equiv --tier avx2 --base <pre-fix>
+      CHANGED  SearchWorker::update_continuation_histories (347 -> 383 instructions)
+
+    cargo xtask budget-ab --base <pre-fix>, 170203 nodes on both sides
+      avx2    +1103770 Ir  (+0.0709%)
+      sse41   +1103854 Ir  (+0.0487%)
+
+36 instructions across roughly 30,780 calls, and the two tiers differ by 84 instructions out of
+1.1M — the same absolute work on both, which is what says this is work rather than layout. It
+is also the same order as the 0.08% the C++ port paid, from the same cause. **A claim that a
+compiler needs UB to make a deduction is a claim about the compiler, and this one had been
+argued rather than disassembled.**
+
+The cost is upstream's and cannot be given back: the clamp is live now because the VALUES are
+genuinely larger, which is the whole of the fix. Any reformulation that kept the clamp dead
+would have to cap the delta below 30,000 provably, and that changes what the tables receive.
+
+The one divergence left cannot be closed either, and it shrank rather than went: on an input
+past the NEW bound upstream's release build still wraps and lets the wrapped bonus reach its
+tables raw, where this port clamps it, and there is no defined behaviour to be exact to.
 
 The tables are large and per-worker, and are boxed so a `SearchWorker` stays movable and a
 thread does not need a megabyte-deep stack.
