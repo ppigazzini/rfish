@@ -86,8 +86,8 @@ pub fn is_decisive(v: Value) -> bool {
 /// material dependence is what makes the same evaluation mean less in an endgame than in a
 /// middlegame — there is simply less left to convert it with.
 fn win_rate_params(pos: &Position) -> (f64, f64) {
-    const AS: [f64; 4] = [-72.325_658_36, 185.938_320_38, -144.588_621_93, 416.449_504_46];
-    const BS: [f64; 4] = [83.867_940_42, -136.061_129_97, 69.988_208_87, 47.629_014_33];
+    const AS: [f64; 4] = [-142.720_526_67, 372.351_763_98, -340.710_735_72, 415.234_902_12];
+    const BS: [f64; 4] = [5.938_327_85, 15.612_670_78, -30.578_168_76, 69.638_667_11];
 
     let material = pos.count_both(PieceType::Pawn)
         + 3 * pos.count_both(PieceType::Knight)
