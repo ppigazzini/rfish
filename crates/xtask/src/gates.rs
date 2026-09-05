@@ -1754,18 +1754,66 @@ fn internal_units_all(out: &str) -> Vec<i64> {
 /// name sorted first, `nnue-check`, `tb` and the golden audit all adjudicated against the
 /// wrong commit while passing. `docs/10-tooling-ci.md` had recorded the trap one commit
 /// earlier and it still bit, because the stale binary was under a name nobody was looking at.
+///
+/// A SHA is not always what upstream stamps, though, and that is why the rule is read from
+/// the pin rather than assumed. `engine_version_info` emits `Stockfish dev-<date>-<sha>` only
+/// while its `version` constant reads `dev`; on a RELEASE commit the same function emits
+/// `Stockfish <version>` and no SHA at all. Pinning to one — `edb0d9db`, `Stockfish 19` — put
+/// a correctly built oracle in front of a check that could not recognise it, and all three
+/// differential gates SKIPPED while the binary beside them was the right one.
 pub(crate) fn find_oracle() -> Option<std::path::PathBuf> {
     let src = workspace_root().parent()?.join("Stockfish/src");
     let base = std::fs::read_to_string(workspace_root().join("tools/upstream/UPSTREAM_BASE"))
         .ok()?
         .trim()
         .to_string();
-    let short = base.get(..8)?.to_string();
+    let version = upstream_version(&base);
     ["stockfish-new", "stockfish"]
         .iter()
         .map(|n| src.join(n))
         .filter(|p| p.is_file())
-        .find(|p| oracle_stamp(p).is_some_and(|id| id.contains(&short)))
+        .find(|p| oracle_stamp(p).is_some_and(|id| stamp_names(&id, &version, &base)))
+}
+
+/// Upstream's `version` constant AT the pin, which decides what its `id name` can carry.
+///
+/// Read from the golden's object store, never from its working tree: that tree may be on
+/// another branch, or mid-rebase, and neither says anything about the commit rfish pins.
+/// An unreadable version falls back to `dev`, which keeps the stricter SHA rule.
+fn upstream_version(base: &str) -> String {
+    let repo = workspace_root().parent().map(|p| p.join("Stockfish")).unwrap_or_default();
+    let Ok(out) = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args(["show", &format!("{base}:src/misc.cpp")])
+        .output()
+    else {
+        return "dev".to_string();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| {
+            let l = l.trim_start();
+            l.strip_prefix("constexpr std::string_view version =")?
+                .split('"')
+                .nth(1)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "dev".to_string())
+}
+
+/// Whether an `id name` line names the upstream commit rfish pins.
+///
+/// Pure, because the alternative is driving a binary to test the rule that decides which
+/// binary to drive. A dev build carries the short SHA and nothing else identifies it; a
+/// release build carries only its version, so the version is the whole identity available
+/// — it holds for exactly the one commit that bumps `version` before the next `dev` restores
+/// it, which is as tight as upstream's own output allows.
+fn stamp_names(id: &str, version: &str, base: &str) -> bool {
+    let id = id.trim();
+    if version == "dev" {
+        return base.get(..8).is_some_and(|short| id.contains(short));
+    }
+    id == format!("id name Stockfish {version}")
 }
 
 /// The `id name` an upstream binary announces, which carries the commit it was built from.
@@ -2002,6 +2050,24 @@ fn capture_version() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_oracle_stamp_is_read_against_the_rule_the_pin_declares() {
+        let sha = "edb0d9db6731067ec50ce619ff372b463bc4dd5d";
+        // A dev pin: the short SHA is the identity, and a build from any other commit is
+        // refused however plausible the rest of the line looks.
+        assert!(stamp_names("id name Stockfish dev-20260901-edb0d9db", "dev", sha));
+        assert!(!stamp_names("id name Stockfish dev-20260901-m-f8eb5b1c", "dev", sha));
+        // The case that had all three differential gates skipping against a CORRECT binary:
+        // a release build stamps its version and no SHA, so the SHA rule can never match it.
+        assert!(!stamp_names("id name Stockfish 19", "dev", sha));
+        assert!(stamp_names("id name Stockfish 19", "19", sha));
+        // A release rule is exact, not a prefix: the next release must not answer for this
+        // one, and a dev build must not answer for either.
+        assert!(!stamp_names("id name Stockfish 19.1", "19", sha));
+        assert!(!stamp_names("id name Stockfish 20", "19", sha));
+        assert!(!stamp_names("id name Stockfish dev-20260905-edb0d9db", "19", sha));
+    }
 
     #[test]
     fn a_skipped_member_makes_the_aggregate_skip_rather_than_pass() {
