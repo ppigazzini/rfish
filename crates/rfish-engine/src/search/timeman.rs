@@ -166,7 +166,15 @@ impl TimeManagement {
         // Every constant below is calibrated against milliseconds, so scale back into them
         // before comparing and scale the result out again.
         let scale_factor = if self.use_nodes_time { npmsec } else { 1 };
-        let scaled_time = time / scale_factor;
+        // FLOORED at one, and that floor is the whole of upstream 6e4c77f5. Under
+        // `nodestime` the clock IS the node budget, so an `available_nodes` below `npmsec`
+        // divides to zero — and zero reaches `log10` in the sudden-death arm below, where it
+        // is negative infinity. It carries through `opt_constant` into an `opt_scale` of
+        // negative infinity, and `original_time_adjust` is NEGATIVE on a short clock, so the
+        // product is POSITIVE infinity. Upstream's C++ is undefined at the cast that
+        // follows; Rust's saturates, so this port budgeted `i64::MAX` nodes for one move
+        // rather than misbehaving — a different wrong answer to the same defect.
+        let scaled_time = (time / scale_factor).max(1);
 
         let movestogo = limits.moves_to_go.unwrap_or(0) as i32;
         let mut mtg = if movestogo != 0 { movestogo.min(50) } else { 50 };
@@ -196,9 +204,12 @@ impl TimeManagement {
         // The two `mtg` terms are formed AT `i64`, not converted after. `mtg` is an `i32`
         // and both edges of that type are reachable from one `go` line: a `movestogo` off
         // the wire arrives unbounded — upstream accepts a negative one and searches — and
-        // the sub-second taper above casts `scaled_time * 0.05`, which a negative clock
-        // inside `MAX_CLOCK_MS` drives past `i32::MIN`, where Rust's float cast saturates.
-        // `mtg - 1` then panicked under the gate profile on both. Widening the subtraction
+        // the sub-second taper above cast `scaled_time * 0.05`, which a negative clock
+        // inside `MAX_CLOCK_MS` drove past `i32::MIN`, where Rust's float cast saturates.
+        // `mtg - 1` then panicked under the gate profile on both. The floor on `scaled_time`
+        // closes the second of those — the taper can no longer see a negative — and leaves
+        // the first, since `movestogo` reaches `i32::MIN` without the taper's help. Widening
+        // the subtraction
         // costs nothing — the conversion happens either way — and is EXACTLY equal for
         // every `i32`, so upstream's behaviour on both inputs is kept rather than corrected.
         let time_left = time
@@ -294,6 +305,46 @@ mod tests {
         assert!(tm.budget().maximum() < Elapsed::new(TimeManagement::NO_BOUND));
         tm.init(&mut limits, Color::White, GamePly::new(21), &SearchOptions::default());
         assert_eq!(tm.budget().maximum(), Elapsed::new(TimeManagement::NO_BOUND));
+    }
+
+    /// A node budget spent down to nothing still budgets a move rather than infinity.
+    ///
+    /// Under `nodestime` the clock IS the node budget, so once `available_nodes` falls below
+    /// `nodestime` the division that scales it back into milliseconds reaches zero. Zero then
+    /// reaches `log10`, which is negative infinity; it carries through `opt_constant` into an
+    /// `opt_scale` of negative infinity, and `original_time_adjust` is NEGATIVE on a short
+    /// clock, so the product is POSITIVE infinity. Upstream's C++ is undefined at the cast
+    /// that follows. Rust's float cast saturates instead, so this port budgeted `i64::MAX`
+    /// nodes for one move — a different wrong answer to the same defect.
+    ///
+    /// Both halves are needed and neither is contrived: the short clock is what keeps
+    /// `original_time_adjust` below zero, and spending the budget out is what upstream's own
+    /// report describes. Reached through the public API only, and a pure function, as every
+    /// reproducer in this class must be.
+    #[test]
+    fn an_exhausted_node_budget_still_budgets_a_move() {
+        let opts = SearchOptions { nodestime: 600, ..SearchOptions::default() };
+        let mut tm = TimeManagement::default();
+
+        // Move one, on a clock short enough that `original_time_adjust` comes out negative
+        // and stays that way -- it is recomputed for as long as it is below zero.
+        let mut l = limits_with_clock(1, 0, None);
+        tm.init(&mut l, Color::White, GamePly::new(1), &opts);
+        assert!(tm.original_time_adjust < 0.0, "the short clock keeps the factor negative");
+
+        // Spend the whole game budget, which is the state upstream's report describes.
+        tm.advance_nodes_time(i64::MAX / 2);
+        assert_eq!(tm.available_nodes, 0, "the budget is out");
+
+        let mut l = limits_with_clock(1, 0, None);
+        tm.init(&mut l, Color::White, GamePly::new(2), &opts);
+        let b = tm.budget();
+        assert!(b.optimum().get() >= 1, "a move must still be budgeted, got {b:?}");
+        assert!(
+            b.optimum() < Elapsed::new(TimeManagement::NO_BOUND),
+            "an exhausted budget must not read as an unbounded one: {b:?}"
+        );
+        assert!(b.optimum() <= b.maximum(), "{b:?}");
     }
 
     /// A cyclic control keeps the horizon it named, where a sudden-death clock tapers.
