@@ -173,7 +173,12 @@ impl TimeManagement {
 
         // Under a second, taper the horizon: planning fifty more moves out of 800 ms
         // allocates a budget too small to complete even one iteration.
-        if scaled_time < 1000 {
+        //
+        // Only where the horizon is this engine's own guess, though. A cyclic control names
+        // its remaining moves, so keep the count it gave rather than tapering to a horizon
+        // shorter than the moves that must actually be played out of this clock -- tapering
+        // there is what loses the game on time, at 40/1 by 49 Elo and 557 timeouts to none.
+        if scaled_time < 1000 && movestogo == 0 {
             mtg = (scaled_time as f64 * 0.05) as i32;
         }
 
@@ -289,6 +294,33 @@ mod tests {
         assert!(tm.budget().maximum() < Elapsed::new(TimeManagement::NO_BOUND));
         tm.init(&mut limits, Color::White, GamePly::new(21), &SearchOptions::default());
         assert_eq!(tm.budget().maximum(), Elapsed::new(TimeManagement::NO_BOUND));
+    }
+
+    /// A cyclic control keeps the horizon it named, where a sudden-death clock tapers.
+    ///
+    /// Under a second the taper overwrote `mtg` with a count derived from the CLOCK, so the
+    /// horizon a cyclic control stated was discarded and every `movestogo` budgeted the
+    /// same. That is the defect in one line: with 400 ms left, five moves to play and forty
+    /// moves to play were planned identically, and the forty-move case times out.
+    ///
+    /// A pure function, as every reproducer in this class must be.
+    #[test]
+    fn a_sub_second_cyclic_control_keeps_its_stated_horizon() {
+        // Sub-second, so the taper is live, and far enough under that it undercuts both
+        // horizons: 400 ms tapers to 20, between the five and the forty.
+        let few = budget(400, 0, Some(5), GamePly::new(20));
+        let many = budget(400, 0, Some(40), GamePly::new(20));
+        assert_ne!(few.optimum(), many.optimum(), "the stated horizon must reach the budget");
+        assert!(
+            many.optimum() < few.optimum(),
+            "forty moves to pay for must budget less per move than five: {many:?} {few:?}"
+        );
+
+        // The taper still applies where no horizon was stated -- this narrows the branch
+        // rather than removing it.
+        let tapered = budget(400, 0, None, GamePly::new(20));
+        let ample = budget(60_000, 0, None, GamePly::new(20));
+        assert!(tapered.optimum() < ample.optimum(), "{tapered:?} {ample:?}");
     }
 
     /// A negative clock, and an extreme `movestogo`, reach the same subtraction.
