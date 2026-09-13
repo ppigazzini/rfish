@@ -1083,6 +1083,10 @@ impl SearchWorker {
         self.multi_pv = multi_pv.min(self.root_moves.len());
 
         let mut search_again_counter = 0i32;
+        // Carried ACROSS iterations, like the re-search counter beside it: a root that has
+        // just fought its way through a fail high starts the next iteration shallower and
+        // climbs back two plies at a time.
+        let mut fail_high_recovery = 0i32;
         let mut last_best_pv: Vec<Move> = Vec::new();
         let mut last_best_depth = 0i32;
         let mut last_best_score = -VALUE_INFINITE;
@@ -1168,12 +1172,19 @@ impl SearchWorker {
                 self.optimism[(!us).index()] = -self.optimism[us.index()];
 
                 let mut failed_high_cnt = 0i32;
+                // The recovery decays on the FIRST slot only, so a `MultiPV` run pays and
+                // repays it once per iteration rather than once per slot.
+                if pv_idx == 0 {
+                    fail_high_recovery = (fail_high_recovery - 2).max(0);
+                }
                 loop {
                     // Ensure at least one effective increment for every four re-search
                     // steps, so a root that keeps being re-searched still deepens.
-                    let adjusted_depth =
-                        (self.root_depth - failed_high_cnt - 3 * (search_again_counter + 1) / 4)
-                            .max(1);
+                    let adjusted_depth = (self.root_depth
+                        - failed_high_cnt
+                        - fail_high_recovery
+                        - 3 * (search_again_counter + 1) / 4)
+                        .max(1);
                     self.root_delta = beta - alpha;
                     // Reborrowed rather than moved, so `sink` is free again for the report
                     // below: the root holds it for exactly as long as it is inside the
@@ -1220,6 +1231,13 @@ impl SearchWorker {
                     }
 
                     delta += 47 * delta / 128;
+                }
+
+                // An iteration that failed high has searched a tree the next one should not
+                // re-enter at full depth: come back gradually, deeper the harder the fight
+                // was.
+                if failed_high_cnt > 0 && pv_idx == 0 {
+                    fail_high_recovery = (failed_high_cnt + 1) / 2 + 2;
                 }
 
                 if self.shared.stopped() && pv_idx > 0 {
