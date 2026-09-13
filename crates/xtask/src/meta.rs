@@ -277,7 +277,9 @@ pub(crate) fn zone_check() -> Result<Outcome, String> {
 /// and before that was fixed, a missing interpreter left `grep` matching nothing, `awk`
 /// rejecting nothing, and the script printing `reprosearch testing OK` having checked
 /// NOTHING. This one drives the binary the way every other gate here does, so there is no
-/// interpreter to be absent and no pipeline whose exit status belongs to the last stage.
+/// interpreter to be absent and no pipeline whose exit status belongs to the last stage:
+/// [`crate::runner::drive_at`] fails on any exit status that is not a clean one or
+/// upstream's critical-error 1, which is what upstream's `set -o pipefail` buys.
 pub(crate) fn repro_search() -> Result<Outcome, String> {
     // The two positions upstream uses: the start position and a short opening line, so the
     // second search runs with a table the first one filled.
@@ -306,13 +308,19 @@ pub(crate) fn repro_search() -> Result<Outcome, String> {
         let out = crate::runner::drive(&engine, &lines)?;
 
         // One search per `bestmove`, and its node total is the last `nodes N` it reported.
+        //
+        // Read from an `info` line and from nowhere else. A `nodes` token can appear in any
+        // line the engine chooses to print -- an error naming the command that produced it
+        // is the obvious one, since the script's own `go nodes N` carries the word -- and a
+        // count taken from one would be compared against a count from a real search and
+        // reported as a divergence, or worse, agree.
         let mut totals = Vec::new();
         let mut last: Option<u64> = None;
         for line in out.lines() {
+            // The `bestmove` arm below reads every line; only the COUNT is restricted.
             if let Some(n) = line
-                .split_whitespace()
-                .skip_while(|t| *t != "nodes")
-                .nth(1)
+                .strip_prefix("info ")
+                .and_then(|rest| rest.split_whitespace().skip_while(|t| *t != "nodes").nth(1))
                 .and_then(|t| t.parse::<u64>().ok())
             {
                 last = Some(n);
