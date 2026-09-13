@@ -1702,7 +1702,7 @@ impl SearchWorker {
         {
             if tt_move.is_some() && tt_value >= beta {
                 if !tt_capture {
-                    self.update_quiet_histories(si, tt_move, Bonus::new((112 * depth).min(695)));
+                    self.update_quiet_histories(si, tt_move, Bonus::new(131 * depth));
                 }
                 if let Some(prev_sq) = prev_sq.square()
                     && self.stack[si.back(1).index()].move_count < 5
