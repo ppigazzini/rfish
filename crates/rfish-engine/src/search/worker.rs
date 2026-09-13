@@ -2069,7 +2069,7 @@ impl SearchWorker {
 
             // Step 15. Pruning at shallow depths.
             if !N::ROOT && self.pos.non_pawn_material(us) > 0 && !is_loss(best_value) {
-                if move_count >= (3 + depth * depth) / (2 - i32::from(improving)) {
+                if move_count >= ((3 + depth * depth) >> (1 - u32::from(improving))) {
                     mp.skip_quiet_moves();
                 }
 
