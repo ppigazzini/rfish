@@ -1581,6 +1581,7 @@ impl SearchWorker {
         self.stack[si.back(1).index()].reduction = 0;
         self.stack[si.index()].stat_score = 0;
         self.stack[si.next().next().index()].cutoff_count = 0;
+        self.stack[si.next().index()].prior_nmp_fail_high = 0;
 
         let correction_value = self.correction_value(si);
 
@@ -1839,6 +1840,7 @@ impl SearchWorker {
             // Step 10. Null move search with verification search
             if cut_node.is_cut()
                 && self.stack[si.index()].static_eval
+                    + 50 * self.stack[si.index()].prior_nmp_fail_high
                     >= beta - 13 * depth - 47 * i32::from(improving) + 365
                 && excluded_move.is_none()
                 && self.pos.non_pawn_material(us) > 0
@@ -1869,6 +1871,7 @@ impl SearchWorker {
 
                 if null_value >= beta && !is_win(null_value) {
                     if self.nmp_min_ply != Ply::ROOT || depth < 16 {
+                        self.stack[si.index()].prior_nmp_fail_high += 1;
                         return null_value;
                     }
 
@@ -1879,6 +1882,7 @@ impl SearchWorker {
                     let v = self.node::<NonPv>(beta - 1, beta, depth - r, ply, Expect::All, tt, ());
                     self.nmp_min_ply = Ply::ROOT;
                     if v >= beta {
+                        self.stack[si.index()].prior_nmp_fail_high += 1;
                         return null_value;
                     }
                 }
