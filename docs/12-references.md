@@ -177,6 +177,14 @@ tiers:
 | `2226fd0fa`, `d7162e2a4`, `faa89a353`, `56d90a5d4`, `ae8da3b9a`, `1a9a7a785` | **no analogue as written.** Intrinsic folds in the nnz bitset, a trip count gcc takes and clang does not, gcc coalescing an accumulator with its output, gcc rolling a two-trip loop, gcc's final-value pass rebuilding a pointer from a popcount, and eight out-of-line copies of a function gcc declined to inline |
 | `5e97aa312`, aligning `do_move`'s ply pair out of a forwarding stall | **not measurable on the axes here.** It is a store-to-load forwarding stall — a LATENCY win, and an instruction count cannot see one |
 
+**Two entries were closed by MEASURING here rather than by reading the sibling's body**, which
+is the debt a sweep incurs whenever it classifies from prose:
+
+| closed afterwards | how |
+|---|---|
+| `1a9a7a785`, eight out-of-line copies of the dual-magic lane gcc declined to inline | **confirmed absent, from the binary.** The question the commit asks is compiler-independent — does the most-read function in the engine survive as a call? — and only its ANSWER is gcc's. This binary carries no out-of-line slider-lookup symbol at all; the only `attacks` symbol left is `SliderTables::build`, which runs once at startup. Checked rather than assumed |
+| `b896b0292` pointing at the quiet sort, and the sort's OTHER branch | **the sibling's site is not this port's hot one, and neither is takeable.** The ladder carries 156,935 mispredicts against the limit test's 101,478. Both shapes of the replacement are refuted and together they say where the branch actually is — see [08-idiomatic-rust.md](08-idiomatic-rust.md) §17 |
+
 ### What the cache and branch axis says about this port
 
 The sweep's largest finding is not in the sibling's code. `counters` at avx2, both sides on
