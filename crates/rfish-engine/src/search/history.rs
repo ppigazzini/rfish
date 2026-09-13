@@ -204,6 +204,28 @@ impl core::ops::Div<i32> for Bonus {
     }
 }
 
+/// Divide by a power of two, where the value is PROVABLY NON-NEGATIVE.
+///
+/// Not a cheaper division: an exactly equal one, and only under that proof. Rust truncates
+/// toward zero exactly as C++ does, so `x / 2^k` and `x >> k` agree for every non-negative
+/// `x` and disagree for every negative one that the shift does not divide exactly. Writing
+/// the shift is what tells the compiler the sign question is settled -- without it every
+/// such site carries `lea 2^k-1(x); test; cmovns; sar`, three instructions of sign fix ahead
+/// of the shift it was going to emit anyway.
+///
+/// **State the proof at the call site.** The bound that makes a dividend non-negative lives
+/// in the caller -- a `max(0)`, a `min` over a positive affine form, a table with no negative
+/// entry -- and this operator cannot check it. A site whose proof is wrong is a different
+/// engine, which is what `signature` is for.
+impl core::ops::Shr<u32> for Bonus {
+    type Output = Bonus;
+    #[inline(always)]
+    fn shr(self, k: u32) -> Bonus {
+        debug_assert!(self.0 >= 0, "the shift is only the division for a non-negative bonus");
+        Bonus(self.0 >> k)
+    }
+}
+
 impl core::ops::Add<i32> for Bonus {
     type Output = Bonus;
     #[inline(always)]

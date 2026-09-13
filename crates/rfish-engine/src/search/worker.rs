@@ -824,9 +824,15 @@ impl SearchWorker {
             // The malus DECAYS across the list: the moves searched first were the
             // best-ordered, so failing is weaker evidence against them than against the
             // ones the ordering had already given up on.
-            let mut actual_malus = malus * 1159 / 1024;
+            // `malus` is `min(968 * depth - 235, 2244)` at `depth >= 1`, so at least 733:
+            // every step below is a shift because the value cannot be negative, never
+            // because the rounding was not worth keeping. See `Bonus`'s `Shr`.
+            // `malus` is `min(968 * depth - 235, 2244)` at `depth >= 1`, so at least 733:
+            // every step below is a shift because the value cannot be negative, never
+            // because the rounding was not worth keeping. See `Bonus`'s `Shr`.
+            let mut actual_malus = (malus * 1159) >> 10;
             for &mv in quiets_searched {
-                actual_malus = actual_malus * 921 / 1024;
+                actual_malus = (actual_malus * 921) >> 10;
                 self.update_quiet_histories(si, mv, -actual_malus);
             }
         }
@@ -839,13 +845,13 @@ impl SearchWorker {
             && self.pos.captured_piece().is_none()
         {
             let pc = self.pos.piece_on(prev_sq);
-            self.update_continuation_histories(si.back(1), pc, prev_sq, -malus * 713 / 1024);
+            self.update_continuation_histories(si.back(1), pc, prev_sq, -((malus * 713) >> 10));
         }
 
         for &mv in captures_searched {
             let pc = self.pos.moved_piece(mv);
             let captured = self.pos.piece_on(mv.to()).piece_type();
-            self.histories.captures.update(pc, mv.to(), captured, -malus * 1489 / 1024);
+            self.histories.captures.update(pc, mv.to(), captured, -((malus * 1489) >> 10));
         }
     }
 
@@ -2256,7 +2262,9 @@ impl SearchWorker {
 
             self.stack[si.index()].stat_score = if capture {
                 let captured = self.pos.captured_piece();
-                873 * piece_value(captured).get() / 128
+                // No piece value is negative, so the shift is the division -- PARENTHESISED,
+                // because `>>` binds looser than the `+` below it where `/` bound tighter.
+                ((873 * piece_value(captured).get()) >> 7)
                     + self.histories.captures.get(moved_piece, mv.to(), captured.piece_type())
             } else {
                 (2252 * self.histories.main.get(us, mv.raw())
@@ -2487,6 +2495,9 @@ impl SearchWorker {
                 );
             bonus_scale = bonus_scale.max(0);
 
+            // NON-NEGATIVE by both factors: `bonus_scale` is clamped at zero on the line
+            // above, and `min(150 * depth - 85, 1337)` is at least 65 for `depth >= 1`.
+            // That is what lets the three divisions below be shifts.
             let scaled_bonus = (150 * depth - 85).min(1337) * bonus_scale;
 
             let pc = self.pos.piece_on(prev_sq);
@@ -2494,14 +2505,14 @@ impl SearchWorker {
                 si.back(1),
                 pc,
                 prev_sq,
-                Bonus::new(scaled_bonus * 263 / 16384),
+                Bonus::new((scaled_bonus * 263) >> 14),
             );
 
             let prev_move = self.stack[si.back(1).index()].current_move;
             self.histories.main.update(
                 !us,
                 prev_move.raw(),
-                Bonus::new(scaled_bonus * 215 / 32768),
+                Bonus::new((scaled_bonus * 215) >> 15),
             );
 
             if self.pos.piece_on(prev_sq).piece_type() != PieceType::Pawn
@@ -2512,7 +2523,7 @@ impl SearchWorker {
                     pawn_row,
                     pc,
                     prev_sq,
-                    Bonus::new(scaled_bonus * 324 / 8192),
+                    Bonus::new((scaled_bonus * 324) >> 13),
                 );
             }
         } else if let Some(prev_sq) = prev_sq.square()
