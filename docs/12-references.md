@@ -151,6 +151,57 @@ shell gates, 7 Python harnesses and 5 C++ harnesses against this tree's 39 `xtas
 | `instrumented.py`, `match.sh`, `npsab.sh`, `npsthreads.sh`, `perfcounters.sh`, `perfdecomp.sh` | **covered or deliberately absent.** `tsan` and `fuzz` cover the sanitizer half; `perf` and `counters` cover the differential and the cache/branch axes; `match.sh` needs cutechess and a games budget this repository does not spend |
 | `malformed.sh`, `leb128.sh` | **built and DROPPED** at the 2026-08-15 sweep, with the reason recorded above: the fixtures could not be made to fail here |
 
+**The 2026-09-13 sweep took `refish f807db0f2..45b8805e0` — 46 commits, nineteen of them
+`perf(engine)` — and its boundary had to be RE-DERIVED, because refish rebased.** The commit
+the previous sweep stopped at is no longer an ancestor of the branch; `37b74804` still resolves
+in the object store and `git merge-base --is-ancestor` says plainly that it is off the branch.
+The window was recovered by SUBJECT, which is the rule this page already gives for citations:
+the same commit is `f807db0f2` after the rebase. **A sibling SHA is a handle on a branch that
+gets rewritten; the subject is what survives.**
+
+Three candidates were taken, one was refuted by measurement, and the refuted one is the
+interesting result. Every cell is `budget-ab` at 109,269 nodes on both sides, bit-exact, both
+tiers:
+
+| probed, the perf window | verdict |
+|---|---|
+| `0c1a0f2d6`, shifting the eight stats divisions whose dividend cannot be negative | **TAKEN.** avx2 −0.0149%, sse41 −0.0119%. The same eight sites, the same proofs, and the same function. `cmovns` over the whole binary 126 → 110. The rewrite is NOT mechanical: `>>` binds looser than `+` where `/` binds tighter, so one site silently became `873 * pv >> (7 + hist)` and `signature` went red against an anchor that had not moved. `clippy::precedence` names every one of them and is the gate that owns the class |
+| `f529375bd`, the quiet move-count threshold | **TAKEN ON HALF, and the other half REFUTED.** Spelling `(3 + depth * depth) / (2 - improving)` as upstream's shift is −0.0226% avx2 and −0.0367% sse41 — larger here than there, because this port wrote a division by a VALUE and neither compiler can reduce that. refish also HOLDS the value across the move loop and recomputes it at the same two sites that move `depth`; that half is avx2 **+0.0111%** against sse41 −0.0312%, and worse than the shift alone on both. gcc rebuilt the expression from memory and LLVM did not, so what the hoist saves in arithmetic it pays back in a register live across the whole move loop |
+| `264952f88`, bounding the good-quiet walk by depth rather than by the product | **TAKEN, and the largest of the three.** avx2 −0.0308%, sse41 −0.0238%. Worth more here than there: `quiet_sort_limit` SATURATES — `depth` is a caller's value — so the comparison cost an overflow check on top of refish's `imul`, and the derived bound needs neither. The test that decides the stage now proves the replacement over every depth at which the product can be formed |
+| `b896b0292`, scanning the quiet sort's limit four moves at a time | **REFUTED by measurement, on both axes.** avx2 **+0.0885%**, sse41 **+0.1145%**, and the mispredicts it targets did not fall either: `init_quiets` went 311,230 → 323,996 and the program total rose. **refish gets its block for free and this port cannot.** `ExtMove` is eight bytes with `value` in the upper half, so one 256-bit load holds four of them and a mask drops the halves; `ScoredMove` has no guaranteed layout and safe Rust has no slice reinterpretation, so the vector must be BUILT from four scalar score loads. The gather costs more than the branch it removes. See [08-idiomatic-rust.md](08-idiomatic-rust.md) §17 |
+| `949c8eebb`, picking both threat lists by index rather than by branch | **no analogue as stated.** `append_changed_indices_both` chooses between a removed and an added list twice a trip; `collect_diff` here does not have that shape at all — it marks the old set in a bitset and clears bits as the new set is read, so the two data-dependent branches it does have are a membership test, not a list choice. The technique — a flag as an index rather than as a branch — stays available and is not free in safe Rust, because a branchless push needs a cursor into a pre-sized buffer rather than `Vec::push` |
+| `3be968e97`, removing castling's rook before its king | **no analogue.** It removes 5,132 CANCELLING threat pairs a bench, which exist because refish emits a per-move delta list. This port DIFFS the recomputed feature sets, so a pair that cancels is a bit set and cleared in `collect_diff`'s bitset and never reaches a weight row |
+| `c890a5659`, generating the picker's moves into its own slots | **already done by construction.** `MovePicker::generate` writes straight into the worker's `MoveBuf`; there is no `MoveList` to copy out of, and §9 of [08-idiomatic-rust.md](08-idiomatic-rust.md) records why the buffer is owned by the worker |
+| `9c853540b`, bounding the conthist bonus so the clamp folds away | **answered differently, and already landed.** Upstream 47be34c5 put the same six clamps on the hot path here; c7d89ec tables `weight * multiplier` instead, and 14ce57f prices it. refish's answer needs a `u16` table to bound the product and a branch to prove the bonus small |
+| `3bb0d5a33`, `c9adca61e`, `d043c9be3`, `055e137e8` | **no analogue.** Three name frames Ubuntu's gcc guards with `-fstack-protector-strong`, which rustc does not enable and which refish's own clang binary carries none of; the fourth keeps a 2296-byte `MovePicker` off gcc's SLP vectoriser, which raises a stack object's alignment to 32 whatever the source says |
+| `2226fd0fa`, `d7162e2a4`, `faa89a353`, `56d90a5d4`, `ae8da3b9a`, `1a9a7a785` | **no analogue as written.** Intrinsic folds in the nnz bitset, a trip count gcc takes and clang does not, gcc coalescing an accumulator with its output, gcc rolling a two-trip loop, gcc's final-value pass rebuilding a pointer from a popcount, and eight out-of-line copies of a function gcc declined to inline |
+| `5e97aa312`, aligning `do_move`'s ply pair out of a forwarding stall | **not measurable on the axes here.** It is a store-to-load forwarding stall — a LATENCY win, and an instruction count cannot see one |
+
+### What the cache and branch axis says about this port
+
+The sweep's largest finding is not in the sibling's code. `counters` at avx2, both sides on
+`nn-134a887f4c8f`, startup subtracted, 109,269 nodes:
+
+| | rfish | upstream | ratio |
+|---|---|---|---|
+| conditional branches | 106,097,082 | 129,058,644 | **0.822** |
+| conditional mispredicts | 7,162,129 | 4,507,202 | **1.589** |
+| D1 read misses | 43,213,035 | 45,004,108 | 0.960 |
+| L1 icache misses | 5,121,869 | 5,076,043 | 1.009 |
+
+**This port executes 18% FEWER conditional branches than upstream and mispredicts 59% more of
+them.** Cache is at parity or better on both levels, so the gap is prediction and not locality
+— which is why the sibling's branch-shaped commits are the right family to mine here, and why
+an instruction count alone would have said the opposite.
+
+Where those mispredicts are, by symbol, from `--branch-sim=yes` over `bench 16 1 8`:
+`leb128_i16_groups` carries **57.7%** of every mispredict the process pays, and every one of
+them is at STARTUP, decoding the net. That door is already closed by measurement — §11 of
+[08-idiomatic-rust.md](08-idiomatic-rust.md) records the eight-byte-window rewrite refuted
+twice on the instruction axis — and the branch view does not reopen it, because the instruction
+cost of the fix was the reason it was refused. The search-side mispredicts sit in `transform`,
+`propagate`, `node`, `init_quiets` and `do_move_recording`'s threat walk, in that order.
+
 **A window that is almost all perf commits is swept by MEASURING, and the tier split is the
 instrument.** The 2026-08-29 sweep took `refish b10fcef5..37b74804` — 30 commits, seventeen of
 them `perf(engine)`. The compiler-guard rule from the previous sweep could not screen them:
