@@ -33,6 +33,16 @@ pub struct TimeManagement {
     use_nodes_time: bool,
     /// Nodes left in the game under `nodestime`; negative means "not yet initialised".
     available_nodes: i64,
+    /// The `movestogo` the PREVIOUS move was given, so a cycle boundary can be recognised.
+    ///
+    /// A control that names its remaining moves counts DOWN, so the count going back up is
+    /// the only signal that a new cycle's time has been added to the clock.
+    previous_moves_to_go: i32,
+    /// What one cycle of a cyclic control is worth in nodes, under `nodestime`.
+    ///
+    /// Derived once, from the first move's clock WITHOUT its increment, because that first
+    /// clock already includes one.
+    cyclic_budget: i64,
     /// The first move's time-left factor, held for the rest of the game; negative means
     /// "not yet computed".
     original_time_adjust: f64,
@@ -46,6 +56,8 @@ impl Default for TimeManagement {
             maximum: TimeManagement::NO_BOUND,
             use_nodes_time: false,
             available_nodes: -1,
+            previous_moves_to_go: 0,
+            cyclic_budget: 0,
             original_time_adjust: -1.0,
         }
     }
@@ -66,6 +78,7 @@ impl TimeManagement {
     /// Forget the whole-game state. Called on `ucinewgame`.
     pub fn clear(&mut self) {
         self.available_nodes = -1;
+        self.previous_moves_to_go = 0;
         self.original_time_adjust = -1.0;
     }
 
@@ -147,14 +160,29 @@ impl TimeManagement {
 
         let mut move_overhead = opts.move_overhead as i64;
         let mut inc = limits.inc[side] as i64;
+        // Read before the `nodestime` conversion below, which needs it to tell a new cycle
+        // from a countdown within one.
+        let movestogo = limits.moves_to_go.unwrap_or(0) as i32;
 
         // WARNING: to avoid losing on time, the `nodestime` value must be well BELOW the
         // engine's real speed. It is a budget the search is held to, not a measurement.
         if self.use_nodes_time {
             if self.available_nodes < 0 {
-                // Once, at the start of the game.
+                // Once, at the start of the game. The first clock a cyclic control gives
+                // already includes one increment, so a cycle is worth the clock WITHOUT it.
                 self.available_nodes = npmsec.saturating_mul(time);
+                self.cyclic_budget = npmsec.saturating_mul(time.saturating_sub(inc));
+            } else if movestogo > 0
+                && movestogo > self.previous_moves_to_go
+                && self.cyclic_budget > 0
+            {
+                // A `movestogo` that went UP is a new cycle: the GUI has added its time to
+                // the real clock, and nothing else would have told the node budget. Without
+                // this the budget is the FIRST cycle's, spread over the whole game.
+                self.available_nodes = self.available_nodes.saturating_add(self.cyclic_budget);
             }
+            self.previous_moves_to_go = movestogo;
+
             time = self.available_nodes;
             inc = inc.saturating_mul(npmsec);
             move_overhead = move_overhead.saturating_mul(npmsec);
@@ -176,7 +204,6 @@ impl TimeManagement {
         // rather than misbehaving — a different wrong answer to the same defect.
         let scaled_time = (time / scale_factor).max(1);
 
-        let movestogo = limits.moves_to_go.unwrap_or(0) as i32;
         let mut mtg = if movestogo != 0 { movestogo.min(50) } else { 50 };
 
         // Under a second, taper the horizon: planning fifty more moves out of 800 ms
@@ -359,6 +386,51 @@ mod tests {
         // is not, which is what makes the exemption the condition and not the branch.
         assert_eq!(plan(60_000, 240_000, Some(1)), plan(60_000, 60_000, Some(1)));
         assert!(plan(60_000, 240_000, Some(2)) < plan(60_000, 60_000, Some(2)));
+    }
+
+    /// A cyclic control refills the NODE budget when the cycle rolls over.
+    ///
+    /// Under `nodestime` the whole-game budget is derived once, from the first clock. A
+    /// cyclic control hands the engine a fresh clock every cycle and the node budget is the
+    /// only thing that would not hear about it, so without a refill every cycle after the
+    /// first is played out of the first one's nodes. The signal is `movestogo` going back
+    /// UP: within a cycle it counts down.
+    ///
+    /// A pure function, as every reproducer in this class must be.
+    #[test]
+    fn a_new_cycle_refills_the_node_budget_under_nodestime() {
+        const NPMSEC: i64 = 600;
+        const CLOCK: i64 = 60_000;
+        let opts = SearchOptions { nodestime: NPMSEC as u64, ..SearchOptions::default() };
+        let go = |tm: &mut TimeManagement, mtg: u32| {
+            let mut l = Limits {
+                time: [Some(CLOCK as u64), Some(CLOCK as u64)],
+                moves_to_go: Some(mtg),
+                start: Some(Instant::now()),
+                ..Limits::default()
+            };
+            tm.init(&mut l, Color::White, GamePly::new(1), &opts);
+        };
+
+        let mut tm = TimeManagement::default();
+        go(&mut tm, 40);
+        assert_eq!(tm.available_nodes, NPMSEC * CLOCK, "the game budget is the clock, in nodes");
+
+        tm.advance_nodes_time(NPMSEC * CLOCK / 2);
+        go(&mut tm, 39);
+        assert_eq!(tm.available_nodes, NPMSEC * CLOCK / 2, "a countdown adds nothing");
+
+        go(&mut tm, 40);
+        assert_eq!(
+            tm.available_nodes,
+            NPMSEC * CLOCK / 2 + NPMSEC * CLOCK,
+            "the rollover is worth one cycle"
+        );
+
+        // And `ucinewgame` forgets the boundary as well as the budget, so the first move of
+        // the next game cannot read the last move of this one as a rollover.
+        tm.clear();
+        assert_eq!(tm.previous_moves_to_go, 0);
     }
 
     /// A node budget spent down to nothing still budgets a move rather than infinity.

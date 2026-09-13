@@ -157,9 +157,11 @@ already accounts for most of the tree — its `effort` — has little left that 
 it, so it sells time too. The product is clamped by the maximum, always.
 
 The manager outlives one move, which is why it lives on the pool rather than in a worker.
-Two of its fields are whole-game state: the `nodestime` node budget is spent across the
-game, and the time-left factor is derived on the first move and reused. `ucinewgame` clears
-both.
+Several of its fields are whole-game state: the `nodestime` node budget is spent across the
+game, the `movestogo` of the previous move marks where one cycle of a cyclic control ended,
+and the time-left factor is derived on the first move and reused. `ucinewgame` clears them.
+What a cycle is WORTH is not cleared — it is re-derived with the budget itself, from the
+first clock of the next game.
 
 **Under `nodestime` the clock is not a clock.** The remaining time, the increment and the
 move overhead are all multiplied into node counts, and the search is measured against nodes
