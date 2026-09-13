@@ -159,19 +159,35 @@ impl MoveSink for MoveBuf {
 /// Quiet moves scoring at or below this are deferred behind the bad captures.
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
 
+/// How steeply the quiet sort's limit falls with depth.
+const QUIET_SORT_SLOPE: i32 = 3560;
+
 /// The quiet sort's limit, for a list generated at `depth`.
 ///
 /// Saturating because `depth` is a caller's value and the product is not otherwise bounded.
 fn quiet_sort_limit(depth: i32) -> i32 {
-    -3560i32.saturating_mul(depth)
+    -QUIET_SORT_SLOPE.saturating_mul(depth)
 }
 
-/// True when the quiet sort's limit is at or below `threshold`, so the sorted prefix runs
-/// out before the threshold does and a walk may stop at the first move that fails it.
+/// The first depth at which the sort's limit reaches [`GOOD_QUIET_THRESHOLD`].
 ///
-/// See [`MovePicker::select_while_above`], which this decides.
-fn sorted_past(depth: i32, threshold: i32) -> bool {
-    quiet_sort_limit(depth) <= threshold
+/// **DERIVED from the two constants, never written down.** The stage only ever COMPARES the
+/// limit with the threshold, so the comparison is a bound on depth and nothing else:
+/// `-3560 * d <= -14000` is `3560 * d >= 14000` is `d >= ceil(14000 / 3560)`. Computing it
+/// here makes the comparison a `cmp` against an immediate instead of a saturating multiply
+/// on every dispatch that reaches the good-quiet stage, and a sync that moves either tuned
+/// number moves this with them.
+const SORTED_PAST_DEPTH: i32 = (-GOOD_QUIET_THRESHOLD + QUIET_SORT_SLOPE - 1) / QUIET_SORT_SLOPE;
+
+/// True when the quiet sort's limit is at or below [`GOOD_QUIET_THRESHOLD`], so the sorted
+/// prefix runs out before the threshold does and a walk may stop at the first move that
+/// fails it.
+///
+/// See [`MovePicker::select_while_above`], which this decides, and
+/// [`tests::good_quiets_are_sorted_past_the_threshold`], which holds it to the product form
+/// it replaces at every depth an `i32` can carry the product at.
+fn sorted_past(depth: i32) -> bool {
+    depth >= SORTED_PAST_DEPTH
 }
 
 /// Sort every entry descending — [`partial_insertion_sort`] with a limit nothing can fail.
@@ -510,7 +526,7 @@ impl MovePicker {
         buf: &MoveBuf,
         threshold: i32,
     ) -> Option<Move> {
-        if !sorted_past(self.depth, threshold) {
+        if !sorted_past(self.depth) {
             return self.select(pos, buf, |sm, _| sm.score > threshold);
         }
         while self.cur < self.end_cur {
@@ -697,7 +713,7 @@ mod tests {
     fn good_quiets_are_sorted_past_the_threshold() {
         for depth in 1..=3 {
             assert!(
-                !sorted_past(depth, GOOD_QUIET_THRESHOLD),
+                !sorted_past(depth),
                 "at depth {depth} the limit is {} and a TAIL move can still outscore {}",
                 quiet_sort_limit(depth),
                 GOOD_QUIET_THRESHOLD
@@ -705,15 +721,25 @@ mod tests {
         }
         for depth in 4..=64 {
             assert!(
-                sorted_past(depth, GOOD_QUIET_THRESHOLD),
+                sorted_past(depth),
                 "at depth {depth} the limit is {}, so nothing below the threshold can follow \
                  something above it",
                 quiet_sort_limit(depth)
             );
         }
-        // The limit saturates rather than wrapping, so a caller's depth cannot invert the
-        // test by overflowing the product.
-        assert!(sorted_past(i32::MAX, GOOD_QUIET_THRESHOLD));
+        // The derived bound IS the product comparison, at every depth the product can be
+        // formed at -- which is what makes replacing one with the other a spelling rather
+        // than a retune. Beyond it the product saturates, so a caller's depth cannot invert
+        // the test by overflowing it either.
+        for depth in i32::MIN / QUIET_SORT_SLOPE..=i32::MAX / QUIET_SORT_SLOPE {
+            assert_eq!(
+                sorted_past(depth),
+                quiet_sort_limit(depth) <= GOOD_QUIET_THRESHOLD,
+                "the derived depth bound and the product disagree at depth {depth}"
+            );
+        }
+        assert!(sorted_past(i32::MAX));
+        assert!(!sorted_past(i32::MIN));
     }
 
     /// The stage yields exactly the moves `select` would, on a list the sort has arranged.
