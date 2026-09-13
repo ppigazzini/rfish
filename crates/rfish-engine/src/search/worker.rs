@@ -1804,7 +1804,11 @@ impl SearchWorker {
 
             // Step 8. Razoring. So far below alpha that the full search is very unlikely to
             // recover; ask quiescence instead, which is far cheaper.
-            if !N::PV && eval < alpha - 482 * depth * depth {
+            //
+            // Never under a mate hunt. The margin is a claim about MATERIAL -- a position
+            // this far behind will not climb back to alpha -- and a forced mate owes nothing
+            // to material, so skipping the full search is how the line is lost.
+            if !N::PV && eval < alpha - 482 * depth && !seek_mate {
                 return self.qsearch::<NonPv>(alpha, beta, ply, tt);
             }
 
