@@ -743,6 +743,12 @@ pub struct StackEntry {
     /// The reduction applied to the child currently being searched, read back by that
     /// child as `priorReduction` to undo an over-reduction in hindsight.
     pub reduction: i32,
+    /// How many null-move searches have already failed high at this ply.
+    ///
+    /// Counted across the SIBLINGS at one ply, not down the tree: the parent zeroes it on
+    /// entry and every fail high at this ply adds to it, so a ply that keeps refuting moves
+    /// with a pass raises its own null-move threshold.
+    pub prior_nmp_fail_high: i32,
     /// The move being searched at this ply.
     pub current_move: Move,
     /// Which move was excluded by a singular-extension search, or [`Move::NONE`].
@@ -786,6 +792,7 @@ impl Default for StackEntry {
             follow_pv: false,
             cutoff_count: 0,
             reduction: 0,
+            prior_nmp_fail_high: 0,
             stat_score: 0,
             continuation: ContKey::UNREAD,
             continuation_correction: CorrKey::UNREAD,
