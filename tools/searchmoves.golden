@@ -1,20 +1,19 @@
 rfish 0.1.0 by the Stockfish developers (see AUTHORS)
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 30 nodes 2 tbhits 0 pv d2d4
-info depth 2 seldepth 3 multipv 1 score cp 26 nodes 44 tbhits 0 pv d2d4 d7d6
-info depth 3 seldepth 4 multipv 1 score cp 28 nodes 57 tbhits 0 pv d2d4 d7d6 c2c3
-info depth 4 seldepth 6 multipv 1 score cp 23 nodes 328 tbhits 0 pv e2e4 g8f6 b1c3 c7c5
-bestmove e2e4 ponder g8f6
+info depth 1 seldepth 2 multipv 1 score cp 35 nodes 2 tbhits 0 pv d2d4
+info depth 2 seldepth 3 multipv 1 score cp 55 nodes 11 tbhits 0 pv d2d4
+info depth 3 seldepth 2 multipv 1 score cp 55 nodes 14 tbhits 0 pv d2d4
+info depth 4 seldepth 4 multipv 1 score cp 24 nodes 225 tbhits 0 pv d2d4 d7d5 g1f3
+bestmove d2d4 ponder d7d5
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 23 nodes 2 tbhits 0 pv e2e4
-info depth 2 seldepth 3 multipv 1 score cp 23 nodes 7 tbhits 0 pv e2e4 g8f6
-info depth 3 seldepth 4 multipv 1 score cp 23 nodes 33 tbhits 0 pv e2e4 g8f6 b1c3
-info depth 4 seldepth 5 multipv 1 score cp 35 nodes 98 tbhits 0 pv e2e4
-info depth 4 seldepth 5 multipv 1 score cp 35 nodes 98 tbhits 0 pv e2e4 g8f6
-bestmove e2e4 ponder g8f6
+info depth 1 seldepth 4 multipv 1 score cp 24 nodes 8 tbhits 0 pv d2d4 d7d5 g1f3
+info depth 2 seldepth 3 multipv 1 score cp 24 nodes 12 tbhits 0 pv d2d4 d7d5
+info depth 3 seldepth 4 multipv 1 score cp 24 nodes 21 tbhits 0 pv d2d4 d7d5 g1f3
+info depth 4 seldepth 5 multipv 1 score cp 23 nodes 109 tbhits 0 pv d2d4 d7d5 g1f3 c7c6
+bestmove d2d4 ponder d7d5
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 35 nodes 2 tbhits 0 pv e2e4
-info depth 2 seldepth 3 multipv 1 score cp 33 nodes 18 tbhits 0 pv e2e4 c7c5
-info depth 3 seldepth 3 multipv 1 score cp 33 nodes 24 tbhits 0 pv e2e4 c7c5
-info depth 4 seldepth 10 multipv 1 score cp 29 nodes 298 tbhits 0 pv e2e4 d7d5 e4d5 d8d5
-bestmove e2e4 ponder d7d5
+info depth 1 seldepth 2 multipv 1 score cp 23 nodes 2 tbhits 0 pv d2d4
+info depth 2 seldepth 3 multipv 1 score cp 23 nodes 15 tbhits 0 pv e2e4
+info depth 3 seldepth 6 multipv 1 score cp 18 nodes 96 tbhits 0 pv d2d4 d7d5 c1f4 g8f6
+info depth 4 seldepth 5 multipv 1 score cp 18 nodes 126 tbhits 0 pv d2d4 d7d5 c1f4 g8f6
+bestmove d2d4 ponder d7d5
