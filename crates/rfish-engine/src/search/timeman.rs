@@ -217,7 +217,7 @@ impl TimeManagement {
             .saturating_sub(move_overhead.saturating_mul(2 + i64::from(mtg)))
             .max(1);
 
-        let (opt_scale, max_scale);
+        let (mut opt_scale, max_scale);
         if movestogo == 0 {
             // x basetime (+ z increment).
             if self.original_time_adjust < 0.0 {
@@ -239,6 +239,27 @@ impl TimeManagement {
             opt_scale = ((0.88 + f64::from(ply.get()) / 116.4) / f64::from(mtg))
                 .min(0.88 * time as f64 / time_left as f64);
             max_scale = 1.3 + 0.11 * f64::from(mtg);
+        }
+
+        // Spend less when BEHIND on the clock, in proportion to how far behind. The factor
+        // is one when ahead and falls toward 0.1 as the deficit approaches the whole clock,
+        // so the side in trouble plays faster and stops converting a time deficit into a
+        // lost game.
+        //
+        // Two controls are excluded, and upstream says plainly that neither exclusion is
+        // optional. Under `nodestime` the opponent's budget is not derivable -- the number
+        // on their clock is milliseconds and ours is nodes, so the difference means nothing.
+        // And on the LAST move of a cycle the opponent's clock may already carry the next
+        // cycle's increment while ours does not, which reads as a deficit that is not one
+        // and hurries the move that can least afford it.
+        if !self.use_nodes_time && movestogo != 1 {
+            // Signed, and read back through `i64` rather than the `u64` the field holds: a
+            // negative clock is a real state here -- see the `time` binding above -- and the
+            // whole content of this term is the sign of a difference.
+            let ours = time as f64;
+            let theirs = limits.time[(!us).index()].map_or(0, |t| t as i64) as f64;
+            let time_advantage = (ours - theirs) / (1.0 + ours + theirs);
+            opt_scale *= 1.0 + 0.9 * time_advantage.min(0.0);
         }
 
         self.optimum = (opt_scale * time_left as f64).max(1.0) as i64;
@@ -305,6 +326,39 @@ mod tests {
         assert!(tm.budget().maximum() < Elapsed::new(TimeManagement::NO_BOUND));
         tm.init(&mut limits, Color::White, GamePly::new(21), &SearchOptions::default());
         assert_eq!(tm.budget().maximum(), Elapsed::new(TimeManagement::NO_BOUND));
+    }
+
+    /// A clock DEFICIT spends less; a clock surplus spends no more.
+    ///
+    /// The term is one-sided by construction — `min(advantage, 0)` — so the engine hurries
+    /// when behind and never dawdles when ahead. The cyclic exemption is the half that is
+    /// easy to drop: on the last move before the control the opponent's clock may already
+    /// carry the next cycle's increment while ours does not, so the deficit it reports is an
+    /// artefact and hurrying for it is what loses the game.
+    ///
+    /// A pure function, as every reproducer in this class must be.
+    #[test]
+    fn a_clock_deficit_lowers_the_budget_and_a_surplus_does_not_raise_it() {
+        let plan = |ours: u64, theirs: u64, mtg: Option<u32>| {
+            let mut l = Limits {
+                time: [Some(ours), Some(theirs)],
+                moves_to_go: mtg,
+                start: Some(Instant::now()),
+                ..Limits::default()
+            };
+            let mut tm = TimeManagement::default();
+            tm.init(&mut l, Color::White, GamePly::new(20), &SearchOptions::default());
+            tm.budget().optimum()
+        };
+
+        let level = plan(60_000, 60_000, None);
+        assert!(plan(60_000, 240_000, None) < level, "a deficit must spend less");
+        assert_eq!(plan(60_000, 10_000, None), level, "a surplus must not spend more");
+
+        // movestogo 1 is exempt, and movestogo 2 -- one move earlier in the same control --
+        // is not, which is what makes the exemption the condition and not the branch.
+        assert_eq!(plan(60_000, 240_000, Some(1)), plan(60_000, 60_000, Some(1)));
+        assert!(plan(60_000, 240_000, Some(2)) < plan(60_000, 60_000, Some(2)));
     }
 
     /// A node budget spent down to nothing still budgets a move rather than infinity.
