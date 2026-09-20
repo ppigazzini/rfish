@@ -1718,78 +1718,86 @@ impl SearchWorker {
             depth -= 1;
         }
 
-        // Step 6. At non-N::PV nodes a stored score searched deep enough, whose bound is on
-        // the right side of the window, answers the node outright.
+        // Step 6. At non-N::PV nodes a stored score searched deep enough either answers the
+        // node outright or has its entry penalised, depending on which side of the window
+        // its bound sits on. Both outcomes need the same four preconditions, so they share
+        // one guard -- which is also what says the penalty is only ever considered where the
+        // depth criteria for a cutoff were already met.
         if !N::PV
             && excluded_move.is_none()
-            && tt_depth > depth - i32::from(tt_value <= beta)
             && is_valid(tt_value)
-            && match tt_bound {
+            && tt_depth > depth - i32::from(tt_value <= beta)
+        {
+            // Case A. The bound is on the right side of the window, so the entry can cut.
+            if match tt_bound {
                 Bound::Exact => true,
                 Bound::Lower => tt_value >= beta,
                 Bound::Upper => tt_value < beta,
                 Bound::None => false,
-            }
-            && (cut_node.is_cut() == (tt_value >= beta) || depth > 4)
-        {
-            if tt_move.is_some() && tt_value >= beta {
-                if !tt_capture {
-                    self.update_quiet_histories(si, tt_move, Bonus::new(131 * depth));
+            } && (cut_node.is_cut() == (tt_value >= beta) || depth > 4)
+            {
+                if tt_move.is_some() && tt_value >= beta {
+                    if !tt_capture {
+                        self.update_quiet_histories(si, tt_move, Bonus::new(131 * depth));
+                    }
+                    if let Some(prev_sq) = prev_sq.square()
+                        && self.stack[si.back(1).index()].move_count < 5
+                        && !prior_capture
+                    {
+                        let pc = self.pos.piece_on(prev_sq);
+                        self.update_continuation_histories(
+                            si.back(1),
+                            pc,
+                            prev_sq,
+                            Bonus::new(-2210),
+                        );
+                    }
                 }
-                if let Some(prev_sq) = prev_sq.square()
-                    && self.stack[si.back(1).index()].move_count < 5
-                    && !prior_capture
-                {
-                    let pc = self.pos.piece_on(prev_sq);
-                    self.update_continuation_histories(si.back(1), pc, prev_sq, Bonus::new(-2210));
-                }
-            }
 
-            // A high halfmove clock is where the transposition table and the fifty-move
-            // rule disagree: the same position is a different game depending on how much
-            // clock is left, and the table cannot express that.
-            if self.pos.rule50_count() < 96 {
-                if depth >= 7
-                    && tt_move.is_some()
-                    && self.pos.pseudo_legal(tt_move)
-                    && self.pos.legal(tt_move)
-                    && !is_decisive(tt_value)
-                {
-                    // Verify that the position AFTER the transposition move also cuts off.
-                    // A cutoff that survives one move is far less likely to be an artefact
-                    // of the table than one that does not.
-                    self.pos.do_move(tt_move);
-                    let next = tt.probe(self.pos.key());
-                    let next_value = next.data.value;
-                    let next_hit = next.hit;
-                    self.pos.undo_move(tt_move);
+                // A high halfmove clock is where the transposition table and the fifty-move
+                // rule disagree: the same position is a different game depending on how much
+                // clock is left, and the table cannot express that.
+                if self.pos.rule50_count() < 96 {
+                    if depth >= 7
+                        && tt_move.is_some()
+                        && self.pos.pseudo_legal(tt_move)
+                        && self.pos.legal(tt_move)
+                        && !is_decisive(tt_value)
+                    {
+                        // Verify that the position AFTER the transposition move also cuts
+                        // off. A cutoff that survives one move is far less likely to be an
+                        // artefact of the table than one that does not.
+                        self.pos.do_move(tt_move);
+                        let next = tt.probe(self.pos.key());
+                        let next_value = next.data.value;
+                        let next_hit = next.hit;
+                        self.pos.undo_move(tt_move);
 
-                    if !next_hit || !is_valid(next_value) {
+                        if !next_hit || !is_valid(next_value) {
+                            return tt_value;
+                        }
+                        if (tt_value >= beta) == (-next_value >= beta) {
+                            return tt_value;
+                        }
+                    } else {
                         return tt_value;
                     }
-                    if (tt_value >= beta) == (-next_value >= beta) {
-                        return tt_value;
-                    }
-                } else {
-                    return tt_value;
                 }
             }
-        } else if !N::PV
-            && excluded_move.is_none()
-            && tt_depth > depth - i32::from(tt_value <= beta)
-            && is_valid(tt_value)
-            && tt_bound != Bound::Exact
-            && match tt_bound {
-                Bound::Upper => tt_value >= beta,
-                Bound::Lower => tt_value < beta,
-                _ => false,
+            // Case B. No cutoff, but the depth was sufficient. The entry is not wrong, but
+            // its bound sits on the useless side of this window and it is occupying a deep
+            // slot. Penalise it so the slot can be reclaimed by one that would answer
+            // something.
+            else if tt_bound != Bound::Exact
+                && match tt_bound {
+                    Bound::Upper => tt_value >= beta,
+                    Bound::Lower => tt_value < beta,
+                    _ => false,
+                }
+                && depth > 5
+            {
+                tt.penalize(probe, 1);
             }
-            && depth > 5
-        {
-            // The entry is not wrong, but its bound sits on the useless side of this
-            // window and it is occupying a deep slot. Penalise it so the slot can be
-            // reclaimed by an entry that would answer something.
-            tt.penalize(probe, 1);
         }
 
         // Step 7. Tablebases probe
