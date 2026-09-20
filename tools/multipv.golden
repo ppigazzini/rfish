@@ -9,13 +9,13 @@ info depth 2 seldepth 3 multipv 3 score cp 2 wdl 20 963 17 nodes 393 tbhits 0 pv
 info depth 3 seldepth 2 multipv 1 score cp 82 wdl 330 669 1 nodes 635 tbhits 0 pv g8f6
 info depth 3 seldepth 2 multipv 2 score cp 4 wdl 22 962 16 nodes 635 tbhits 0 pv g8h6
 info depth 3 seldepth 3 multipv 3 score cp 2 wdl 20 963 17 nodes 635 tbhits 0 pv d8f6
-info depth 4 seldepth 7 multipv 1 score cp 32 wdl 63 932 5 nodes 1857 tbhits 0 pv g8f6 c2c3 d7d5 c4d5 f6d5 e4d5
-info depth 4 seldepth 8 multipv 2 score cp 1 wdl 19 963 18 nodes 1857 tbhits 0 pv f7f5 e4f5
-info depth 4 seldepth 6 multipv 3 score cp -16 wdl 10 956 34 nodes 1857 tbhits 0 pv d8f6 d2d3 c6d4
-info depth 5 seldepth 7 multipv 1 score cp 40 wdl 83 913 4 nodes 3854 tbhits 0 pv f7f5 e4f5 g8f6 d2d3
-info depth 5 seldepth 11 multipv 2 score cp -28 wdl 6 940 54 nodes 3854 tbhits 0 pv d8f6 c2c3 f6f3 g1f3 g8f6
-info depth 5 seldepth 8 multipv 3 score cp -35 wdl 5 924 71 nodes 3854 tbhits 0 pv d8e7 c2c3 e7f6 d2d3 f6f3 g1f3
-info depth 6 seldepth 7 multipv 1 score cp 15 wdl 33 957 10 nodes 4169 tbhits 0 pv f7f5 e4f5 g8f6 g1e2
-info depth 6 seldepth 6 multipv 2 score cp -22 wdl 8 949 43 nodes 4169 tbhits 0 pv d8f6 c2c3 f6f3 g1f3 g8f6
-info depth 6 seldepth 7 multipv 3 score cp -32 wdl 5 932 63 nodes 4169 tbhits 0 pv d8e7 c2c3 g8f6
+info depth 4 seldepth 7 multipv 1 score cp 32 wdl 63 932 5 nodes 1856 tbhits 0 pv g8f6 c2c3 d7d5 c4d5 f6d5 e4d5
+info depth 4 seldepth 8 multipv 2 score cp 1 wdl 19 963 18 nodes 1856 tbhits 0 pv f7f5 e4f5
+info depth 4 seldepth 6 multipv 3 score cp -16 wdl 10 956 34 nodes 1856 tbhits 0 pv d8f6 d2d3 c6d4
+info depth 5 seldepth 7 multipv 1 score cp 40 wdl 83 913 4 nodes 3851 tbhits 0 pv f7f5 e4f5 g8f6 d2d3
+info depth 5 seldepth 11 multipv 2 score cp -28 wdl 6 940 54 nodes 3851 tbhits 0 pv d8f6 c2c3 f6f3 g1f3 g8f6
+info depth 5 seldepth 8 multipv 3 score cp -35 wdl 5 924 71 nodes 3851 tbhits 0 pv d8e7 c2c3 e7f6 d2d3 f6f3 g1f3
+info depth 6 seldepth 7 multipv 1 score cp 15 wdl 33 957 10 nodes 4166 tbhits 0 pv f7f5 e4f5 g8f6 g1e2
+info depth 6 seldepth 6 multipv 2 score cp -22 wdl 8 949 43 nodes 4166 tbhits 0 pv d8f6 c2c3 f6f3 g1f3 g8f6
+info depth 6 seldepth 7 multipv 3 score cp -32 wdl 5 932 63 nodes 4166 tbhits 0 pv d8e7 c2c3 g8f6
 bestmove f7f5 ponder e4f5
