@@ -2302,10 +2302,11 @@ impl SearchWorker {
             // Apply the computed reduction.
             if depth >= 2 && move_count > 1 {
                 // Cap the reduced depth at `newDepth`, but allow a NEGATIVE reduction to
-                // extend a little beyond it. Written as nested min/max rather than a clamp
-                // because the upper bound can fall below the lower one, which a clamp
-                // treats as a programming error rather than as the intended behaviour.
-                let d = (new_depth - r / 1024).min(new_depth + 2).max(1) + i32::from(N::PV);
+                // extend a little beyond it. Withdraw that extension once the node sits
+                // deep relative to `root_depth`: an uninterrupted chain of them otherwise
+                // runs the search to MAX_PLY.
+                let extension = if ply.get() < 2 * self.root_depth { 2 } else { 0 };
+                let d = (new_depth + (-r / 1024).min(extension)).max(1) + i32::from(N::PV);
 
                 self.stack[si.index()].reduction = new_depth - d;
                 value =
