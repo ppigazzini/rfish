@@ -72,14 +72,15 @@ const SEARCHED_LIST_CAPACITY: usize = 32;
 /// in milliseconds, and some GUIs hang when flooded with updates that fast.
 const NODES_LIMIT_OUTPUT: u64 = 10_000_000;
 
-/// The divisor the late-move reduction applies to a move's history score, by depth.
+/// The divisor the late-move reduction applies to a move's history score, at `depth`.
 ///
-/// Indexed by `min(depth, 16) - 1`. The values are not monotonic, and that is not a
-/// transcription error: they are fitted, and the shape they encode is what makes the same
-/// history score mean different things at different depths.
-const LMR_DIVISOR: [i32; 16] = [
-    3637, 2787, 2761, 2939, 3171, 3347, 3147, 2762, 2772, 3106, 3107, 3060, 3112, 2991, 3090, 3542,
-];
+/// A parabola in the depth, minimised at 8 and saturating at 16, which replaces the fitted
+/// sixteen-entry table it was distilled from. Lower divisors generally scale well, so the
+/// curve is what makes the same history score mean different things at different depths.
+fn lmr_divisor(depth: i32) -> i32 {
+    let d = depth.min(16);
+    3000 + 7 * (d - 8) * (d - 8)
+}
 
 /// Interpolate `y0..y1` linearly over `x0..x1`, without clamping to the ends.
 ///
@@ -2115,7 +2116,6 @@ impl SearchWorker {
                         continue;
                     }
                 } else if !self.stack[si.index()].follow_pv || !N::PV {
-                    let d_index = (depth.min(LMR_DIVISOR.len() as i32) - 1) as usize;
                     let pawn_row = super::history::PawnHistory::row(self.pos.st().pawn_key);
                     let mut history = self.histories.continuation.get(
                         self.stack[si.back(1).index()].continuation,
@@ -2132,7 +2132,7 @@ impl SearchWorker {
                     }
 
                     history += 69 * self.histories.main.get(us, mv.raw()) / 32;
-                    lmr_depth += history / LMR_DIVISOR[d_index];
+                    lmr_depth += history / lmr_divisor(depth);
 
                     let futility_value = self.stack[si.index()].static_eval
                         + 119 * lmr_depth
