@@ -585,7 +585,7 @@ impl SearchWorker {
         let cntcv = if m.is_ok() {
             let to = m.to();
             let pc = self.pos.piece_on(to);
-            8761 * (h.continuation_correction.get(
+            7885 * (h.continuation_correction.get(
                 self.stack[si.back(2).index()].continuation_correction,
                 pc,
                 to,
@@ -593,12 +593,17 @@ impl SearchWorker {
                 self.stack[si.back(4).index()].continuation_correction,
                 pc,
                 to,
-            ))
+            )) + 6307
+                * h.continuation_correction.get(
+                    self.stack[si.back(6).index()].continuation_correction,
+                    pc,
+                    to,
+                )
         } else {
-            64049
+            80695
         };
 
-        15341 * pcv + 10569 * micv + 12906 * (wnpcv + bnpcv) + cntcv
+        13806 * pcv + 9512 * micv + 11615 * (wnpcv + bnpcv) + cntcv
     }
 
     /// Apply the correction to a raw static evaluation.
@@ -642,12 +647,14 @@ impl SearchWorker {
         if m.is_ok() {
             let to = m.to();
             let pc = self.pos.piece_on(to);
-            let (p2, p4) = (
+            let (p2, p4, p6) = (
                 self.stack[si.back(2).index()].continuation_correction,
                 self.stack[si.back(4).index()].continuation_correction,
+                self.stack[si.back(6).index()].continuation_correction,
             );
             self.histories.continuation_correction.update(p2, pc, to, bonus * 130 / 128);
             self.histories.continuation_correction.update(p4, pc, to, bonus * 70 / 128);
+            self.histories.continuation_correction.update(p6, pc, to, bonus * 35 / 128);
         }
     }
 
