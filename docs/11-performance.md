@@ -528,4 +528,3 @@ that a push lane cannot afford.
 | `perf` | the interleaved paired wall clock, reported as a median ratio with its spread | this page |
 | `fingerprint` | rfish still reaches its answer by CALLING what upstream calls, as often | this page |
 | `signature` | that both sides searched the same tree, without which every figure above is void | [10-tooling-ci.md](10-tooling-ci.md) |
-
