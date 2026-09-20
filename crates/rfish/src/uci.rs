@@ -1020,7 +1020,7 @@ impl Engine {
                 settings.push(name);
             }
         }
-        // `rustc 1.99.0-nightly (abc 2026-07-29)` -> `1.99.0-nightly`, which is what
+        // `rustc 1.100.0-nightly (abc 2026-09-19)` -> `1.100.0-nightly`, which is what
         // upstream's `__VERSION__` field carries: the version and nothing else.
         let version = env!("RFISH_RUSTC").split_whitespace().nth(1).unwrap_or("unknown");
 

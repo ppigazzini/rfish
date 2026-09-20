@@ -66,6 +66,23 @@ inline_always = "allow"
 # count; make the debug/test build trap on it instead of matching upstream by
 # luck. `overflow-checks` below is what enforces it.
 verbose_bit_mask = "allow"
+# Both of these arrived with a newer clippy and fire on code that did not
+# change, which is what decides them: they are a lint's new opinion, not a new
+# defect.
+#
+# `needless_range_loop` wants `.iter().enumerate()` where this port indexes.
+# Every site it reaches is a faithful indexed translation whose index is doing
+# real work -- `unpack_meta(meta, slot)` on the transposition probe's hottest
+# loop, `pieces.swap(i, j)` in the Syzygy reorder, a self-referential write in
+# the pairs decoder -- so the rewrite is noise where it compiles at all. It is
+# also the wrong DIRECTION here: docs/08-idiomatic-rust.md section 17 measures
+# indexing fixed-width rows as 19.3M instructions BETTER than range-slicing and
+# zipping them.
+needless_range_loop = "allow"
+# `assert_is_empty` wants `assert_eq!(x, [] as [&str; 0])` in place of
+# `assert!(x.is_empty())`. It buys a value in the failure message and costs a
+# turbofished empty array in every test that asserts nothing came back.
+assert_is_empty = "allow"
 
 [profile.dev]
 # The engine is debugged through gates that run the binary, not a native

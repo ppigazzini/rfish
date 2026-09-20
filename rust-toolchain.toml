@@ -23,6 +23,6 @@
 # properties of the compiler, and a floating channel would silently invalidate
 # them.
 [toolchain]
-channel = "nightly-2026-07-30"
+channel = "nightly-2026-09-20"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
