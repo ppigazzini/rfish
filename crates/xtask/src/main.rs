@@ -184,8 +184,8 @@ cargo xtask <step> — the rfish build driver
                           replay, no `ucinewgame` between moves, so every search inherits a
                           filled table and populated history banks. That is the regime a
                           move is played in and `bench` is the opposite of it -- the same
-                          game costs 728,110 nodes warm and 1,424,756 cold. Reports a ratio
-                          and no verdict: there is no stored row to regress against
+                          game costs about half the nodes warm that it does cold. Reports
+                          a ratio and no verdict: there is no stored row to regress against
     codegen-equiv [--tier T] [--base REF]
                           the gate for a no-functional-change claim: disassemble the WORKING TREE
                           and REF and compare symbol by symbol. Refuses a clean checkout,

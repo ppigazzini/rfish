@@ -128,10 +128,15 @@ cargo xtask counters    --tier avx2 --syzygy          # cache and branches, agai
 
 The workload is `DIFF_BENCH`'s own hash, threads and depth over a different corpus — `bench 16
 1 8` on `tools/cases/tb.fens` with `SyzygyPath` set — so the only variable between the two axes
-is which code the positions reach. It is **313,744 nodes and 14,080 tbhits**, and it costs
-9.28 G instructions against the bench workload's 1.51 G: 29,600 instructions per node against
-8,750, because on this corpus the prober IS the workload. Depth 12 buys a third more probing
-for four times the callgrind time, which is a gate nobody runs.
+is which code the positions reach. At `17a6c8f1e` it is **268,022 nodes and 14,093 tbhits**,
+and it costs 7.81 G instructions against the bench workload's 1.22 G: 29,152 instructions per
+node against 9,678, because on this corpus the prober IS the workload. Depth 12 buys a third
+more probing for four times the callgrind time, which is a gate nobody runs.
+
+**Both node counts move at every sync, and nothing checks them.** They are quoted here
+because the RATIO between them is the argument for the axis — three times the cost per node
+— and that ratio is stable where the counts are not. Name the pin beside a workload size, and
+read the size itself off `perf-budget`'s own line rather than off this page.
 
 The corpus is stripped of its `#` header into `target/probe/` first, and both binaries are
 pointed at that: this port's `bench` skips comment lines and **upstream's does not** — it
@@ -165,8 +170,8 @@ Two gates green and one red on the same tree is the whole argument for the axis.
 `../Stockfish refish`, which files the same gap as `T5` and closed it on both halves — the
 instruction axis and the counter axis — which is why `counters` takes the flag as well.
 
-**The first probing counters run, against upstream at the pin**, both PGO, 313,744 nodes on
-both sides:
+**The first probing counters run, against upstream at `5062aee51`**, both PGO, 313,744 nodes
+on both sides — the pin it was taken at, which is what a ratio is a fact about:
 
 | | ratio |
 |---|---:|
@@ -181,14 +186,16 @@ both sides:
 
 rfish retires a fifth more instructions in this zone and mispredicts **sixty per cent fewer
 branches**, which is the bucket length table in [05-tablebases.md](05-tablebases.md) showing
-up on the axis it was expected to: upstream
-still walks. This is the first cache-and-branch reading this port has of the tablebase zone,
-and it is the axis `refish`'s own performance page calls its open question.
+up on the axis it was expected to: rfish answers a symbol length from a byte per bucket where
+upstream still walks a data-dependent loop. It is the first cache-and-branch reading this
+port has of the tablebase zone, and it is the axis `refish`'s own performance page calls its
+open question.
 
 **It also found a hole in this gate.** `verify_oracle` proved the upstream half was built at
 the pin and nothing proved rfish's own half was built from the tree in front of you — a PGO
 build is expensive, so it is naturally kept and reused. A stale one searched 316,793 nodes on
-the probing corpus where the current tree and upstream both search 313,744, and the differential
+the probing corpus where the tree in front of it and upstream both searched 313,744, and the
+differential
 caught it only because that workload made the divergence visible; on the bench workload it
 would have matched and every ratio would have described code nobody was looking at. `counters`
 now refuses a PGO build older than the newest source file.

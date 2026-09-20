@@ -396,11 +396,12 @@ Each of these would otherwise produce a green gate over a wrong engine:
   commit.** Not against the old pin, and not only at the end. Two search changes landed
   together cannot be attributed when the node count is wrong, and building the oracle once
   at the end hides which change moved what.
-- **A commit with no counterpart is a RESULT, not a gap to skip silently.** Of the five
-  commits in the last sync, two had no counterpart here — LoongArch intrinsics and a shared
-  memory implementation rfish cannot have — and one was already equivalent. Record all three
-  in the commit body; a reader who cannot tell "ported" from "did not apply" has to redo the
-  analysis.
+- **A commit with no counterpart is a RESULT, not a gap to skip silently.** Every sync so
+  far has carried some: LoongArch intrinsics and a shared memory implementation rfish cannot
+  have, an upstream CI matrix this repository does not run, a prefetch no safe Rust can
+  spell. Each still earns a commit that advances the pin and says why nothing else moved.
+  Record them in the commit body; a reader who cannot tell "ported" from "did not apply"
+  has to redo the analysis.
 - **Rebuild the oracle before trusting a differential gate, and CHECK ITS STAMP.** A binary
   left over from the previous pin compares the new engine against the old upstream while
   reporting a clean pass. Writing that down was not enough: one commit later the same trap

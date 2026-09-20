@@ -250,8 +250,8 @@ mispredicts and 12% more instructions to save 39% of the reader's L1 read misses
 real and it is on a corpus no gate here runs, so the constant carries their numbers as
 *theirs* rather than as a measurement of this tree.
 
-313,744 nodes on both sides of every run, and `tb` reads 264 of 264 probes matching upstream
-before and after. The bench figure is the control: that workload never enters this zone, which
+The probing corpus is searched to the same node count on both sides of every run, and `tb`
+reads 264 of 264 probes matching upstream before and after. The bench figure is the control: that workload never enters this zone, which
 is the whole reason the axis had to exist before the change could be judged.
 
 
@@ -261,9 +261,11 @@ three-man corpus covers, so the decoder, the index arithmetic and the parser are
 for its answers by `tb` and unmeasured for its cost.
 
 `cargo xtask perf-budget --syzygy` and `cargo xtask budget-ab --syzygy` bench
-`tools/cases/tb.fens` with `SyzygyPath` set instead: 313,744 nodes, 14,080 tbhits, and 29,600
-instructions per node against the bench workload's 8,750, because on this corpus the prober is
-the workload rather than a term in it. A run that loaded no tables is refused rather than
+`tools/cases/tb.fens` with `SyzygyPath` set instead: at `17a6c8f1e`, 268,022 nodes, 14,093
+tbhits, and 29,152 instructions per node against the bench workload's 9,678, because on this
+corpus the prober is the workload rather than a term in it. The counts move at every sync and
+no gate checks them, so read them off the gate's own line; it is the three-to-one RATIO that
+is the point here. A run that loaded no tables is refused rather than
 reported. See [10-tooling-ci.md](10-tooling-ci.md).
 
 This is what the 2026-08-15 sweep's "real, and unmeasurable here" verdict on refish's
