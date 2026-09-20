@@ -495,9 +495,9 @@ accumulator delta and rfish recomputes the feature sets every evaluation. See
 [03-engine-eval.md](03-engine-eval.md) for the four-way table and the source evidence.
 
 **Explicit `std::simd` in the feature transformer is NOT an open lead.** It is the largest
-search-time block in the engine — `fold_changed` at 190M and `transform` at 148M over
+search-time block in the engine — `fold_into` at 190M and `transform` at 148M over
 `bench 16 1 8` — and it is scalar source, so it reads like the obvious next target. The
-disassembly of the PGO build says it is already there: `fold_changed` emits 136 `%ymm`
+disassembly of the PGO build says it is already there: `fold_into` emits 136 `%ymm`
 operands, 16 `vpaddw`, 16 `vpsubw` and 16 `vpmovsxbw`, and `transform` emits the clamp,
 pairwise multiply, shift and pack as 16 `vpminsw` / 16 `vpmaxsw` / 8 `vpmullw` / 8 `vpsrlw` /
 8 `vpackuswb` — upstream's own kernel shape, reached from `as_chunks_mut` and a `zip`. Writing
@@ -618,7 +618,7 @@ A type that carries a state the callers cannot produce costs a branch at every u
   quiet move on the picker's hottest line — 17.2M instructions sit at that read. The branch
   could never be taken from there: the main search fills all six with `Some`, and the only
   constructors that pass `None` are quiescence and `ProbCut`, which reach `score_evasions` at
-  most and never `QuietInit`. Replacing them with a named `UNREAD_PLANE` index: **−11.3M**.
+  most and never `QuietInit`. Replacing them with a named `ContKey::UNREAD` index: **−11.3M**.
 - **`EvalScratch::grow_to`** ran twice per `do_move` and again per `transform`, and could not
   resize after the first descent to a given depth. Sizing the vector to `PLY_SLOTS` once:
   **−9.8M**.

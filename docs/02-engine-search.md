@@ -262,7 +262,9 @@ The pruning set, in the order the node applies it:
    the right side of the window.
 3. **Reverse futility** — already so far above beta that giving away material could not
    bring it below.
-4. **Razoring** — far below alpha at low depth; verify with a quiescence search.
+4. **Razoring** — at an **all-node**, so far below alpha that the quiescence value is
+   returned in place of the search. It is a fail-low cutoff, which is why it sits at the
+   node type a fail low is expected of, the way null-move pruning sits at cut-nodes.
 5. **Null-move pruning** — skipped in a pawn endgame, where zugzwang makes "pass" a
    genuinely bad option and the assumption fails.
 6. **Internal iterative reduction** — a PV or cut node with no transposition move has no
@@ -284,9 +286,10 @@ The static evaluation is **corrected** before any of it: five terms record how f
 evaluation of positions like this one has historically been from what the search found, and
 the node starts from the corrected value. Four are keyed by a summary of the position — the
 pawn structure, the minor-piece configuration, and each side's non-pawn material. The fifth
-is keyed by the pair of moves that led here, and where there is no previous move to key on
-it falls back to a large constant rather than to zero: that constant is what the sum looks
-like when the other four have nothing to say.
+is keyed by the moves that led here — three of them, at two, four and six plies back, each
+weighted separately — and where there is no previous move to key on it falls back to a large
+constant rather than to zero: that constant is what the sum looks like when the other four
+have nothing to say.
 
 The search **never prints**. It reports through the `InfoSink` trait, which the shell
 implements as UCI `info` lines and a test implements as a no-op. That is what keeps the
@@ -329,9 +332,11 @@ worth keeping in mind before the next such reformulation: it is the same shape a
 `qsearch` takes the table alone and no announcer. Quiescence has no root, so there is
 nothing there to announce.
 
-`check_limits` runs every 1024 nodes rather than every node: reading a clock is a syscall on
+`check_time` runs on a countdown rather than every node: reading a clock is a syscall on
 some platforms, and at a few million nodes per second the granularity is well under a
-millisecond either way.
+millisecond either way. Under a node limit the countdown shortens, so the limit is honoured
+to a fraction of a per cent rather than to the countdown's length. Do not confuse it with
+the counter publication in `do_move`, which is on a cadence of its own.
 
 ## Singular extensions, and the two bugs they introduced
 

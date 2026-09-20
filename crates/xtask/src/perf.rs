@@ -128,9 +128,10 @@ const DIFF_BENCH: [&str; 3] = ["16", "1", "8"];
 /// The probing workload is [`DIFF_BENCH`]'s own hash, threads and depth over a DIFFERENT
 /// corpus, so the only variable between the two axes is which code the positions reach.
 ///
-/// Depth 8 over `tools/cases/tb.fens` is 313,744 nodes and **14,080 tbhits**; depth 12 is
-/// 1,385,510 nodes and 21,120 tbhits for four times the callgrind time — a third more
-/// probing, bought with a gate nobody will run.
+/// Depth 8 is what the gate prints its own node and tbhit counts for; depth 12 buys about a
+/// third more probing for four times the callgrind time, which is a gate nobody will run.
+/// Do not pin either count here — both move at every upstream sync and the gate computes
+/// them.
 const PROBE_DEPTH: &str = "8";
 
 /// The script that turns a bench into one that PROBES.
@@ -498,8 +499,8 @@ fn stamp_oracle(dir: &Path, base: &str) -> Result<(), String> {
 /// **The oracle's identity was checked and this side's was not.** `verify_oracle` proves the
 /// upstream half was built at the pin; nothing proved the PGO half was built from the tree in
 /// front of you, and a PGO build is expensive enough that it is naturally kept and reused. A
-/// stale one produced 316,793 nodes on the probing corpus where the current tree and upstream
-/// both produce 313,744 — the differential caught it only because that workload made the
+/// stale one produced 316,793 nodes on the probing corpus where the tree in front of it and
+/// upstream both produced 313,744 — the differential caught it only because that workload made
 /// divergence visible. On the bench workload the same stale binary matches, and every ratio
 /// would have been reported against code nobody was looking at.
 fn verify_fresh(bin: &Path, what: &str, rebuild: &str) -> Result<(), String> {
@@ -2079,10 +2080,11 @@ const WARM_ENGINE: [(&str, &str); 2] = [("Hash", "16"), ("Threads", "1")];
 
 /// The depth each move of the replay is searched to.
 ///
-/// Deep enough that the search is the profile and shallow enough that callgrind finishes:
-/// 728,110 nodes here against `bench 16 1 8`'s 182,697. A long clock reaches depth 20 and
-/// more, which is four times this under an instrumented run and buys no property the axis
-/// does not already have -- what separates this workload from `bench` is WARMTH, not depth.
+/// Deep enough that the search is the profile -- several times the node count of
+/// `bench 16 1 8` -- and shallow enough that callgrind finishes. A long clock reaches depth
+/// 20 and more, which is four times this under an instrumented run and buys no property the
+/// axis does not already have -- what separates this workload from `bench` is WARMTH, not
+/// depth.
 const WARM_DEPTH: &str = "12";
 
 /// The move list, with its header stripped.
@@ -2214,8 +2216,8 @@ fn warm_ir(bin: &Path, cwd: &Path, depth: &str, cold: bool) -> Result<(u64, u64,
 ///
 /// `perf-budget` and `budget-ab` both measure `bench`: a COLD search of an unrelated position
 /// at depth 8, from an empty table and empty history banks. A move in a real game is a
-/// different workload, and measurably so here -- this move list needs 728,110 nodes warm
-/// where the same game searched cold needs 1,424,756. A per-move saving therefore reads
+/// different workload, and measurably so here -- this move list needs about HALF the nodes
+/// warm that the same game searched cold needs. A per-move saving therefore reads
 /// SMALLER on the bench axis than it is worth in play, and a change whose whole effect is on
 /// a warm search's ordering can read as nothing at all.
 ///

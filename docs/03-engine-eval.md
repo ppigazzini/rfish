@@ -749,8 +749,9 @@ means copying that ply's accumulator AND its threat set into the working slot, ~
 evaluation over 61,341 of them, and that copy costs more than the 158M rebuild it removes.
 That copy was then removed, ../zfish's way. `applyCombinedDelta` splits target from source and
 takes BOTH feature sets in one pass, so the fold reads the parent and writes the working slot
-in the sweep it was already making. Ported here as `fold_combined`: one walk of the 1024
-entries applying the king-piece and threat rows together, where `fold_changed` walks twice.
+in the sweep it was already making. Ported here as `fold_into`: one walk of the 1024 entries
+applying the king-piece and threat rows together, where the `fold_changed` it replaced walks
+twice.
 
 | | search Ir | vs rebuild |
 |---|---|---|
