@@ -1077,8 +1077,10 @@ impl Engine {
         }
         let _ = writeln!(out, "{rule}\n");
 
-        let raw = net.evaluate(&self.pos, Ply::ROOT, &mut scratch);
-        let v = Value::new(raw.psqt.get() + raw.positional.get());
+        // One forward pass serves both lines: the final evaluation is the same raw output put
+        // through the blend with no optimism, as upstream's trace does.
+        let v = net.evaluate(&self.pos, Ply::ROOT, &mut scratch);
+        let full = rfish_engine::eval::scale_evaluation(v, VALUE_ZERO, &self.pos);
         let _ =
             writeln!(out, "NNUE evaluation          {:+} (side to move, internal units)", v.get());
         let white = if self.pos.side_to_move() == Color::White { v } else { -v };
@@ -1088,8 +1090,6 @@ impl Engine {
             0.01 * f64::from(score::to_cp(white, &self.pos))
         );
 
-        let full =
-            rfish_engine::eval::evaluate(&self.pos, Some(net), Ply::ROOT, &mut scratch, VALUE_ZERO);
         let white = if self.pos.side_to_move() == Color::White { full } else { -full };
         let _ = writeln!(
             out,

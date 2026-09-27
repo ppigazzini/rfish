@@ -31,10 +31,9 @@ end of this page carries the gap to upstream and every attempt that failed to cl
                                                                        fc_2 (128→1)
 ```
 
-Eight output heads exist; `(pieces - 1) / 4` selects one. Both the PSQT score and the
-positional score come back separately, because the search blends them by their
-**disagreement** — a position the two heads argue about is one to be less confident in, and
-the optimism term weighs more there.
+Eight output heads exist; `(pieces - 1) / 4` selects one. The PSQT score and the positional
+score are scaled down separately and summed into one raw output, which the blend below then
+holds against the material count.
 
 ## The three feature sets
 
@@ -106,39 +105,43 @@ commutative under the additions applied, so collecting before applying cannot ch
 
 ## From network output to a search value
 
-The forward pass returns two heads, and `eval::evaluate` turns them into the number the
-search compares against alpha and beta. Every constant below is upstream's, fitted against
+The forward pass returns one raw score, and `eval::scale_evaluation` turns it into the number
+the search compares against alpha and beta. Every constant below is upstream's, fitted against
 this network: changing one is a strength change, not a refactor.
 
 ```rust
-let mut nnue = i64::from(out.psqt) + i64::from(out.positional);
-let complexity = i64::from((out.psqt - out.positional).abs());
-optimism += optimism * complexity / 476;
-nnue     -= nnue     * complexity / 18236;
+let se = simple_eval(pos);                     // material lead, a pawn at PAWN_VALUE
+let se_norm   = (se * 1024) / (se.abs() + 1024);
+let nnue_norm = (nnue * 1024) / (nnue.abs() + 1024);
+let alignment = (se_norm * nnue_norm) / 512;
 
-let material = 534 * pawns + non_pawn_material_total;
-let v = nnue + (nnue * material + optimism * 7675) / 91000;
+let base_eval = nnue + (nnue * alignment) / 65536 + (optimism * alignment) / 16384;
 
-let v = v - (v * pos.rule50_count() / 199).get();
+let material = 521 * pawns + non_pawn_material_total;
+let v = i64::from(base_eval) * i64::from(90649 + material) / 90649;
+
+let v = v - (v * pos.rule50_count() / 189).get();
 v.clamp(VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1)
 ```
 
 Each line is doing something specific, and none of them is a scale factor:
 
-- **Complexity is the disagreement between the two heads.** Where the material head and the
-  positional head are far apart the position is sharp, so the network is trusted less and the
-  search's own expectation is trusted more — which is why the same term amplifies `optimism`
-  and damps `nnue`.
-- **`nnue +` is outside the division on purpose.** Folding it back in as
-  `(nnue * (91000 + material) + …) / 91000` is the same number over the rationals and a
-  different one in integers: the fold truncates the whole blend toward zero, while this form
-  truncates only the part that scales with material. The node count moves between the two,
-  which is what makes this a ported rounding rather than a formatting choice.
+- **Alignment is agreement between the network and the material count.** Both are squashed
+  into `[-1024, 1024]` first, so the product is bounded by `2048` and is positive when the two
+  point the same way. A negative alignment means the network sees compensation the material
+  does not show — a complicated position.
+- **The sign of `nnue` decides which positions are favoured.** Winning, a positive alignment
+  raises the score and a negative one lowers it, so the search steers toward the simple win;
+  losing, the same product pulls the other way and the complicated position is preferred.
 - **Optimism is the search's disposition, not the position's.** It arrives per colour from
-  the worker and is blended in at a fixed weight, while only the network's own term scales
-  with material. It is one of the things that make Lazy-SMP threads explore differently from
-  each other, so it belongs to [04-multithreading.md](04-multithreading.md) as much as to
-  this page.
+  the worker and enters only through the alignment, so it weighs nothing in a position where
+  either the network or the material says nothing. It is one of the things that make Lazy-SMP
+  threads explore differently from each other, so it belongs to
+  [04-multithreading.md](04-multithreading.md) as much as to this page.
+- **The material scale is a multiplier in `i64`, truncated once.** It is upstream's form and
+  its rounding: every term above is `int` arithmetic that truncates toward zero at its own
+  division, and reordering any of them — or folding the scale into `base_eval`'s terms — moves
+  a boundary and with it the node count.
 - **The fifty-move damping pulls the score toward zero as the halfmove clock runs.** An
   advantage that cannot be converted before the rule draws the game is not worth its nominal
   value. This one is applied to the classical fallback too, because it is a fact about the
@@ -147,13 +150,16 @@ Each line is doing something specific, and none of them is a scale factor:
   be mistaken for a tablebase verdict or a mate; those are three distinct kinds of score and
   [02-engine-search.md](02-engine-search.md) keeps them that way.
 
-**The two heads are summed here and nowhere else.** `Add<Value>` between them is deliberately
-absent, so the one place where two components become one score is written out rather than
-falling out of an operator — see [09-type-design.md](09-type-design.md).
+**The two heads are summed in `Network::evaluate` and nowhere else.** `Add<Value>` between
+them is deliberately absent, so the one place where two components become one score is
+written out rather than falling out of an operator — see
+[09-type-design.md](09-type-design.md).
 
 `cargo xtask nnue-check` compares the raw network output, **above** this blend. That is the
-right boundary for it: the blend is arithmetic on two integers this repository can read off
-the source, while the feature indexing behind `out` is where a port goes silently wrong.
+right boundary for it: the blend is arithmetic on integers this repository can read off the
+source, while the feature indexing behind the raw score is where a port goes silently wrong.
+`eval` prints the blended value too, as its final line, and `golden-audit` holds that line to
+upstream's through `tools/eval.golden`.
 
 `is_material_draw` sits beside this and is not part of it — king against king and the lone
 minors are dead draws whatever any network says, so the search answers them without an

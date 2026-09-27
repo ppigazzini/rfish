@@ -140,15 +140,6 @@ pub struct Network {
     description: String,
 }
 
-/// What the network says about a position, before the search blends the two.
-#[derive(Clone, Copy, Debug)]
-pub struct NetworkOutput {
-    /// The material-and-placement head.
-    pub psqt: Value,
-    /// The learned positional head.
-    pub positional: Value,
-}
-
 impl Network {
     /// Read a net from `path`.
     ///
@@ -276,20 +267,21 @@ impl Network {
         &self.description
     }
 
-    /// Evaluate `pos`.
+    /// Evaluate `pos`: the raw network output, which `eval` prints as internal units.
     ///
     /// The bucket is chosen by material: `(pieces - 1) / 4`, so an endgame and a full board
-    /// get different heads. Both scores come back separately, because the search blends
-    /// them by their disagreement.
+    /// get different heads. Each head is scaled down on its own before the two are summed,
+    /// which is upstream's rounding.
     #[must_use]
-    pub fn evaluate(&self, pos: &Position, ply: Ply, scratch: &mut EvalScratch) -> NetworkOutput {
+    pub fn evaluate(&self, pos: &Position, ply: Ply, scratch: &mut EvalScratch) -> Value {
         let bucket = (pos.piece_total() as usize - 1) / 4;
         let psqt = self.transformer.transform(pos, bucket, ply.index(), scratch);
         let positional = self.stacks[bucket].propagate(scratch.transformed());
-        NetworkOutput {
-            psqt: Value::new((i64::from(psqt) / OUTPUT_SCALE) as i32),
-            positional: Value::new((i64::from(positional) / OUTPUT_SCALE) as i32),
-        }
+        // The two heads are COMPONENTS of one score, so their sum is a score; `Add<Value>`
+        // is deliberately absent, which is what makes the summing explicit here.
+        Value::new(
+            (i64::from(psqt) / OUTPUT_SCALE) as i32 + (i64::from(positional) / OUTPUT_SCALE) as i32,
+        )
     }
 
     /// Every bucket's output, and which one this position actually uses.

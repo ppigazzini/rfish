@@ -19,15 +19,17 @@ pub mod classical;
 pub mod nnue;
 
 use crate::board::position::Position;
-use crate::board::types::{Color, PieceType, Ply, VALUE_DRAW, Value};
-#[cfg(not(feature = "eval-material"))]
-use crate::board::types::{VALUE_TB_LOSS_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY};
+use crate::board::types::{
+    Color, PAWN_VALUE, PieceType, Ply, VALUE_DRAW, VALUE_TB_LOSS_IN_MAX_PLY,
+    VALUE_TB_WIN_IN_MAX_PLY, Value,
+};
 
 /// The static evaluation of `pos`, from the side to move's point of view.
 ///
 /// `optimism` is the search's per-colour optimism term, and it is not a decoration: the
-/// blend below scales it by how much the network's two heads DISAGREE, so a position the
-/// network is unsure about lets the search's own expectation weigh more.
+/// blend in [`scale_evaluation`] weighs it by how far the network and the material count
+/// AGREE, so a position whose score rests on compensation leans on the search's own
+/// expectation.
 ///
 /// With no network resident this falls back to [`classical`], which ignores both.
 #[cfg(not(feature = "eval-material"))]
@@ -39,15 +41,10 @@ pub fn evaluate(
     scratch: &mut nnue::Scratch,
     optimism: Value,
 ) -> Value {
-    let v = match network {
-        Some(net) => nnue_value(pos, net, ply, scratch, optimism),
-        None => classical::evaluate(pos),
-    };
-
-    // Damp the score as the fifty-move counter runs out: a winning position that cannot be
-    // converted in the remaining plies is not worth its material.
-    let v = v - (v * pos.rule50_count() / 199).get();
-    v.clamp(VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1)
+    match network {
+        Some(net) => scale_evaluation(net.evaluate(pos, ply, scratch), optimism, pos),
+        None => damp_and_clamp(classical::evaluate(pos), pos),
+    }
 }
 
 /// The spine-isolation stand-in for [`evaluate`], with the same signature.
@@ -92,37 +89,51 @@ fn material_only(pos: &Position) -> Value {
     Value::new(v)
 }
 
-#[cfg(not(feature = "eval-material"))]
-/// Upstream's blend of the two network heads with the search's optimism.
+/// The side to move's material lead, with a pawn at [`PAWN_VALUE`].
 ///
-/// Every constant is upstream's and every one was fitted against this network; changing one
-/// is a strength change, not a refactor.
-fn nnue_value(
-    pos: &Position,
-    net: &nnue::Network,
-    ply: Ply,
-    scratch: &mut nnue::Scratch,
-    optimism: Value,
-) -> Value {
-    let out = net.evaluate(pos, ply, scratch);
-    // The two heads are COMPONENTS of one score, so their sum is a score; `Add<Value>` is
-    // deliberately absent, which is what makes the summing explicit here.
-    let mut nnue = i64::from(out.psqt) + i64::from(out.positional);
-    let mut optimism = i64::from(optimism);
+/// Upstream's `simple_eval`: the yardstick [`scale_evaluation`] holds the network against.
+fn simple_eval(pos: &Position) -> i32 {
+    let us = pos.side_to_move();
+    PAWN_VALUE.get() * (pos.count(us, PieceType::Pawn) - pos.count(!us, PieceType::Pawn))
+        + pos.non_pawn_material(us).get()
+        - pos.non_pawn_material(!us).get()
+}
 
-    // How far apart the material head and the positional head are. A large gap means the
-    // position is sharp, and both terms below react to it.
-    let complexity = i64::from((out.psqt - out.positional).abs());
-    optimism += optimism * complexity / 476;
-    nnue -= nnue * complexity / 18236;
+/// Upstream's blend of the network's score with the search's optimism, the material on the
+/// board and the fifty-move clock.
+///
+/// `nnue` is the raw network output, which is what `eval` prints as internal units. Every
+/// constant is upstream's and every one was fitted against this network; changing one is a
+/// strength change, not a refactor. The arithmetic is `i32` where upstream's is `int` and
+/// `i64` where upstream widens, so every division truncates at the same place.
+#[must_use]
+pub fn scale_evaluation(nnue: Value, optimism: Value, pos: &Position) -> Value {
+    let (nnue, optimism) = (nnue.get(), optimism.get());
+    let se = simple_eval(pos);
 
-    let material =
-        534 * i64::from(pos.count_both(PieceType::Pawn)) + i64::from(pos.non_pawn_material_total());
-    // `nnue +` rather than folding 91000 into the multiplicand. The two are equal over the
-    // rationals and not over integer division: the fold rounds the WHOLE blend toward zero,
-    // this rounds only the part that scales, so the truncation lands on a term a hundredth
-    // the size and the node count moves. Upstream's form, and its rounding.
-    Value::new((nnue + (nnue * material + optimism * 7675) / 91000) as i32)
+    // Squash both into [-1024, 1024] so their product measures agreement: positive when the
+    // network and the material count point the same way, negative when the score rests on
+    // compensation the material does not show.
+    let se_norm = (se * 1024) / (se.abs() + 1024);
+    let nnue_norm = (nnue * 1024) / (nnue.abs() + 1024);
+    let alignment = (se_norm * nnue_norm) / 512;
+
+    // Favour a straightforward position when winning, and a complicated one when losing.
+    let base_eval = nnue + (nnue * alignment) / 65536 + (optimism * alignment) / 16384;
+
+    let material = 521 * pos.count_both(PieceType::Pawn) + pos.non_pawn_material_total().get();
+    let v = i64::from(base_eval) * i64::from(90649 + material) / 90649;
+    damp_and_clamp(Value::new(v as i32), pos)
+}
+
+/// Damp `v` toward zero as the fifty-move clock runs, and keep it inside the tablebase band.
+///
+/// A winning position that cannot be converted in the remaining plies is not worth its
+/// material. The classical fallback takes this too, because it is a fact about the game
+/// rather than about the network.
+fn damp_and_clamp(v: Value, pos: &Position) -> Value {
+    let v = v - (v * pos.rule50_count() / 189).get();
+    v.clamp(VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1)
 }
 
 /// True when neither side has enough material to force mate.
