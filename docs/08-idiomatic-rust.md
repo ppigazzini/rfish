@@ -1023,6 +1023,12 @@ each other — `slot` is the pre-summed `Offsets[from] + IndexLut2[from][to]`, a
 `ThreatIndexBlocks` and `nnue_full_make_index`, measured there at −1.16%. Taking the second
 half after the first is why this reads smaller here than there.
 
+The king-piece set took the first half from upstream's own bf4505968: the piece base, the king
+bucket and the mirror fold into one `u16` row per perspective and king square, so an index is
+`s ^ row[pc]`. The fold is exact because the base and the bucket are multiples of 64, and it
+was **−0.3182%** at avx2 and **−0.1405%** at sse41, against a `halfka_delta` that already
+hoisted all three terms out of its loop.
+
 The block is `#[repr(C, align(64))]` and a `const` assertion holds its size to a whole number
 of cache lines, because **a stride that is not a multiple of the line carries the alignment to
 the first attacker's rows and no further** — a silent half-fix. mcfish's own `static_assert`
