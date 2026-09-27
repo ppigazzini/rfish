@@ -247,16 +247,40 @@ const HALFKA_ORIENT: [u8; SQUARE_NB] = {
     t
 };
 
+/// Everything but the square, per perspective and king square: the piece's base, the king
+/// bucket and the mirror, folded into one entry.
+///
+/// Upstream's `make_index` table. The fold is exact because the piece base and the bucket
+/// are both multiples of 64 and the mirrored square is below 64, so adding them never
+/// carries into the square's bits and `s ^ entry` is the old `(s ^ orient) + base + bucket`.
+/// Rows are indexed `perspective * 64 + ksq`.
+const HALFKA_OFFSETS: [[u16; PIECE_NB]; 2 * SQUARE_NB] = {
+    let mut t = [[0u16; PIECE_NB]; 2 * SQUARE_NB];
+    let mut c = 0;
+    while c < 2 {
+        let flip = 56 * c;
+        let mut ksq = 0;
+        while ksq < SQUARE_NB {
+            let orient = (HALFKA_ORIENT[ksq] as usize ^ flip) as u16;
+            let bucket = KING_BUCKETS[ksq ^ flip] as u16;
+            let mut pc = 0;
+            while pc < PIECE_NB {
+                t[c * SQUARE_NB + ksq][pc] = PIECE_SQUARE_INDEX[c][pc] + bucket + orient;
+                pc += 1;
+            }
+            ksq += 1;
+        }
+        c += 1;
+    }
+    t
+};
+
 /// The feature index for `pc` on `s`, seen by `perspective` whose king is on `ksq`.
 #[inline]
 #[must_use]
 pub fn halfka_index(perspective: Color, s: Square, pc: Piece, ksq: Square) -> KaIndex {
-    let flip = 56 * perspective as u8;
-    KaIndex(
-        u32::from(s.raw() ^ HALFKA_ORIENT[ksq.index()] ^ flip)
-            + u32::from(PIECE_SQUARE_INDEX[perspective.index()][pc.index()])
-            + KING_BUCKETS[(ksq.raw() ^ flip) as usize],
-    )
+    let row = &HALFKA_OFFSETS[perspective.index() * SQUARE_NB + ksq.index()];
+    KaIndex(u32::from(s.raw()) ^ u32::from(row[pc.index()]))
 }
 
 /// The king-piece features that differ between two board states, as adds and subtracts.
@@ -287,15 +311,10 @@ pub fn halfka_delta(
     // once, as a bitmask, and the walk is then `trailing_zeros` over its two to four bits.
     // The copy `map` pays to build the vectors is what a `[Piece; 64]` costs without a
     // transmute, and it is cheaper than the scan it replaces.
-    // Hoist everything the king square and the perspective decide. `halfka_index` recomputes
-    // all three per call, and all three are invariant across the whole delta.
-    let flip = 56 * perspective as u8;
-    let orient = HALFKA_ORIENT[ksq.index()] ^ flip;
-    let bucket = KING_BUCKETS[(ksq.raw() ^ flip) as usize];
-    let piece_index = &PIECE_SQUARE_INDEX[perspective.index()];
-    let index = |sq: Square, pc: Piece| {
-        KaIndex(u32::from(sq.raw() ^ orient) + u32::from(piece_index[pc.index()]) + bucket)
-    };
+    // Hoist the one row the king square and the perspective select; it is invariant across
+    // the whole delta.
+    let row = &HALFKA_OFFSETS[perspective.index() * SQUARE_NB + ksq.index()];
+    let index = |sq: Square, pc: Piece| KaIndex(u32::from(sq.raw()) ^ u32::from(row[pc.index()]));
 
     let was_v = Simd::<u8, SQUARE_NB>::from_array(was.map(Piece::raw));
     let now_v = Simd::<u8, SQUARE_NB>::from_array(now.map(Piece::raw));
@@ -1066,6 +1085,26 @@ mod tests {
                     for p in Color::ALL {
                         let i = halfka_index(p, sq, pc, ksq);
                         assert!(i.get() < HALFKA_DIMENSIONS as u32, "{i:?} out of range");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The folded table must reproduce the three-term sum it replaced for every input, or a
+    /// carry out of the square's bits reads a different weight column.
+    #[test]
+    fn the_folded_offsets_equal_the_three_term_sum() {
+        for p in Color::ALL {
+            let flip = 56 * p as u8;
+            for ksq in Square::all() {
+                for sq in Square::all() {
+                    for pc in 0..PIECE_NB {
+                        let sum = u32::from(sq.raw() ^ HALFKA_ORIENT[ksq.index()] ^ flip)
+                            + u32::from(PIECE_SQUARE_INDEX[p.index()][pc])
+                            + KING_BUCKETS[(ksq.raw() ^ flip) as usize];
+                        let row = &HALFKA_OFFSETS[p.index() * SQUARE_NB + ksq.index()];
+                        assert_eq!(u32::from(sq.raw()) ^ u32::from(row[pc]), sum);
                     }
                 }
             }
