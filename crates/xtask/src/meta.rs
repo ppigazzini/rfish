@@ -1339,6 +1339,52 @@ mod tests {
         }
     }
 
+    /// The local action every lane installs its toolchain through.
+    const SETUP_RUST: &str = "$/.github/actions/setup-rust";
+
+    /// No lane installs its toolchain through a third-party action.
+    ///
+    /// A third-party action is pinned by commit with its tag in a trailing comment, and a
+    /// toolchain action that publishes one moving tag leaves that comment false at its next
+    /// upstream commit. No lane audits the pin, so the drift is silent. Hold every workflow to the local
+    /// wrapper, and the wrapper to running rustup and no action of its own.
+    #[test]
+    fn no_lane_installs_its_toolchain_through_a_third_party_action() {
+        let root = workspace_root();
+        let workflows = workflow_text(&root).expect("the workflows");
+        let uses: Vec<&str> = workflows
+            .lines()
+            .filter_map(|line| line.trim_start().trim_start_matches("- ").strip_prefix("uses:"))
+            .map(str::trim)
+            .collect();
+        // A scan that matches nothing passes the assertion after it.
+        assert!(uses.contains(&SETUP_RUST), "no lane uses {SETUP_RUST} -- the scan went stale");
+        let third_party: Vec<&str> = uses
+            .iter()
+            .copied()
+            .filter(|u| u.to_ascii_lowercase().contains("toolchain") && !u.starts_with(['$', '.']))
+            .collect();
+        assert!(
+            third_party.is_empty(),
+            "a toolchain installed by a third-party action: {third_party:?}; use {SETUP_RUST}"
+        );
+
+        let path = root.join(SETUP_RUST.trim_start_matches("$/")).join("action.yml");
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let body: Vec<&str> = text.lines().map(strip_yaml_comment).collect();
+        assert!(
+            !body.iter().any(|l| l.trim_start().trim_start_matches("- ").starts_with("uses:")),
+            "{SETUP_RUST} runs an action of its own"
+        );
+        for command in ["toolchain install", "rustup default"] {
+            assert!(
+                body.iter().any(|l| l.contains(command)),
+                "{SETUP_RUST} no longer runs `{command}`"
+            );
+        }
+    }
+
     #[test]
     fn every_excuse_names_a_step_the_dispatch_table_still_has() {
         let steps = dispatch_steps(&workspace_root()).expect("the dispatch table");

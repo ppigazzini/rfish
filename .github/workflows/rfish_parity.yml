@@ -4,11 +4,12 @@ name: rfish parity
 # what runs here: a contributor who sees a green `cargo xtask parity` should not be
 # surprised by the merge gate. See docs/10-tooling-ci.md.
 #
-# Every action is pinned BY COMMIT SHA, with the tag in a trailing comment. A tag is a
-# mutable pointer -- the owner can move `v7` to anything -- so a tag-pinned action is an
-# unreviewed dependency that can change under a merge gate. These are the same pins the
+# Every third-party action is pinned BY COMMIT SHA, with the tag in a trailing comment. A
+# tag is a mutable pointer -- the owner can move `v7` to anything -- so a tag-pinned action is
+# an unreviewed dependency that can change under a merge gate. These are the same pins the
 # sibling ports (`../zfish`, `../mcfish`) and `../valgebra` carry, so a bump is decided once
-# and applied across all four.
+# and applied across all four. The toolchain is not an action at all: every lane installs it
+# through `.github/actions/setup-rust`, which runs rustup itself. See docs/10-tooling-ci.md.
 
 on:
   push:
@@ -53,7 +54,7 @@ jobs:
           channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
           test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
           components: rustfmt, clippy
@@ -101,7 +102,7 @@ jobs:
           channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
           test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -132,7 +133,7 @@ jobs:
           channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
           test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -184,7 +185,7 @@ jobs:
           channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
           test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
           # `std` is rebuilt from source under the sanitizer, so its source must be present.
@@ -223,7 +224,7 @@ jobs:
           channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
           test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -252,7 +253,7 @@ jobs:
           channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
           test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -302,7 +303,7 @@ jobs:
           channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
           test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
           targets: ${{ matrix.target }}

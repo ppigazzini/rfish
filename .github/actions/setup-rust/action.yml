@@ -1,0 +1,86 @@
+name: Set up Rust
+description: Install the pinned Rust toolchain with rustup, which every hosted runner carries, and make it the default.
+
+# Run rustup here rather than through a toolchain action. A third-party action is
+# pinned by commit with its tag in a trailing comment, and that comment is true
+# only while the tag stays where the pin was taken. A toolchain action that
+# publishes one moving tag, as `dtolnay/rust-toolchain` does with `v1`, moves it
+# on every upstream change, so the pin parts from its comment at the next
+# upstream commit and no lane here notices. What such an action runs for these lanes is the rustup
+# command below: no tag to drift, and no third-party commit between the runner
+# and the compiler.
+# `no_lane_installs_its_toolchain_through_a_third_party_action` in
+# `crates/xtask/src/meta.rs` holds every workflow to it.
+
+inputs:
+  toolchain:
+    description: >-
+      The channel `rust-toolchain.toml` names, read by the lane in the step
+      before this one. That file overrides `rustup default`, so any other
+      channel installs one toolchain and runs another.
+    required: true
+  components:
+    description: >-
+      Components to add beside the minimal profile, separated by commas.
+    required: false
+    default: ""
+  targets:
+    description: >-
+      Targets whose standard library to add, separated by commas.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # A release-server update can serve a manifest whose checksums do not match
+    # yet, which rustup reports and which clears within minutes. Retry that
+    # failure and only that one: anything else is a red lane.
+    - name: rustup toolchain install ${{ inputs.toolchain }}
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+        COMPONENTS: ${{ inputs.components }}
+        TARGETS: ${{ inputs.targets }}
+        RUSTUP_PERMIT_COPY_RENAME: "1"
+      run: |
+        args=(toolchain install "$TOOLCHAIN" --profile minimal --no-self-update)
+        for component in ${COMPONENTS//,/ }; do
+          args+=(--component "$component")
+        done
+        for target in ${TARGETS//,/ }; do
+          args+=(--target "$target")
+        done
+        log=$(mktemp)
+        trap 'rm -f "$log"' EXIT
+        for attempt in 1 2 3 4 5; do
+          if rustup "${args[@]}" 2>&1 | tee "$log"; then
+            break
+          else
+            status=$?
+          fi
+          if [[ $attempt == 5 ]] || ! grep -Fq 'checksum failed for ' "$log" \
+              || ! grep -Fq 'this is likely due to an ongoing update of the official release server' "$log"; then
+            exit "$status"
+          fi
+          echo "retrying rustup toolchain install in 30 seconds (retry $attempt of 4)" >&2
+          sleep 30
+        done
+    - name: rustup default ${{ inputs.toolchain }}
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+      run: rustup default "$TOOLCHAIN"
+    # Keep incremental compilation off unless a lane sets it: it writes state a
+    # fresh runner never reads again.
+    - name: Disable incremental compilation
+      shell: bash
+      run: |
+        if [ -z "${CARGO_INCREMENTAL+set}" ]; then
+          echo CARGO_INCREMENTAL=0 >> "$GITHUB_ENV"
+        fi
+    - name: rustc --version --verbose
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+      run: rustc +"$TOOLCHAIN" --version --verbose
