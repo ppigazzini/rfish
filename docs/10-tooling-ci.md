@@ -659,13 +659,28 @@ engine enables `portable_simd`, which no stable channel accepts.
 
 **`rust-toolchain.toml` beats whatever the workflow installs**, and that is now the whole
 design rather than a trap to route around. Every lane reads the channel OUT of that file and
-hands it to `dtolnay/rust-toolchain`, so the toolchain it installs is the toolchain that
+hands it to `.github/actions/setup-rust`, so the toolchain it installs is the toolchain that
 runs. Hard-coding a channel in the workflow instead would install one and silently run
 another — with that other one's components, and in the cross lane without the target's std,
 which is exactly how a `check --target` lane passes while proving nothing.
 
 That trap used to be worked around in the msrv lane with an explicit `cargo +<version>`.
 The lane is gone (above), and with it the only place the two could disagree.
+
+**The toolchain comes from rustup, not from an action.** Every third-party action here is
+pinned by commit with its tag in a trailing comment, and the comment is true only while the
+tag stays where the pin was taken. A toolchain action that publishes one moving tag —
+`dtolnay/rust-toolchain` moves `v1` on every upstream change — parts from its comment at the
+next upstream commit. `zizmor`'s `ref-version-mismatch` audit reports that drift, and no
+lane here runs it, so the drift is silent. `.github/actions/setup-rust` runs what such an
+action runs: `rustup toolchain install` with the minimal profile, the components and targets
+a lane names, and a retry for the one failure the release server produces while it
+publishes, then `rustup default`, with incremental compilation off. The runner carries
+rustup, so no third-party commit sits between it and the compiler, and no tag is left to
+drift. Lanes name it as `$/.github/actions/setup-rust`, the form `zizmor`'s
+`self-repository` audit asks for.
+`no_lane_installs_its_toolchain_through_a_third_party_action` in `crates/xtask/src/meta.rs`
+fails on a toolchain installed by any third-party action, under `cargo xtask test`.
 
 **The toolchain is read with `sed`, not `grep -oP`.** `-P` is a GNU extension. macOS ships
 BSD grep, which rejects the flag outright, and Git Bash on Windows is frequently built

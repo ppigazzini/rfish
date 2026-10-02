@@ -13,7 +13,8 @@ name: rfish fuzz (nightly)
 # other two spend their time, and the job name says which harness went red without reading a
 # log. `cargo xtask fuzz <seconds> all` is the local single-process form.
 #
-# Actions are pinned BY COMMIT SHA with the tag in a trailing comment, as in rfish_parity.yml.
+# Third-party actions are pinned BY COMMIT SHA with the tag in a trailing comment, and the
+# toolchain comes from rustup, as in rfish_parity.yml.
 
 on:
   schedule:
@@ -82,7 +83,7 @@ jobs:
           channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
           test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
