@@ -263,10 +263,10 @@ same type as the scores they were compared against, and `value_from_tt(v, ply, r
 two adjacent `i32`s carrying different units. The torsor algebra makes a margin a distinct
 type without a second newtype, because the *difference operator* produces it.
 
-Three places genuinely sum two scores — the NNUE psqt and positional heads, and two weighted
-blends toward beta. Those are components of one score rather than two scores, and each says
-`Value::new` at the line where that is decided. `Add<Value>` is absent so that all three are
-visible.
+The places that genuinely sum two scores are the weighted blends toward beta. Those are
+components of one score rather than two scores, and each says `Value::new` at the line where
+that is decided. `Add<Value>` is absent so that every one of them is visible. The NNUE's PSQT
+and positional heads were another until upstream's SFNNv17 removed the PSQT head.
 
 ## Quantities: what a history bonus is
 
@@ -421,7 +421,7 @@ was moving the discriminator *into* the key, so no call site carries one to tran
 technique does not generalise to `from`/`to`, which are genuinely two of the same thing, and
 nothing in this design protects them.
 
-**Anything inside a fold.** `fold_psqt` indexes two weight tables with the same element type,
+**Anything inside a fold.** A fold turns each index into a `usize` to address a weight row,
 so a `TpIndex` used against the king-piece rows still compiles *within* that function. The
 protection is at the call boundary, where the two slice pairs are arguments.
 

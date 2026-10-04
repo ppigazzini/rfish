@@ -2,63 +2,60 @@ rfish 0.1.0 by the Stockfish developers (see AUTHORS)
 
 
 NNUE network contributions (Normalized, White to move)
-+------------+------------+------------+------------+
-|   Bucket   |  Material  | Positional |   Total    |
-|            |   (PSQT)   |  (Layers)  |            |
-+------------+------------+------------+------------+
-|  0         |     0.00   |  -  3.70   |  -  3.70   |
-|  1         |     0.00   |  +  0.18   |  +  0.18   |
-|  2         |     0.00   |  +  0.17   |  +  0.17   |
-|  3         |     0.00   |  -  0.08   |  -  0.08   |
-|  4         |     0.00   |  +  0.18   |  +  0.18   |
-|  5         |     0.00   |  +  0.07   |  +  0.07   |
-|  6         |     0.00   |  +  0.08   |  +  0.08   |
-|  7         |     0.00   |  +  0.12   |  +  0.12   | <-- this bucket is used
-+------------+------------+------------+------------+
++------------+------------+
+|   Bucket   | Evaluation |
++------------+------------+
+|  0         |  -  1.91   |
+|  1         |  +  0.35   |
+|  2         |  +  0.21   |
+|  3         |     0.00   |
+|  4         |  +  0.09   |
+|  5         |  +  0.12   |
+|  6         |  +  0.05   |
+|  7         |  +  0.01   | <-- this bucket is used
++------------+------------+
 
-NNUE evaluation          +35 (side to move, internal units)
-NNUE evaluation        +0.12 (white side)
-Final evaluation      +0.16 (white side) [with scaled NNUE, ...]
+NNUE evaluation          +4 (side to move, internal units)
+NNUE evaluation        +0.01 (white side)
+Final evaluation      +0.02 (white side) [with scaled NNUE, ...]
 
 
 
 NNUE network contributions (Normalized, White to move)
-+------------+------------+------------+------------+
-|   Bucket   |  Material  | Positional |   Total    |
-|            |   (PSQT)   |  (Layers)  |            |
-+------------+------------+------------+------------+
-|  0         |     0.00   |  -  0.05   |  -  0.05   | <-- this bucket is used
-|  1         |  -  0.12   |  -  2.04   |  -  2.16   |
-|  2         |  -  0.40   |  -  0.31   |  -  0.70   |
-|  3         |  -  0.45   |  +  0.44   |  -  0.01   |
-|  4         |  -  0.84   |  +  0.62   |  -  0.22   |
-|  5         |  -  1.98   |  +  0.26   |  -  1.73   |
-|  6         |  -  0.11   |  +  0.87   |  +  0.76   |
-|  7         |  -  0.07   |  +  0.44   |  +  0.37   |
-+------------+------------+------------+------------+
++------------+------------+
+|   Bucket   | Evaluation |
++------------+------------+
+|  0         |  -  1.33   | <-- this bucket is used
+|  1         |  -  0.33   |
+|  2         |  -  1.06   |
+|  3         |  -  0.32   |
+|  4         |  -  0.51   |
+|  5         |  -  1.24   |
+|  6         |  -  2.42   |
+|  7         |  -  3.26   |
++------------+------------+
 
-NNUE evaluation          -18 (side to move, internal units)
-NNUE evaluation        -0.05 (white side)
-Final evaluation      -0.05 (white side) [with scaled NNUE, ...]
+NNUE evaluation          -456 (side to move, internal units)
+NNUE evaluation        -1.33 (white side)
+Final evaluation      -1.33 (white side) [with scaled NNUE, ...]
 
 
 
 NNUE network contributions (Normalized, Black to move)
-+------------+------------+------------+------------+
-|   Bucket   |  Material  | Positional |   Total    |
-|            |   (PSQT)   |  (Layers)  |            |
-+------------+------------+------------+------------+
-|  0         |  +  2.69   |  +  0.66   |  +  3.35   |
-|  1         |  -  0.02   |  -  0.04   |  -  0.06   |
-|  2         |  -  0.00   |  -  0.33   |  -  0.33   |
-|  3         |  -  0.03   |  -  0.08   |  -  0.12   |
-|  4         |  -  0.01   |  +  0.56   |  +  0.55   |
-|  5         |  -  0.02   |  +  0.31   |  +  0.29   |
-|  6         |  -  0.01   |  +  0.23   |  +  0.22   |
-|  7         |  +  0.04   |  +  0.20   |  +  0.24   | <-- this bucket is used
-+------------+------------+------------+------------+
++------------+------------+
+|   Bucket   | Evaluation |
++------------+------------+
+|  0         |  +  0.25   |
+|  1         |  +  0.37   |
+|  2         |  +  0.08   |
+|  3         |  +  0.26   |
+|  4         |  +  0.49   |
+|  5         |  +  0.29   |
+|  6         |  +  0.19   |
+|  7         |  +  0.16   | <-- this bucket is used
++------------+------------+
 
-NNUE evaluation          +68 (side to move, internal units)
-NNUE evaluation        -0.24 (white side)
-Final evaluation      -0.30 (white side) [with scaled NNUE, ...]
+NNUE evaluation          +45 (side to move, internal units)
+NNUE evaluation        -0.16 (white side)
+Final evaluation      -0.20 (white side) [with scaled NNUE, ...]
 

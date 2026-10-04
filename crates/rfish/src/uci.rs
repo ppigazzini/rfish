@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use rfish_engine::board::movegen::{move_to_uci, parse_uci_move, perft_divide};
 use rfish_engine::board::position::{Position, START_FEN};
-use rfish_engine::board::types::{Color, Ply, VALUE_ZERO, Value};
+use rfish_engine::board::types::{Color, Ply, VALUE_ZERO};
 use rfish_engine::eval::nnue;
 use rfish_engine::platform::numa::{self, NumaConfig, NumaIndex};
 use rfish_engine::platform::syzygy::TableRegistry;
@@ -1055,20 +1055,14 @@ impl Engine {
         // the piece count selects.
         let t = net.trace_evaluate(&self.pos, &mut scratch);
         let side = if self.pos.side_to_move() == Color::White { "White" } else { "Black" };
-        let rule = "+------------+------------+------------+------------+";
+        let rule = "+------------+------------+";
         let _ = writeln!(out, "\n\nNNUE network contributions (Normalized, {side} to move)");
         let _ = writeln!(out, "{rule}");
-        let _ = writeln!(out, "|   Bucket   |  Material  | Positional |   Total    |");
-        let _ = writeln!(out, "|            |   (PSQT)   |  (Layers)  |            |");
+        let _ = writeln!(out, "|   Bucket   | Evaluation |");
         let _ = writeln!(out, "{rule}");
-        for b in 0..t.psqt.len() {
-            let (psqt, positional) = (t.psqt[b], t.positional[b]);
+        for (b, &v) in t.positional.iter().enumerate() {
             let mut row = format!("|  {b}         |  ");
-            row.push_str(&self.aligned_dot(psqt));
-            row.push_str("   |  ");
-            row.push_str(&self.aligned_dot(positional));
-            row.push_str("   |  ");
-            row.push_str(&self.aligned_dot(Value::new(psqt.get() + positional.get())));
+            row.push_str(&self.aligned_dot(v));
             row.push_str("   |");
             if b == t.correct_bucket {
                 row.push_str(" <-- this bucket is used");
