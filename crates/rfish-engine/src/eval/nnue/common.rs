@@ -117,8 +117,6 @@ pub const L2: usize = 32;
 /// Outputs of the second fully connected layer.
 pub const L3: usize = 32;
 
-/// Material buckets the PSQT head is split into.
-pub const PSQT_BUCKETS: usize = 8;
 /// Independent output heads, selected by the same bucket.
 pub const LAYER_STACKS: usize = 8;
 
@@ -754,7 +752,6 @@ mod tests {
         assert_eq!(L1, 1024);
         assert_eq!(L2, 32);
         assert_eq!(L3, 32);
-        assert_eq!(PSQT_BUCKETS, 8);
         assert_eq!(LAYER_STACKS, 8);
         assert_eq!(ceil_to_multiple(1024, 32), 1024);
         assert_eq!(ceil_to_multiple(60, 32), 64);
@@ -772,7 +769,7 @@ mod tests {
             let a: Aligned<i8> = Aligned::new(len);
             assert_eq!(a.as_slice().as_ptr() as usize % CACHE_LINE, 0, "i8 len {len}");
         }
-        for len in [1usize, 999, PSQT_BUCKETS * 3072] {
+        for len in [1usize, 999, 24_576] {
             let a: Aligned<i32> = Aligned::new(len);
             assert_eq!(a.as_slice().as_ptr() as usize % CACHE_LINE, 0, "i32 len {len}");
         }

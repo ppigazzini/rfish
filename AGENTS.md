@@ -48,8 +48,8 @@ disagree, Stockfish wins.
 Do not document, gate, or optimise around the current shape as if it were the intended end
 state. Check the state against the tree before acting on it:
 
-- **NNUE** — **ported, and bit-exact.** All three feature sets, the feature transformer,
-  the PSQT head and the eight output stacks are in
+- **NNUE** — **ported, and bit-exact.** All three feature sets, the feature transformer
+  and the eight output stacks are in
   `crates/rfish-engine/src/eval/nnue/`, and `cargo xtask nnue-check` proves the raw network
   output equals a pristine upstream build's on every position in `tools/cases/eval.fens`.
   The accumulator is updated by **diffing the recomputed feature sets** rather than from a
@@ -304,12 +304,12 @@ intuition:
   — look for a runtime-length slice reached by a composite index in any loop whose real work is
   arithmetic.
 - **A kernel whose OUTPUT WIDTH is small is the one to disassemble.** Being small is what
-  stops the vectoriser caring. `fold_psqt` accumulates eight `i32` — one AVX2 register — and
-  emitted 33 `mov`s and no vector instruction; `fc_2` is 128->1, so a generic
-  `propagate::<N>` instantiated at `Simd<i32, 1>` and LLVM widened it to `xmm` and then put a
-  HORIZONTAL REDUCTION inside the loop. 9.3M between them, invisible in the source and
-  invisible in the profile's symbol list. Both siblings record the same two traps on the same
-  two kernels.
+  stops the vectoriser caring. `fold_psqt` accumulated eight `i32` — one AVX2 register — and
+  emitted 33 `mov`s and no vector instruction (it went with the PSQT head in SFNNv17);
+  `fc_2` is 128->1, so a generic `propagate::<N>` instantiated at `Simd<i32, 1>` and LLVM
+  widened it to `xmm` and then put a HORIZONTAL REDUCTION inside the loop. 9.3M between
+  them, invisible in the source and invisible in the profile's symbol list. Both siblings
+  record the same two traps on the same two kernels.
 - **When one half of a pair gets an optimisation, check the other half.** `fold_into` was
   given indexed fixed-width weight rows and `fold_mirror` — the same fold, forty lines away,
   on the refresh path — was not. It was worth 28.9M there, MORE than on the half that got it,
