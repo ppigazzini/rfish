@@ -101,21 +101,20 @@ fn value_draw(nodes: u64) -> Value {
     VALUE_DRAW - 1 + (nodes & 0x2) as i32
 }
 
-/// The correction-history bonus a multi-cut records (upstream `c5aef2bf1`'s predecessor).
+/// The correction-history bonus a multi-cut records.
 ///
-/// A fail high above the static evaluation is evidence the evaluation was low, and how much
-/// evidence depends on the depth it came from — the SINGULAR depth, which is where the
-/// search happened, not the depth of the node handing the result back.
+/// A fail high above the static evaluation is evidence the evaluation was low, recorded as a
+/// flat fraction of the excess. Upstream weighted it by the singular depth until `49ea5ded3`
+/// replaced `singular_depth * 177` with the constant 664, which passed as a simplification.
 ///
 /// A free function rather than a closure over the stack, so the arithmetic can be pinned by
 /// a test at the boundaries it turns on: a node count moves when any term here changes but
 /// cannot say WHICH term moved, and cannot tell a transcription slip from an intended
 /// retune at all.
 #[inline]
-fn multicut_correction_bonus(value: Value, static_eval: Value, singular_depth: i32) -> Bonus {
+fn multicut_correction_bonus(value: Value, static_eval: Value) -> Bonus {
     Bonus::new(
-        ((value - static_eval) * singular_depth * 177 / 1024)
-            .clamp(-CORRECTION_LIMIT / 4, CORRECTION_LIMIT / 4),
+        ((value - static_eval) * 664 / 1024).clamp(-CORRECTION_LIMIT / 4, CORRECTION_LIMIT / 4),
     )
 }
 
@@ -2244,11 +2243,8 @@ impl SearchWorker {
                     // found more here than the evaluation said was available, so feed the
                     // difference back the way a completed search would.
                     if !self.stack[si.index()].in_check && v > self.stack[si.index()].static_eval {
-                        let bonus = multicut_correction_bonus(
-                            v,
-                            self.stack[si.index()].static_eval,
-                            singular_depth,
-                        );
+                        let bonus =
+                            multicut_correction_bonus(v, self.stack[si.index()].static_eval);
                         self.update_correction_history(si, bonus);
                     }
 
@@ -3786,22 +3782,19 @@ mod tests {
         // Both ends of the clamp. A quarter of CORRECTION_LIMIT is the cap upstream chose,
         // and /4 read as /2 would let a single multi-cut move the table twice as far.
         let cap = CORRECTION_LIMIT / 4;
-        assert_eq!(multicut_correction_bonus(Value::new(30_000), VALUE_ZERO, 64), cap);
-        assert_eq!(multicut_correction_bonus(VALUE_ZERO, Value::new(30_000), 64), -cap);
+        assert_eq!(multicut_correction_bonus(Value::new(30_000), VALUE_ZERO), cap);
+        assert_eq!(multicut_correction_bonus(VALUE_ZERO, Value::new(30_000)), -cap);
     }
 
     #[test]
-    fn the_multicut_correction_bonus_scales_with_the_singular_depth() {
-        // The excess is measured from the static evaluation, and the depth it is weighted by
-        // is the SINGULAR depth. Below the clamp the formula is exact, so pin it there.
-        assert_eq!(multicut_correction_bonus(Value::new(100), Value::new(0), 1), 100 * 177 / 1024);
-        assert_eq!(multicut_correction_bonus(Value::new(100), Value::new(0), 2), 200 * 177 / 1024);
+    fn the_multicut_correction_bonus_is_a_flat_fraction_of_the_excess() {
+        // The excess is measured from the static evaluation and no depth weights it. Below
+        // the clamp the formula is exact, so pin it there.
+        assert_eq!(multicut_correction_bonus(Value::new(100), Value::new(0)), 100 * 664 / 1024);
+        assert_eq!(multicut_correction_bonus(Value::new(300), Value::new(100)), 200 * 664 / 1024);
         // Equal evaluation and value is no evidence at all.
-        assert_eq!(multicut_correction_bonus(Value::new(50), Value::new(50), 8), 0);
-        // 177/1024 and not 177/1000: the shift is a power of two.
-        assert_ne!(
-            multicut_correction_bonus(Value::new(1000), Value::new(0), 1),
-            1000 * 177 / 1000
-        );
+        assert_eq!(multicut_correction_bonus(Value::new(50), Value::new(50)), 0);
+        // 664/1024 and not 664/1000: the divisor is a power of two.
+        assert_ne!(multicut_correction_bonus(Value::new(300), Value::new(0)), 300 * 664 / 1000);
     }
 }
