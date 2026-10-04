@@ -119,6 +119,18 @@ fn multicut_correction_bonus(value: Value, static_eval: Value, singular_depth: i
     )
 }
 
+/// The root score past which the search hunts a mate, at iteration depth `root_depth`
+/// (upstream `a35e229ec`).
+///
+/// A curve rather than a step: it approaches 750 as the iteration deepens, so a root score
+/// that stalls just below a fixed bar still crosses it eventually. Upstream marks the
+/// constants "not intended for playing strength" -- they are tuned for finding mates.
+#[inline]
+fn seek_mate_threshold(root_depth: i32) -> i32 {
+    debug_assert!(root_depth > 0);
+    750 + 220_000 / (root_depth * root_depth)
+}
+
 /// How the search reports progress.
 ///
 /// Implemented by the shell as UCI `info` lines, and by tests as a no-op or a recorder.
@@ -261,6 +273,9 @@ pub struct SearchWorker {
     published_tb_hits: u64,
     sel_depth: i32,
     root_depth: i32,
+    /// `seek_mate_threshold(root_depth)`, set beside `root_depth` so a node reads it rather
+    /// than dividing for it.
+    seek_mate_bar: i32,
     completed_depth: i32,
     /// The window width of the current root search, which the reduction formula scales by.
     root_delta: i32,
@@ -354,6 +369,7 @@ impl SearchWorker {
             tb_hits: 0,
             sel_depth: 0,
             root_depth: 0,
+            seek_mate_bar: 0,
             completed_depth: 0,
             root_delta: 0,
             pv_index: 0,
@@ -1124,6 +1140,7 @@ impl SearchWorker {
             && !(self.limits.depth.is_some() && main_thread && self.root_depth >= max_depth)
         {
             self.root_depth += 1;
+            self.seek_mate_bar = seek_mate_threshold(self.root_depth);
 
             if main_thread {
                 // Halve rather than clear: a move that was unstable two iterations ago is
@@ -1525,17 +1542,17 @@ impl SearchWorker {
         }
         depth = depth.min(MAX_PLY as i32 - 1);
 
-        // Whether the root is hunting a mate: deep enough to be past the opening moves of
-        // the iteration, with the line being reported already worth more than any material
-        // advantage. Step 9 shortens its futility cutoff while this holds and Step 16 stands
-        // down, so the tree collapses onto the mating line instead of re-proving the moves
-        // around it.
+        // Whether the root is hunting a mate: the line being reported is already worth more
+        // than any material advantage, by a margin that shrinks as the iteration deepens.
+        // Steps 8 and 16 stand down while this holds and Step 9 shortens its futility cutoff,
+        // so the tree collapses onto the mating line instead of re-proving the moves around
+        // it.
         //
         // Asked once, at the ROOT's depth and of the ROOT's score, and answered the same way
         // at every node of the iteration. Read AFTER the quiescence dive, not beside the
         // node-kind constants where upstream declares it: a leaf returns above without
-        // reaching either reader, and this is two loads.
-        let seek_mate = self.root_depth >= 16 && self.root_moves[self.pv_index].score.abs() >= 2000;
+        // reaching any reader.
+        let seek_mate = self.root_moves[self.pv_index].score.abs() >= self.seek_mate_bar;
 
         // A move that repeats a position already on the board is available here, so the
         // side to move can guarantee at least a draw. Checked before anything else,
@@ -3746,6 +3763,17 @@ mod tests {
         // The two DISAGREE without the max, which is what makes moving it a bug rather
         // than a rearrangement.
         assert_ne!(-1i32 / 256, -1i32 >> 8);
+    }
+
+    #[test]
+    fn the_seek_mate_threshold_passes_through_upstreams_four_points() {
+        // The four points upstream's commit message names, at its integer division.
+        assert_eq!(seek_mate_threshold(10), 2950);
+        assert_eq!(seek_mate_threshold(16), 1609);
+        assert_eq!(seek_mate_threshold(20), 1300);
+        assert_eq!(seek_mate_threshold(50), 838);
+        // Truncating toward 750 at the deepest iteration, never reaching it.
+        assert_eq!(seek_mate_threshold(MAX_PLY as i32 - 1), 753);
     }
 
     #[test]
