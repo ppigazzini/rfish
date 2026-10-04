@@ -401,6 +401,45 @@ in it.
 - **`cargo xtask`** — <https://github.com/matklad/cargo-xtask>. The pattern, not a
   dependency.
 
+## The machine
+
+What a latency or a prediction claim is reasoned from when no axis in
+[11-performance.md](11-performance.md) can take it. **A table is a prior, never a verdict**:
+it sizes what a change could buy and names the column to measure, and every rule on that page
+stands — a figure read from a table is still not a measurement of this binary.
+
+- **Agner Fog, "Software optimization resources"** — <https://www.agner.org/optimize/>. Five
+  manuals, revised as new cores ship. Three bear on this port:
+  - **Instruction tables** — <https://www.agner.org/optimize/instruction_tables.pdf>, and the
+    same data as a spreadsheet beside it. Measured latency, reciprocal throughput and
+    macro-operation count for every instruction on every core, Zen 4 and Zen 5 included. It is
+    the column an instruction count does not have: callgrind prices a 32-bit `idiv` and an
+    `imul` at one instruction each, and the Zen 4 table reads 10–13 cycles of latency against
+    3. That is the quantity the reciprocal multiplies refuted above were FOR, and it is also
+    its ceiling — a few cycles a division, and only where the quotient is on the critical
+    path. The same table reads a 256-bit `vpgatherdd` at 42 macro-operations, which is why a
+    gather census is worth taking and why building a vector from four scalar loads lost.
+  - **The microarchitecture of Intel, AMD and VIA CPUs** —
+    <https://www.agner.org/optimize/microarchitecture.pdf>. One chapter a core: the branch
+    predictor, the µop cache, the execution pipes, and a store-forwarding section saying which
+    load shapes stall. Read it before interpreting the mispredict ratio in the table above, or
+    a claim like refish's `5e97aa312` that no axis here can see.
+  - **Optimizing subroutines in assembly language** —
+    <https://www.agner.org/optimize/optimizing_assembly.pdf>. For READING a disassembly, which
+    is the instrument half the verdicts on this page were closed with: dependency chains,
+    loop-carried bottlenecks, division by a constant, code alignment. Its remedies are
+    assembly and intrinsics and are out; the diagnosis is what crosses.
+
+  The other two are narrower here. **Optimizing software in C++** is about the golden's
+  language, and its chapter on what a compiler can and cannot prove is the useful one for
+  reading a sibling's perf commit. **Calling conventions** is the reference for which
+  arguments travel in registers, the fact under every frame and prologue row above.
+
+  The page's software is listed to record that it is **out**: the vector class library and
+  `asmlib` are intrinsics and assembly, which `forbid(unsafe_code)` closes, and its
+  performance-counter harness is C++ over a kernel driver — an instrument to run beside the
+  engine if it is ever tried, not something the tree can take.
+
 ## Type theory and type design
 
 What [09-type-design.md](09-type-design.md) rests on. Each entry says what it is *for* here;
