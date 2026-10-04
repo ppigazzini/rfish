@@ -59,8 +59,8 @@ Nodes searched  : 2039
 info string Network replica 1: Local memory.
 
 Position: 1/1 (8/8/8/4k3/8/8/4P3/4K3 w - - 0 1)
-info depth 1 seldepth 2 multipv 1 score cp -1 nodes 6 tbhits 0 pv e1d2
-bestmove e1d2
+info depth 1 seldepth 2 multipv 1 score cp 2 nodes 6 tbhits 0 pv e1f1
+bestmove e1f1
 
 ===========================
 Nodes searched  : 6
@@ -70,23 +70,22 @@ Position: 1/1 (8/8/8/4k3/8/8/4P3/4K3 w - - 0 1)
 
 
 NNUE network contributions (Normalized, White to move)
-+------------+------------+------------+------------+
-|   Bucket   |  Material  | Positional |   Total    |
-|            |   (PSQT)   |  (Layers)  |            |
-+------------+------------+------------+------------+
-|  0         |  -  0.11   |  +  0.10   |  -  0.01   | <-- this bucket is used
-|  1         |  +  0.05   |  +  2.10   |  +  2.15   |
-|  2         |  +  0.19   |  +  0.53   |  +  0.72   |
-|  3         |  +  0.26   |  +  0.01   |  +  0.27   |
-|  4         |  +  0.28   |  -  0.01   |  +  0.27   |
-|  5         |  +  0.17   |  +  0.17   |  +  0.35   |
-|  6         |  +  0.03   |  +  0.06   |  +  0.09   |
-|  7         |  +  0.35   |  +  0.68   |  +  1.02   |
-+------------+------------+------------+------------+
++------------+------------+
+|   Bucket   | Evaluation |
++------------+------------+
+|  0         |  +  0.01   | <-- this bucket is used
+|  1         |  +  0.11   |
+|  2         |  +  0.09   |
+|  3         |  +  0.03   |
+|  4         |  -  0.14   |
+|  5         |  +  0.07   |
+|  6         |  +  0.56   |
+|  7         |  -  0.01   |
++------------+------------+
 
-NNUE evaluation          -3 (side to move, internal units)
-NNUE evaluation        -0.01 (white side)
-Final evaluation      -0.01 (white side) [with scaled NNUE, ...]
+NNUE evaluation          +3 (side to move, internal units)
+NNUE evaluation        +0.01 (white side)
+Final evaluation      +0.01 (white side) [with scaled NNUE, ...]
 
 
 ===========================

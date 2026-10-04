@@ -4,9 +4,9 @@
 //!
 //! ```text
 //!   position ──> 3 feature sets ──> FeatureTransformer ──> 1024 u8
-//!                                        │                     │
-//!                                        └──> PSQT head        └──> fc_0 (1024→32)
-//!                                             (8 buckets)            ├─ sqr_relu ─┐
+//!                                                              │
+//!                                                              └──> fc_0 (1024→32)
+//!                                                                    ├─ sqr_relu ─┐
 //!                                                                    └─ relu ─────┤
 //!                                                                        fc_1 (64→32)
 //!                                                                    ┌─ sqr_relu ─┤
@@ -14,9 +14,9 @@
 //!                                                                        fc_2 (128→1)
 //! ```
 //!
-//! Eight independent output heads exist; the material count selects one. Both the PSQT
-//! score and the positional score come back, because the search blends them by their
-//! disagreement — a position the two heads argue about is one to be less confident in.
+//! Eight independent output stacks exist; the material count selects one, and its output is
+//! the network's whole answer. Upstream `a17c0ce28` removed the PSQT head that used to be
+//! summed beside it.
 //!
 //! # No embedded net
 //!
@@ -52,7 +52,7 @@ use transformer::{EvalScratch, FeatureTransformer};
 /// Read from here, never recited into prose: it changes on every net-swapping upstream
 /// sync, and a doc that names the old one sends a reader looking for a file that no longer
 /// exists.
-pub const DEFAULT_NET: &str = "nn-134a887f4c8f.nnue";
+pub const DEFAULT_NET: &str = "nn-252f33942263.nnue";
 
 /// The concatenated activation buffer the two hidden layers share.
 const CONCAT: usize = L2 * 2 + L3 * 2;
@@ -270,48 +270,41 @@ impl Network {
     /// Evaluate `pos`: the raw network output, which `eval` prints as internal units.
     ///
     /// The bucket is chosen by material: `(pieces - 1) / 4`, so an endgame and a full board
-    /// get different heads. Each head is scaled down on its own before the two are summed,
-    /// which is upstream's rounding.
+    /// get different output stacks.
     #[must_use]
     pub fn evaluate(&self, pos: &Position, ply: Ply, scratch: &mut EvalScratch) -> Value {
         let bucket = (pos.piece_total() as usize - 1) / 4;
-        let psqt = self.transformer.transform(pos, bucket, ply.index(), scratch);
+        self.transformer.transform(pos, ply.index(), scratch);
         let positional = self.stacks[bucket].propagate(scratch.transformed());
-        // The two heads are COMPONENTS of one score, so their sum is a score; `Add<Value>`
-        // is deliberately absent, which is what makes the summing explicit here.
-        Value::new(
-            (i64::from(psqt) / OUTPUT_SCALE) as i32 + (i64::from(positional) / OUTPUT_SCALE) as i32,
-        )
+        Value::new((i64::from(positional) / OUTPUT_SCALE) as i32)
     }
 
     /// Every bucket's output, and which one this position actually uses.
     ///
-    /// What `eval` prints. Upstream runs the whole network once per bucket rather than
-    /// reading the chosen one, so the table shows what each head WOULD have said — that is
-    /// the diagnostic, and evaluating only the live bucket would leave seven rows blank.
+    /// What `eval` prints. Upstream runs every output stack over the one set of transformed
+    /// features rather than reading the chosen one, so the table shows what each stack WOULD
+    /// have said — that is the diagnostic, and evaluating only the live bucket would leave
+    /// seven rows blank. The features do not depend on the bucket, so they are transformed
+    /// once, as upstream's trace does.
     #[must_use]
     pub fn trace_evaluate(&self, pos: &Position, scratch: &mut EvalScratch) -> NetworkTrace {
         let mut trace = NetworkTrace {
-            psqt: [VALUE_ZERO; LAYER_STACKS],
             positional: [VALUE_ZERO; LAYER_STACKS],
             correct_bucket: (pos.piece_total() as usize - 1) / 4,
         };
+        self.transformer.transform(pos, 0, scratch);
         for bucket in 0..LAYER_STACKS {
-            let psqt = self.transformer.transform(pos, bucket, 0, scratch);
             let positional = self.stacks[bucket].propagate(scratch.transformed());
-            trace.psqt[bucket] = Value::new((i64::from(psqt) / OUTPUT_SCALE) as i32);
             trace.positional[bucket] = Value::new((i64::from(positional) / OUTPUT_SCALE) as i32);
         }
         trace
     }
 }
 
-/// Every output head's answer for one position.
+/// Every output stack's answer for one position.
 #[derive(Clone, Copy, Debug)]
 pub struct NetworkTrace {
-    /// The material head, per bucket.
-    pub psqt: [Value; LAYER_STACKS],
-    /// The positional head, per bucket.
+    /// Each output stack's evaluation, per bucket.
     pub positional: [Value; LAYER_STACKS],
     /// The bucket the piece count selects.
     pub correct_bucket: usize,

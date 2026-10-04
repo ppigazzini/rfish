@@ -988,8 +988,8 @@ took `weights[base..base + WIDTH]` and zipped it against the tile: **94.5M instr
 
 Both folds now view their tables as fixed-width ROWS once per call through `as_chunks`, so a
 feature's row is an index rather than a slice, and walk two `[T; WIDTH]` arrays by `0..WIDTH`,
-which needs no check at either end. `L1` is a whole number of tiles and the PSQT head is
-exactly one row, so both tables divide exactly — check that before reaching for this.
+which needs no check at either end. `L1` is a whole number of tiles and the PSQT head was
+exactly one row, so both tables divided exactly — check that before reaching for this.
 
 | | Ir |
 |---|---|
@@ -1231,8 +1231,8 @@ per-consumer part and gate the second.
 Two kernels emitted no vector instructions at all, both found by `objdump` rather than by
 reading, and neither is large enough to appear in a profile's symbol list:
 
-- **`fold_psqt` accumulates eight `i32`** — one AVX2 register exactly — and held 33 `mov`s and
-  not one vector instruction. LLVM will not turn an eight-lane integer loop into a `vpaddd` on
+- **`fold_psqt` accumulated eight `i32`** — one AVX2 register exactly — and held 33 `mov`s and
+  not one vector instruction, until it went with the PSQT head in SFNNv17. LLVM will not turn an eight-lane integer loop into a `vpaddd` on
   its own. Written as `Simd<i32, 8>`: **−3.3M**.
 - **`fc_2` is 128 → 1**, so a generic `propagate::<N>` instantiated at `Simd<i32, 1>`. LLVM
   widened it to `xmm` and then put a HORIZONTAL REDUCTION inside the loop — `vpshufd`/`vpaddd`

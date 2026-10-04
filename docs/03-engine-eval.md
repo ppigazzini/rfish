@@ -21,9 +21,9 @@ end of this page carries the gap to upstream and every attempt that failed to cl
 
 ```text
   position ──> 3 feature sets ──> FeatureTransformer ──> 1024 u8
-                                       │                     │
-                                       └──> PSQT head        └──> fc_0 (1024→32)
-                                            (8 buckets)            ├─ sqr_relu ─┐
+                                                             │
+                                                             └──> fc_0 (1024→32)
+                                                                   ├─ sqr_relu ─┐
                                                                    └─ relu ─────┤
                                                                        fc_1 (64→32)
                                                                    ┌─ sqr_relu ─┤
@@ -31,9 +31,10 @@ end of this page carries the gap to upstream and every attempt that failed to cl
                                                                        fc_2 (128→1)
 ```
 
-Eight output heads exist; `(pieces - 1) / 4` selects one. The PSQT score and the positional
-score are scaled down separately and summed into one raw output, which the blend below then
-holds against the material count.
+Eight output stacks exist; `(pieces - 1) / 4` selects one, and its output, scaled down, is
+the one raw score the blend below holds against the material count. There is no PSQT head:
+upstream's SFNNv17 (`a17c0ce28`) removed it, and with it the eight-bucket `i32` accumulator
+that every fold below used to carry beside the `i16` one.
 
 ## The three feature sets
 
@@ -100,8 +101,8 @@ Applying the diff is one sweep of the accumulator, not one per changed feature: 
 walk collects what changed and a tiled fold applies the whole collection, so the accumulator
 is read once and written once however many rows go into it. That is the shape of upstream's
 `update_accumulator_incremental`, and it is safe here for a reason worth stating — the
-accumulator is wrapping `i16` and the PSQT head `i32`, and both are associative and
-commutative under the additions applied, so collecting before applying cannot change a value.
+accumulator is wrapping `i16`, which is associative and commutative under the additions
+applied, so collecting before applying cannot change a value.
 
 ## From network output to a search value
 
@@ -1124,8 +1125,9 @@ functions doing a few times more work than they need to. Both were found by read
 `objdump`, and ../mcfish's source records hitting the same two walls on the same two
 kernels, which is what makes them worth naming as a SHAPE rather than as two incidents.
 
-**`fold_psqt` accumulates eight `i32`, which is one AVX2 register exactly** — and it held 33
-`mov`s and not one vector instruction. LLVM will not turn an eight-lane integer loop into a
+**`fold_psqt` accumulated eight `i32`, which is one AVX2 register exactly** — and it held 33
+`mov`s and not one vector instruction. The kernel went with the PSQT head in SFNNv17; the
+lesson did not. LLVM will not turn an eight-lane integer loop into a
 `vpaddd` on its own. ../mcfish says so about its own `nnue_acc_apply_psqt_delta`: "the scalar
 8-step loop these replaced stayed scalar (the toolchain does not auto-vectorize integer
 loops)". Written as `Simd<i32, 8>` it is **3.3M**.

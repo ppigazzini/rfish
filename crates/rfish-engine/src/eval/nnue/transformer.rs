@@ -1,9 +1,8 @@
 //! The feature transformer: the first and by far the largest layer.
 //!
 //! It turns the position's active feature indices into 1024 accumulated `i16` values per
-//! perspective, plus an 8-bucket PSQT head. Ninety-nine percent of the network's weights
-//! live here, and the whole design of NNUE is that this layer can be updated incrementally
-//! rather than recomputed.
+//! perspective. Ninety-nine percent of the network's weights live here, and the whole design
+//! of NNUE is that this layer can be updated incrementally rather than recomputed.
 //!
 //! # The accumulator is updated by DIFFING FEATURE SETS
 //!
@@ -36,7 +35,7 @@ use crate::board::position::Position;
 use crate::board::threats::{DirtyPawnPairs, DirtyThreat};
 use crate::board::types::{COLOR_NB, Color, Key, MAX_PLY, Piece, Ply, PosKey, SQUARE_NB, Square};
 
-use super::common::{Aligned, FT_MAX_VAL, L1, NetError, NetReader, NetWriter, PSQT_BUCKETS};
+use super::common::{Aligned, FT_MAX_VAL, L1, NetError, NetReader, NetWriter};
 use super::features::{
     HALFKA_DIMENSIONS, KaIndex, THREAT_AND_PP_DIMENSIONS, TpIndex, halfka_delta, pawn_pair_active,
     pawn_pair_delta, threat_active, threat_delta, threat_mirror,
@@ -67,10 +66,6 @@ pub struct FeatureTransformer {
     /// `threat_and_pp_weights[index * L1 + j]`, `i8` because these features are many and
     /// their individual contributions small.
     threat_and_pp_weights: Aligned<i8>,
-    /// `psqt_weights[index * PSQT_BUCKETS + k]` for the king-piece features.
-    psqt_weights: Aligned<i32>,
-    /// The same, for the threat and pawn-pair features.
-    threat_and_pp_psqt_weights: Aligned<i32>,
 }
 
 impl std::fmt::Debug for FeatureTransformer {
@@ -86,29 +81,26 @@ impl std::fmt::Debug for FeatureTransformer {
 pub struct Accumulator {
     /// `accumulation[perspective][j]`.
     pub accumulation: [Vec<i16>; COLOR_NB],
-    /// `psqt[perspective][bucket]`.
-    pub psqt: [[i32; PSQT_BUCKETS]; COLOR_NB],
 }
 
 impl Default for Accumulator {
     fn default() -> Accumulator {
-        Accumulator {
-            accumulation: [vec![0; L1], vec![0; L1]],
-            psqt: [[0; PSQT_BUCKETS]; COLOR_NB],
-        }
+        Accumulator { accumulation: [vec![0; L1], vec![0; L1]] }
     }
 }
 
-/// The last evaluated position's accumulator and the feature sets that produced it.
-///
-/// One per worker. Keeping only the most recent is deliberate: in a search, consecutive
-/// evaluations are a parent and its child, or two siblings, and those differ by a handful of
 /// One perspective's accumulator and the feature sets that produced it.
 ///
 /// Per PERSPECTIVE, not per position, because the two sides go stale independently: every
 /// feature a perspective sees is indexed against ITS OWN king square, so White's king moving
 /// invalidates everything White sees and nothing Black sees.
+///
+/// Aligned to a cache line, which makes it 128 bytes where its fields need 96. It was 128
+/// until upstream `a17c0ce28` took the eight-bucket PSQT head out of it, and putting the size
+/// back measured cheaper at both tiers over the same nodes: −261,071 instructions at avx2 and
+/// −459,347 at sse41 on `bench 16 1 8`. It costs no memory the previous layout did not use.
 #[derive(Clone, Debug)]
+#[repr(align(64))]
 struct Side {
     /// The king square these were computed for, or `None` when the slot holds nothing.
     king: Option<Square>,
@@ -130,7 +122,6 @@ struct Side {
     /// construction, +916 KB peak RSS per worker. `computed_for` was always the emptiness
     /// flag, never the buffer's length, so nothing read the difference.
     acc: Box<[i16]>,
-    psqt: [i32; PSQT_BUCKETS],
     /// The placement that produced the above. The king-piece features are diffed straight
     /// off this rather than recomputed and merged, so the set itself is never materialised.
     board: [Piece; SQUARE_NB],
@@ -147,7 +138,6 @@ impl Side {
         Side {
             king: None,
             acc: vec![0; L1].into_boxed_slice(),
-            psqt: [0; PSQT_BUCKETS],
             board: [Piece::NONE; SQUARE_NB],
             computed_for: EMPTY_KEY,
         }
@@ -544,28 +534,21 @@ impl FeatureTransformer {
             biases: Aligned::new(L1),
             weights: Aligned::new(L1 * HALFKA_DIMENSIONS / LANE),
             threat_and_pp_weights: Aligned::new(L1 * THREAT_AND_PP_DIMENSIONS),
-            psqt_weights: Aligned::new(PSQT_BUCKETS * HALFKA_DIMENSIONS),
-            threat_and_pp_psqt_weights: Aligned::new(PSQT_BUCKETS * THREAT_AND_PP_DIMENSIONS),
         }
     }
 
     /// How many bytes of weights this transformer holds.
     #[must_use]
     pub fn weight_bytes(&self) -> usize {
-        self.biases.len() * 2
-            + self.weights.len() * LANE * 2
-            + self.threat_and_pp_weights.len()
-            + self.psqt_weights.len() * 4
-            + self.threat_and_pp_psqt_weights.len() * 4
+        self.biases.len() * 2 + self.weights.len() * LANE * 2 + self.threat_and_pp_weights.len()
     }
 
     /// Read the transformer's parameters.
     ///
     /// **The order is the file's, and it is not negotiable.** Biases, then the threat
-    /// weights and their PSQT block, then the pawn-pair weights and their PSQT block, then
-    /// the king-piece weights and their PSQT block. The two encodings alternate: the `i8`
-    /// blocks are stored raw and the rest LEB128-compressed, because a byte-wide weight
-    /// gains nothing from a variable-length encoding.
+    /// weights, then the pawn-pair weights, then the king-piece weights. The `i8` blocks are
+    /// stored raw and the `i16` ones LEB128-compressed, because a byte-wide weight gains
+    /// nothing from a variable-length encoding.
     pub fn read(&mut self, r: &mut NetReader<impl std::io::Read>) -> Result<(), NetError> {
         use super::features::{PP_DIMENSIONS, THREAT_DIMENSIONS};
         let threat_dims = THREAT_DIMENSIONS as usize;
@@ -575,14 +558,9 @@ impl FeatureTransformer {
 
         let (threat_w, pp_w) = self.threat_and_pp_weights.split_at_mut(threat_dims * L1);
         r.i8s(threat_w)?;
-        let (threat_psqt, pp_psqt) =
-            self.threat_and_pp_psqt_weights.split_at_mut(threat_dims * PSQT_BUCKETS);
-        r.leb128(threat_psqt)?;
         r.i8s(&mut pp_w[..pp_dims * L1])?;
-        r.leb128(&mut pp_psqt[..pp_dims * PSQT_BUCKETS])?;
 
         r.leb128_i16_groups(self.weights.iter_mut().map(Simd::as_mut_array))?;
-        r.leb128(&mut self.psqt_weights)?;
 
         // `permute_weights` is skipped on purpose: it exists only so a vector `packus` can
         // read adjacent lanes in order, and the permutation is the identity when no vector
@@ -604,14 +582,9 @@ impl FeatureTransformer {
 
         let (threat_w, pp_w) = self.threat_and_pp_weights.split_at(threat_dims * L1);
         w.i8s(threat_w)?;
-        let (threat_psqt, pp_psqt) =
-            self.threat_and_pp_psqt_weights.split_at(threat_dims * PSQT_BUCKETS);
-        w.leb128(threat_psqt)?;
         w.i8s(&pp_w[..pp_dims * L1])?;
-        w.leb128(&pp_psqt[..pp_dims * PSQT_BUCKETS])?;
 
         w.leb128_i16_from(self.weights.iter().flat_map(|v| v.as_array().iter().copied()))?;
-        w.leb128(&self.psqt_weights)?;
         Ok(())
     }
 
@@ -637,9 +610,9 @@ impl FeatureTransformer {
     /// feature, which is the same weight traffic and several times the accumulator traffic.
     /// Upstream folds its add and subtract lists in one pass for the same reason.
     ///
-    /// Order does not matter to the result: the accumulator is wrapping `i16` and the PSQT
-    /// head is `i32`, and both are associative and commutative under the additions applied
-    /// here, so collecting first changes nothing about the value.
+    /// Order does not matter to the result: the accumulator is wrapping `i16`, which is
+    /// associative and commutative under the additions applied here, so collecting first
+    /// changes nothing about the value.
     fn collect_diff(
         old: &[TpIndex],
         new: &[TpIndex],
@@ -881,63 +854,6 @@ impl FeatureTransformer {
         }
     }
 
-    /// The PSQT head's half of [`FeatureTransformer::fold_into`].
-    ///
-    /// Separate because it is eight values against 1024 and shares nothing with the sweep
-    /// above — folding it inside would put a second, differently shaped loop in the hot tile.
-    fn fold_psqt(
-        &self,
-        psqt: &mut [i32; PSQT_BUCKETS],
-        ka: (&[KaIndex], &[KaIndex]),
-        tp: (&[TpIndex], &[TpIndex]),
-    ) {
-        // The same shape as `fold_into`: both tables viewed as PSQT_BUCKETS-wide rows once,
-        // so a feature's row is `weights[index]` rather than a range slice, and the eight
-        // accumulations are an indexed loop over two fixed-size arrays rather than a `zip`.
-        // On a kernel that adds eight `i32`s, that machinery was 13.7M of the 29.1M.
-        //
-        // The head itself is held in a LOCAL for the whole call, so it is loaded and stored
-        // once rather than once per feature -- `psqt` is behind a reference the compiler
-        // must assume the weight reads could alias.
-        // The head is EIGHT `i32`, which is one AVX2 register exactly -- and the indexed
-        // loop below it did not vectorise. Disassembled, this function held 33 `mov`s and
-        // not one vector instruction: LLVM will not turn an eight-lane integer loop into a
-        // `vpaddd` on its own, and ../mcfish records hitting the same wall on the same
-        // kernel (`nnue_acc_apply_psqt_delta`, "the scalar 8-step loop these replaced stayed
-        // scalar"). Say it in vectors instead, which needs no `unsafe`.
-        //
-        // Bit-identical: the same eight integer additions in the same per-row order. `Simd`
-        // arithmetic WRAPS where the scalar `-=` would trap under the gate profile's
-        // overflow checks, so this drops a check the head cannot fail -- upstream carries
-        // the same accumulation in `std::int32_t` and relies on the trainer to keep it in
-        // range, exactly as the `i16` half above does.
-        let ka_rows = <[i32]>::as_chunks::<PSQT_BUCKETS>(&self.psqt_weights).0;
-        let tp_rows = <[i32]>::as_chunks::<PSQT_BUCKETS>(&self.threat_and_pp_psqt_weights).0;
-        let mut acc = Simd::<i32, PSQT_BUCKETS>::from_array(*psqt);
-        // Written out per table rather than looped over `[(ka_rows, ka), (tp_rows, tp)]`.
-        // That loop paired a row table with an index slice at RUNTIME, which only
-        // typechecked while both index spaces were `u32` -- so the shape that made the fold
-        // compact is the same shape that let the two be swapped. A generic body restores the
-        // compactness and ALSO restores the swap, which is why this is written out.
-        //
-        // The order is unchanged and `i32` wrapping addition is associative, so the result
-        // is too. It is not free: avx2 +3.66M, sse41 -8.08M, net -4.4M, and that movement is
-        // the restructure rather than the types -- the newtypes alone measured zero.
-        for &index in ka.1 {
-            acc -= Simd::from_array(ka_rows[index.get() as usize]);
-        }
-        for &index in ka.0 {
-            acc += Simd::from_array(ka_rows[index.get() as usize]);
-        }
-        for &index in tp.1 {
-            acc -= Simd::from_array(tp_rows[index.get() as usize]);
-        }
-        for &index in tp.0 {
-            acc += Simd::from_array(tp_rows[index.get() as usize]);
-        }
-        *psqt = acc.to_array();
-    }
-
     /// The active feature sets, one per perspective, in generation order.
     ///
     /// Deliberately NOT sorted: [`FeatureTransformer::diff_apply`] tests membership rather
@@ -1057,12 +973,10 @@ impl FeatureTransformer {
             // own placement and arrival key are read.
             let PlySlot { side, board, reached, .. } = &mut at[0];
             let dst = &mut side[i];
-            dst.psqt = src.psqt;
             dst.king = Some(ksq);
             dst.board = *board;
             let ka = (&adds[..], &subs[..]);
             let tp = (&tp_adds[..], &tp_subs[..]);
-            self.fold_psqt(&mut dst.psqt, ka, tp);
             self.fold_into(&src.acc, &mut dst.acc, ka, tp);
             // STAMP the hop. This is the whole difference from concatenating the chain into
             // one fold: an intermediate ply that has been materialised is a base the next
@@ -1163,11 +1077,9 @@ impl FeatureTransformer {
         let slot = &mut scratch.ka_cache[i][ksq.index()];
         if !seeded {
             slot.acc.copy_from_slice(&self.biases);
-            slot.psqt = [0; PSQT_BUCKETS];
         }
         slot.king = Some(ksq);
         slot.board = *board;
-        self.fold_psqt(&mut slot.psqt, ka, (&[], &[]));
         self.fold_ka_inplace(&mut slot.acc, ka);
     }
 
@@ -1235,21 +1147,11 @@ impl FeatureTransformer {
         // above and are only read now, so both can be shared), the parent ply is read, the
         // destination ply is written, and the record lists are read.
         let tp = (&scratch.tp_adds[i][..], &scratch.tp_subs[i][..]);
-        let a_psqt = scratch.ka_cache[i][ksq.index()].psqt;
-        let b_psqt = scratch.ka_cache[i][src_ksq.index()].psqt;
-        let parent_psqt = scratch.plies[base].side[i].psqt;
-        let mut psqt = [0i32; PSQT_BUCKETS];
-        for k in 0..PSQT_BUCKETS {
-            psqt[k] = a_psqt[k] + parent_psqt[k] - b_psqt[k];
-        }
-        self.fold_psqt(&mut psqt, (&[], &[]), tp);
-
         let (ka_cache, plies) = (&scratch.ka_cache[i], &mut scratch.plies);
         let (below, at) = plies.split_at_mut(ply);
         let parent_acc = &below[base].side[i];
         let PlySlot { side, board, reached, .. } = &mut at[0];
         let dst = &mut side[i];
-        dst.psqt = psqt;
         dst.king = Some(ksq);
         dst.board = *board;
         dst.computed_for = *reached;
@@ -1291,7 +1193,6 @@ impl FeatureTransformer {
         let src = &scratch.cache[i][ksq.index()];
         let seeded = src.side.king.is_some();
         let base_board = if seeded { src.side.board } else { [Piece::NONE; SQUARE_NB] };
-        let base_psqt = if seeded { src.side.psqt } else { [0; PSQT_BUCKETS] };
 
         let (plies, adds, subs) = (&scratch.plies, &mut scratch.adds[i], &mut scratch.subs[i]);
         let _ = plies;
@@ -1312,7 +1213,6 @@ impl FeatureTransformer {
         if !seeded {
             cache_slot.side.acc.copy_from_slice(&self.biases);
         }
-        cache_slot.side.psqt = base_psqt;
         cache_slot.side.king = Some(ksq);
         cache_slot.side.board = *pos.board();
 
@@ -1329,9 +1229,7 @@ impl FeatureTransformer {
         let ka = (&adds[..], &subs[..]);
         let tp = (&tp_adds[..], &tp_subs[..]);
         let slot = &mut cache[ksq.index()];
-        self.fold_psqt(&mut slot.side.psqt, ka, tp);
         let dst = &mut plies[ply].side[i];
-        dst.psqt = slot.side.psqt;
         dst.king = Some(ksq);
         dst.board = *pos.board();
         self.fold_mirror(&mut slot.side.acc, &mut dst.acc, ka, tp);
@@ -1341,19 +1239,13 @@ impl FeatureTransformer {
         slot.threats.extend_from_slice(&scratch.next_threats[i]);
     }
 
-    /// Fill the scratch's transformed features and return the PSQT score.
+    /// Fill the scratch's transformed features.
     ///
     /// The output is a pairwise product, not an activation: the 1024 accumulated values are
     /// split in half and multiplied element-wise, which is what gives the first hidden layer
     /// a quadratic term without a second matrix. Both halves are clamped to `[0, 255]`
     /// first, so the product fits `u8` after the shift.
-    pub fn transform(
-        &self,
-        pos: &Position,
-        bucket: usize,
-        ply: usize,
-        scratch: &mut EvalScratch,
-    ) -> i32 {
+    pub fn transform(&self, pos: &Position, ply: usize, scratch: &mut EvalScratch) {
         // The RAW key, not the table key: the accumulator depends on the pieces alone, and
         // mixing the halfmove clock in would miss the cache every time the clock ticked
         // past fourteen without a single feature having changed.
@@ -1424,9 +1316,6 @@ impl FeatureTransformer {
 
         let us = pos.side_to_move();
         let perspectives = [us, !us];
-        let psqt = (scratch.plies[ply].side[perspectives[0].index()].psqt[bucket]
-            - scratch.plies[ply].side[perspectives[1].index()].psqt[bucket])
-            / 2;
 
         // Both operands are clamped into [0, 255], so their product cannot exceed 65,025 and
         // the whole pairwise step fits in `u16` -- twice the lanes per register that the
@@ -1453,7 +1342,6 @@ impl FeatureTransformer {
                 *o = ((sum0 * sum1) >> 9) as u8;
             }
         }
-        psqt
     }
 }
 
@@ -1473,7 +1361,6 @@ mod tests {
         let ft = FeatureTransformer::new();
         assert_eq!(ft.biases.len(), L1);
         assert_eq!(ft.weights.len() * LANE, L1 * HALFKA_DIMENSIONS);
-        assert_eq!(ft.psqt_weights.len(), PSQT_BUCKETS * HALFKA_DIMENSIONS);
         assert_eq!(ft.threat_and_pp_weights.len(), L1 * THREAT_AND_PP_DIMENSIONS);
         // Around 112 MiB: worth knowing, and worth failing on if a dimension moves.
         assert!(ft.weight_bytes() > 100 << 20);
@@ -1502,12 +1389,6 @@ mod tests {
         for (i, w) in ft.threat_and_pp_weights.iter_mut().enumerate() {
             *w = ((i * 104_729) % 41) as i8 - 20;
         }
-        for (i, w) in ft.psqt_weights.iter_mut().enumerate() {
-            *w = ((i * 31) % 97) as i32 - 48;
-        }
-        for (i, w) in ft.threat_and_pp_psqt_weights.iter_mut().enumerate() {
-            *w = ((i * 17) % 53) as i32 - 26;
-        }
 
         // A deterministic walk: take the n-th legal move at each ply, for several n, so the
         // line covers captures, promotions and king moves rather than one narrow path.
@@ -1518,7 +1399,7 @@ mod tests {
             )
             .expect("valid fen");
             let mut walk = EvalScratch::default();
-            let _ = ft.transform(&pos, 0, 0, &mut walk);
+            ft.transform(&pos, 0, &mut walk);
 
             for ply in 1..12usize {
                 let list = generate_legal(&pos);
@@ -1531,12 +1412,11 @@ mod tests {
                 let dpp = pos.do_move_recording(m, gives_check, Some(dts));
                 walk.record(Ply::new(ply as i32), &pos, pos.raw_key(), dpp);
 
-                let rolled = ft.transform(&pos, 0, ply, &mut walk);
+                ft.transform(&pos, ply, &mut walk);
                 let rolled_out = walk.transformed().to_vec();
 
                 let mut fresh = EvalScratch::default();
-                let refreshed = ft.transform(&pos, 0, 0, &mut fresh);
-                assert_eq!(rolled, refreshed, "pick {pick}, ply {ply}, after {m:?}: PSQT differs");
+                ft.transform(&pos, 0, &mut fresh);
                 assert_eq!(
                     rolled_out,
                     fresh.transformed().to_vec(),
@@ -1556,9 +1436,6 @@ mod tests {
         for (i, w) in ft.threat_and_pp_weights.iter_mut().enumerate() {
             *w = ((i * 104_729) % 41) as i8 - 20;
         }
-        for (i, w) in ft.psqt_weights.iter_mut().enumerate() {
-            *w = ((i * 7907) % 101) as i32 - 50;
-        }
 
         let fens = [
             START_FEN,
@@ -1573,18 +1450,16 @@ mod tests {
         let mut shared = EvalScratch::default();
         for fen in fens {
             let pos = Position::from_fen(fen, false).expect("valid");
-            let bucket = (pos.piece_total() as usize - 1) / 4;
 
-            let pa = ft.transform(&pos, bucket, 0, &mut shared);
+            ft.transform(&pos, 0, &mut shared);
             let a = shared.transformed().to_vec();
 
             // A fresh scratch has nothing to diff against, so it computes from scratch.
             let mut fresh = EvalScratch::default();
-            let pb = ft.transform(&pos, bucket, 0, &mut fresh);
+            ft.transform(&pos, 0, &mut fresh);
             let b = fresh.transformed().to_vec();
 
             assert_eq!(a, b, "{fen}: diffed features differ from a fresh computation");
-            assert_eq!(pa, pb, "{fen}: diffed PSQT differs from a fresh computation");
         }
     }
 
@@ -1594,10 +1469,11 @@ mod tests {
         let ft = FeatureTransformer::new();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let first = ft.transform(&pos, 7, 0, &mut scratch);
+        ft.transform(&pos, 0, &mut scratch);
+        let first = scratch.transformed().to_vec();
         scratch.reset();
-        let second = ft.transform(&pos, 7, 0, &mut scratch);
-        assert_eq!(first, second);
+        ft.transform(&pos, 0, &mut scratch);
+        assert_eq!(first, scratch.transformed());
     }
 
     #[test]
@@ -1605,8 +1481,7 @@ mod tests {
         let ft = FeatureTransformer::new();
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let psqt = ft.transform(&pos, 7, 0, &mut scratch);
-        assert_eq!(psqt, 0);
+        ft.transform(&pos, 0, &mut scratch);
         assert!(scratch.transformed().iter().all(|&x| x == 0));
     }
 
@@ -1623,27 +1498,12 @@ mod tests {
 
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        ft.transform(&pos, 7, 0, &mut scratch);
+        ft.transform(&pos, 0, &mut scratch);
 
         // 300 clamps to 255: 255 * 100 / 512 = 49.
         assert_eq!(scratch.transformed()[0], 49);
         // -5 clamps to 0, so the product is zero however large the other half is.
         assert_eq!(scratch.transformed()[1], 0);
-    }
-
-    /// The PSQT head is a difference between the two perspectives, halved. A network
-    /// symmetric in the two must therefore score zero.
-    #[test]
-    fn the_psqt_head_is_the_halved_perspective_difference() {
-        let mut ft = FeatureTransformer::new();
-        // Give every king-piece feature a constant PSQT weight in bucket 3. Both
-        // perspectives then see the same total and the difference cancels.
-        for i in 0..HALFKA_DIMENSIONS {
-            ft.psqt_weights[i * PSQT_BUCKETS + 3] = 10;
-        }
-        let pos = Position::from_fen(START_FEN, false).expect("valid");
-        let mut scratch = EvalScratch::default();
-        assert_eq!(ft.transform(&pos, 3, 0, &mut scratch), 0);
     }
 
     /// The scratch buffers must be reusable: a second call has to produce the same answer
@@ -1655,11 +1515,10 @@ mod tests {
         ft.biases[L1 / 2] = 200;
         let pos = Position::from_fen(START_FEN, false).expect("valid");
         let mut scratch = EvalScratch::default();
-        let pa = ft.transform(&pos, 7, 0, &mut scratch);
+        ft.transform(&pos, 0, &mut scratch);
         let a = scratch.transformed().to_vec();
-        let pb = ft.transform(&pos, 7, 0, &mut scratch);
+        ft.transform(&pos, 0, &mut scratch);
         let b = scratch.transformed().to_vec();
         assert_eq!(a, b);
-        assert_eq!(pa, pb);
     }
 }
