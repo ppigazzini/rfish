@@ -507,11 +507,14 @@ impl SearchWorker {
     /// entered, and the two differ: a node that returns before its move loop — a
     /// transposition cutoff, a draw, a stand-pat — costs nothing. Counting entries instead
     /// would inflate the bench by every such node.
+    ///
+    /// `capture` is the caller's `is_capture_stage(mv)`, taken rather than recomputed: every
+    /// caller has already asked, and between the asking and the move lie calls the compiler
+    /// cannot see through (upstream `1bf75bb3c`).
     // Always: zfish has no separate wrapper here at all -- the work is inline in
     // `searchImpl`, where the stack entry being written is already addressed.
     #[inline(always)]
-    fn do_move(&mut self, mv: Move, gives_check: bool, si: StackIx) {
-        let capture = self.pos.is_capture_stage(mv);
+    fn do_move(&mut self, mv: Move, gives_check: bool, capture: bool, si: StackIx) {
         let moved = self.pos.moved_piece(mv);
         let in_check = self.stack[si.index()].in_check;
         self.nodes += 1;
@@ -1985,8 +1988,10 @@ impl SearchWorker {
                         continue;
                     }
 
+                    let capture = self.pos.is_capture_stage(mv);
+                    debug_assert!(capture);
                     let gives_check = self.pos.gives_check(mv);
-                    self.do_move(mv, gives_check, si);
+                    self.do_move(mv, gives_check, capture, si);
 
                     // A quiescence probe first: it is far cheaper than the real search and
                     // rejects most candidates outright.
@@ -2260,7 +2265,7 @@ impl SearchWorker {
             let node_count = if N::ROOT { self.nodes } else { 0 };
 
             // Step 17. Make the move
-            self.do_move(mv, gives_check, si);
+            self.do_move(mv, gives_check, capture, si);
             new_depth += extension;
 
             // Step 18. Compute the late-move reduction, which a negative `r` turns into an
@@ -2928,7 +2933,7 @@ impl SearchWorker {
             }
 
             // Step 7. Make and search the move
-            self.do_move(mv, gives_check, si);
+            self.do_move(mv, gives_check, capture, si);
             let value = -self.qsearch::<Q>(-beta, -alpha, ply.next(), tt);
             self.undo_move(mv);
 
