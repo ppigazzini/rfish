@@ -3,17 +3,17 @@ info string Network replica 1: Local memory.
 info depth 1 seldepth 2 multipv 1 score cp 32 nodes 2 tbhits 0 pv d2d4
 info depth 2 seldepth 3 multipv 1 score cp 41 nodes 10 tbhits 0 pv d2d4
 info depth 3 seldepth 3 multipv 1 score cp 33 nodes 54 tbhits 0 pv d2d4 c7c6
-info depth 4 seldepth 6 multipv 1 score cp 14 nodes 509 tbhits 0 pv d2d4 d7d5 e2e3
+info depth 4 seldepth 6 multipv 1 score cp 14 nodes 513 tbhits 0 pv d2d4 d7d5 e2e3
 bestmove d2d4 ponder d7d5
 info string Network replica 1: Local memory.
 info depth 1 seldepth 2 multipv 1 score cp 14 nodes 2 tbhits 0 pv d2d4
 info depth 2 seldepth 3 multipv 1 score cp 15 nodes 22 tbhits 0 pv e2e4
-info depth 3 seldepth 6 multipv 1 score cp 17 nodes 84 tbhits 0 pv e2e4 b8c6
-info depth 4 seldepth 8 multipv 1 score cp 17 nodes 184 tbhits 0 pv e2e4 g8f6
-bestmove e2e4 ponder g8f6
+info depth 3 seldepth 6 multipv 1 score cp 17 nodes 59 tbhits 0 pv e2e4 g8f6
+info depth 4 seldepth 7 multipv 1 score cp 20 nodes 174 tbhits 0 pv d2d4 d7d5
+bestmove d2d4 ponder d7d5
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 17 nodes 2 tbhits 0 pv e2e4
-info depth 2 seldepth 3 multipv 1 score cp 17 nodes 15 tbhits 0 pv e2e4 g8f6
-info depth 3 seldepth 4 multipv 1 score cp 16 nodes 105 tbhits 0 pv e2e4 c7c5
-info depth 4 seldepth 8 multipv 1 score cp 18 nodes 341 tbhits 0 pv d2d4 d7d5
+info depth 1 seldepth 2 multipv 1 score cp 20 nodes 2 tbhits 0 pv d2d4
+info depth 2 seldepth 3 multipv 1 score cp 20 nodes 25 tbhits 0 pv d2d4 d7d5
+info depth 3 seldepth 4 multipv 1 score cp 18 nodes 74 tbhits 0 pv d2d4 d7d5 e2e3
+info depth 4 seldepth 5 multipv 1 score cp 18 nodes 199 tbhits 0 pv d2d4 d7d5 c2c4
 bestmove d2d4 ponder d7d5

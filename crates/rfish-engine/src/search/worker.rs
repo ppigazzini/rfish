@@ -276,8 +276,6 @@ pub struct SearchWorker {
     /// than dividing for it.
     seek_mate_bar: i32,
     completed_depth: i32,
-    /// The window width of the current root search, which the reduction formula scales by.
-    root_delta: i32,
     pv_index: usize,
     /// One past the last root move sharing the current tablebase rank.
     pv_last: usize,
@@ -370,7 +368,6 @@ impl SearchWorker {
             root_depth: 0,
             seek_mate_bar: 0,
             completed_depth: 0,
-            root_delta: 0,
             pv_index: 0,
             pv_last: 0,
             multi_pv: 1,
@@ -886,10 +883,7 @@ impl SearchWorker {
     /// Both factors are logarithmic, so the table is multiplicative rather than additive:
     /// the hundredth move at depth 20 is far less likely to matter than the third at depth
     /// 4, and no linear rule can be right at both ends.
-    ///
-    /// `window` is `(beta - alpha) * 577 / root_delta`, which the caller computes rather
-    /// than this function: see [`Self::reduction_window`].
-    fn reduction(&self, improving: bool, d: i32, mn: i32, window: i32) -> i32 {
+    fn reduction(&self, improving: bool, d: i32, mn: i32) -> i32 {
         let scale = self.reductions[d as usize] * self.reductions[mn as usize];
         // The entries are `int(2872 / 128 * ln(i))`, 0 through 124, so the product and the
         // improving term are non-negative -- which the type does not say, so the signed
@@ -897,18 +891,7 @@ impl SearchWorker {
         // same quotient for a non-negative dividend and is the shift alone.
         debug_assert!(scale >= 0, "the reduction table is a scaled logarithm, never negative");
         let improving_term = (i32::from(!improving) * scale * 197) as u32 / 512;
-        scale - window + improving_term as i32 + 982
-    }
-
-    /// The window term [`Self::reduction`] subtracts, for the window `alpha..beta`.
-    ///
-    /// Held by the move loop rather than recomputed per move. `root_delta` is fixed for the
-    /// whole search and `beta` does not move inside `search`, so the quotient can change
-    /// only where `alpha` is raised -- the single assignment in step 20. At a non-PV node
-    /// `alpha` is `beta - 1` and cannot be raised at all, so there the divide ran once per
-    /// move to produce the same constant every time.
-    fn reduction_window(&self, alpha: Value, beta: Value) -> i32 {
-        (beta - alpha) * 577 / self.root_delta.max(1)
+        scale + improving_term as i32 + 948
     }
 
     /// True when `mv` walks a piece back and forth without progress.
@@ -1218,7 +1201,6 @@ impl SearchWorker {
                         - fail_high_recovery
                         - 3 * (search_again_counter + 1) / 4)
                         .max(1);
-                    self.root_delta = beta - alpha;
                     // Reborrowed rather than moved, so `sink` is free again for the report
                     // below: the root holds it for exactly as long as it is inside the
                     // search.
@@ -2054,7 +2036,6 @@ impl SearchWorker {
         let mut mp = MovePicker::new(&self.pos, cont_keys, tt_move, depth, ply);
         let mut value = best_value;
         let mut move_count = 0i32;
-        let mut reduction_window = self.reduction_window(alpha, beta);
 
         // Step 14. Loop through all pseudo-legal moves until no moves remain or a beta
         // cutoff occurs.
@@ -2100,7 +2081,12 @@ impl SearchWorker {
             let gives_check = self.pos.gives_check(mv);
 
             let mut new_depth = depth - 1;
-            let mut r = self.reduction(improving, depth, move_count, reduction_window);
+            let mut r = self.reduction(improving, depth, move_count);
+
+            // A PV node is reduced half a ply less, however wide its window.
+            if N::PV {
+                r -= 512;
+            }
 
             // A node the table considers important is reduced MORE, not less: it will be
             // revisited, so a cheap first look costs little.
@@ -2462,9 +2448,6 @@ impl SearchWorker {
                     }
 
                     alpha = value;
-                    // The only place the window moves inside this loop, so the only place
-                    // the term the reduction subtracts has to be re-derived.
-                    reduction_window = self.reduction_window(alpha, beta);
                 }
             }
 
