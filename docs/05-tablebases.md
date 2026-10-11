@@ -111,8 +111,10 @@ TBRANK ply=1 mv=e3f3 pen=-17 rank=-262126
 ```
 
 Neither the DTZ rank nor the mobility tie-break chose between them, so whichever the legal
-generator emitted first won. `generate_legal` was compacting stably where upstream filters by
-moving the LAST element over the rejected one — see `board/movegen.rs`.
+generator emitted first won. `generate_legal` was compacting stably where upstream then filtered
+by moving the LAST element over the rejected one. Upstream has since stopped filtering at all —
+it generates the captures and then the quiets, every one legal — and `generate_legal` emits
+the same sequence; see `board/movegen.rs`.
 
 **`dtz_is_dtm` was applied at the root and nowhere else.** Upstream's OR lives INSIDE
 `rank_root_moves`, so it reaches every caller; rfish had it at the root ranking only. When

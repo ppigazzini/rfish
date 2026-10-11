@@ -1164,20 +1164,58 @@ impl Position {
         self.st().check_squares[pt.index()]
     }
 
-    /// Every square attacked by a piece of type `pt` belonging to `c`.
+    /// Every square a piece of type `pt` of the side NOT to move attacks, `ALL_PIECES` for
+    /// all of them, taken with the king of the side to move OFF the board: a square behind
+    /// the king on a checking line is attacked once the king steps onto it.
     ///
-    /// Pawns are the special case: their attacks come from the whole pawn set at once
-    /// rather than one square at a time, so the shift form is used instead of the loop.
+    /// Computed where it is read rather than kept per ply: the generator needs the union
+    /// only when the king has a square to step to, and most nodes never ask.
+    #[inline(always)]
     #[must_use]
-    pub fn attacks_by(&self, c: Color, pt: PieceType) -> Bitboard {
-        if pt == PieceType::Pawn {
-            return self.pieces_of(c, PieceType::Pawn).pawn_attacks(c);
+    pub fn threats_by(&self, pt: PieceType) -> Bitboard {
+        let us = self.side_to_move;
+        let them = !us;
+        let occ = self.occupied() ^ Bitboard::from_square(self.king_square(us));
+        let sl = sliders();
+        let mut t = Bitboard::EMPTY;
+        match pt {
+            PieceType::Pawn => t = self.pieces_of(them, PieceType::Pawn).pawn_attacks(them),
+            PieceType::Knight => {
+                for sq in self.pieces_of(them, PieceType::Knight) {
+                    t |= KNIGHT_ATTACKS[sq.index()];
+                }
+            }
+            PieceType::Bishop => {
+                for sq in self.pieces_of(them, PieceType::Bishop) {
+                    t |= sl.bishop(sq, occ);
+                }
+            }
+            PieceType::Rook => {
+                for sq in self.pieces_of(them, PieceType::Rook) {
+                    t |= sl.rook(sq, occ);
+                }
+            }
+            PieceType::Queen => {
+                for sq in self.pieces_of(them, PieceType::Queen) {
+                    t |= sl.queen(sq, occ);
+                }
+            }
+            PieceType::King => t = KING_ATTACKS[self.king_square(them).index()],
+            PieceType::ALL_PIECES => {
+                t = self.pieces_of(them, PieceType::Pawn).pawn_attacks(them)
+                    | KING_ATTACKS[self.king_square(them).index()];
+                for sq in self.pieces_of(them, PieceType::Knight) {
+                    t |= KNIGHT_ATTACKS[sq.index()];
+                }
+                for sq in self.pieces_of2(them, PieceType::Bishop, PieceType::Queen) {
+                    t |= sl.bishop(sq, occ);
+                }
+                for sq in self.pieces_of2(them, PieceType::Rook, PieceType::Queen) {
+                    t |= sl.rook(sq, occ);
+                }
+            }
         }
-        let mut threats = Bitboard::EMPTY;
-        for sq in self.pieces_of(c, pt) {
-            threats |= piece_attacks(pt, sq, self.occupied());
-        }
-        threats
+        t
     }
 
     /// The piece `m` moves. For a castling move that is the KING, not the rook, because
@@ -1253,98 +1291,14 @@ impl Position {
 
     // -- legality ----------------------------------------------------------
 
-    /// True when the pseudo-legal move `m` leaves its own king safe.
+    /// True when `m` is a legal move in this position.
     ///
-    /// Only the three cases that can go wrong are checked, exactly as upstream does: an
-    /// en-passant capture that unmasks a rank attack, a king move onto an attacked square,
-    /// and a pinned piece leaving the pin line. Everything else was already excluded by
-    /// generation.
+    /// The transposition table hands back moves from other positions, and a key collision
+    /// or a concurrent write can make one arbitrary, so every such move is filtered through
+    /// this before it is played. Moves the generator produced need no test: it produces
+    /// only legal ones.
     #[must_use]
     pub fn legal(&self, m: Move) -> bool {
-        // The slider tables are borrowed inside the two branches that read them, never here:
-        // the dominant path is the pin test at the end, which reads none. See
-        // `gives_check` for the same point.
-        debug_assert!(m.is_ok());
-        let us = self.side_to_move;
-        let from = m.from();
-        let to = m.to();
-        debug_assert_eq!(self.piece_on(from).color(), us);
-        debug_assert_eq!(self.piece_on(self.king_square(us)), Piece::new(us, PieceType::King));
-
-        if m.move_type() == MoveType::EnPassant {
-            // Removing BOTH pawns at once can open a rank onto the king, which no pin
-            // test sees because neither pawn is a blocker on its own.
-            let ksq = self.king_square(us);
-            let capsq = to.shift(Direction::pawn_push(!us));
-            let occ =
-                (self.occupied() ^ Bitboard::from_square(from) ^ Bitboard::from_square(capsq))
-                    | Bitboard::from_square(to);
-            let sl = sliders();
-            return (sl.rook(ksq, occ) & self.pieces_of2(!us, PieceType::Rook, PieceType::Queen))
-                .is_empty()
-                && (sl.bishop(ksq, occ)
-                    & self.pieces_of2(!us, PieceType::Bishop, PieceType::Queen))
-                .is_empty();
-        }
-
-        if m.move_type() == MoveType::Castling {
-            // `to` is the ROOK's square. Check every square the king crosses, including
-            // its destination, and -- for Chess960 -- that the rook is not itself pinned
-            // along the rank.
-            let king_side = to > from;
-            let rook_from = to;
-            let king_to = Square::make(if king_side { File::G } else { File::C }, from.rank());
-            let step = if king_side { Direction::East } else { Direction::West };
-
-            let mut s = from;
-            loop {
-                if (self.attackers_to(s) & self.colored(!us)).any() {
-                    return false;
-                }
-                if s == king_to {
-                    break;
-                }
-                s = s.shift(step);
-            }
-
-            // The rook test runs on GEOMETRY, not on the `UCI_Chess960` option. Upstream
-            // gates it as `!chess960 || ...`, and the option is not evidence about the
-            // board: `set` does not require the castling field to agree with the pieces —
-            // for a `K`/`Q` token it walks in from the corner and adopts the first rook it
-            // meets — so `4k3/8/8/8/8/8/8/qR2K3 w Q` records a rook on b1 while the option
-            // still says standard, and the short-circuit then declared `e1c1` legal with
-            // the enemy queen on a1 screened by the castling rook alone. Playing it reaches
-            // a position whose king can be captured.
-            //
-            // Always running it changes nothing in standard geometry: a corner rook lies on
-            // no line between its own king and any slider — rank 1 has nothing beyond a1 or
-            // h1 — so the test was always going to pass there, and it is inside the castling
-            // arm, so no other move pays for it.
-            let occ = (self.occupied() ^ Bitboard::from_square(rook_from))
-                | Bitboard::from_square(king_to);
-            return (sliders().rook(king_to, occ)
-                & self.pieces_of2(!us, PieceType::Rook, PieceType::Queen))
-            .is_empty();
-        }
-
-        if self.piece_on(from).piece_type() == PieceType::King {
-            // The king may not step onto a square the enemy attacks with the king itself
-            // removed from the occupancy -- otherwise it "blocks" the ray it is fleeing.
-            let occ = self.occupied() ^ Bitboard::from_square(from);
-            return (self.attackers_to_occ(to, occ) & self.colored(!us)).is_empty();
-        }
-
-        // A non-blocker cannot expose the king; a blocker may only move along the line
-        // through the king.
-        !self.blockers_for_king(us).contains(from) || aligned(from, to, self.king_square(us))
-    }
-
-    /// True when `m` could have been produced by the generator for this position.
-    ///
-    /// The transposition table and the killer slots hand back moves from other positions,
-    /// so every such move is filtered through this before it is played.
-    #[must_use]
-    pub fn pseudo_legal(&self, m: Move) -> bool {
         if !m.is_ok() {
             return false;
         }
@@ -1376,8 +1330,10 @@ impl Position {
             let single = from.shift(push);
             let capture = (pawn_attacks_from(us, from) & self.colored(!us)).contains(to);
             let single_push = to == single && self.is_empty_square(to);
-            let double_push = to == single.shift(push)
-                && from.relative_rank(us) == Rank::R2
+            // The rank test FIRST: from the seventh rank a second step leaves the board, and
+            // a move from the table can name any pawn.
+            let double_push = from.relative_rank(us) == Rank::R2
+                && to == single.shift(push)
                 && self.is_empty_square(to)
                 && self.is_empty_square(single);
             if !(capture || single_push || double_push) {
@@ -1387,24 +1343,23 @@ impl Position {
             return false;
         }
 
-        // In check, only a move that resolves the check survives; the generator would have
-        // produced evasions only.
+        // The king may not step onto an attacked square. The threats are taken through it,
+        // so a retreat along a checking line is attacked too.
+        if pc.piece_type() == PieceType::King {
+            return !self.threats_by(PieceType::ALL_PIECES).contains(to);
+        }
+        // In check, any other move must capture the single checker or block its line.
         if self.checkers().any() {
-            if pc.piece_type() != PieceType::King {
-                if self.checkers().more_than_one() {
-                    return false;
-                }
-                if !(between_bb(self.king_square(us), self.checkers().lsb())).contains(to) {
-                    return false;
-                }
-            } else if (self.attackers_to_occ(to, self.occupied() ^ Bitboard::from_square(from))
-                & self.colored(!us))
-            .any()
-            {
+            if self.checkers().more_than_one() {
+                return false;
+            }
+            if !(between_bb(self.king_square(us), self.checkers().lsb())).contains(to) {
                 return false;
             }
         }
-        true
+        // A non-blocker cannot expose the king; a blocker may only move along the line
+        // through the king.
+        !self.blockers_for_king(us).contains(from) || aligned(from, to, self.king_square(us))
     }
 
     /// True when `m` gives check, decided before the move is made.

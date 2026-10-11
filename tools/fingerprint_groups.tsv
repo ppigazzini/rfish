@@ -67,13 +67,13 @@ evaluate	Network::evaluate(|nnue::LayerStack>::propagate
 nnue_network	AccumulatorStack::evaluate(|FeatureTransformer>::transform
 update_quiet	update_quiet_histories|SearchWorker>::update_quiet
 do_move	Position::do_move(|Position>::do_move_recording
-pseudo_legal	Position::pseudo_legal|Position>::pseudo_legal
+legal	Position::legal(|Position>::legal
 
 # NOT GATED, and the reason is measured rather than assumed.
 #
 # A call count is inlining-immune at the CALLEE -- it does not care how the callee was
 # reached -- but only while the callee itself survives as a symbol on both sides. Upstream is
-# clang with `-flto=full` plus PGO, and it inlines these four INTO the search templates, so
+# clang with `-flto=full` plus PGO, and it inlines these three INTO the search templates, so
 # its symbol counts omit every inlined site. rfish keeps them as calls.
 #
 # The proof is internal to upstream's own profile and needs no second measurement: upstream
@@ -84,9 +84,12 @@ pseudo_legal	Position::pseudo_legal|Position>::pseudo_legal
 # fact about this port.
 #
 #   undo_move	Position::undo_move|Position>::undo_move        upstream 68736, rfish 163331
-#   legal	Position::legal(|Position>::legal              upstream 96782, rfish 339061
 #   gives_check	Position::gives_check|Position>::gives_check    upstream 88990, rfish 317545
 #   see_ge	Position::see_ge|Position>::see_ge             upstream 89522, rfish 202943
 #
 # If a future change gives upstream a non-inlined symbol for any of them -- or gives rfish an
 # `#[inline(never)]` reason of its own -- move the row up rather than leaving it here.
+#
+# `legal` WAS the fourth, when it was the per-move pin test upstream inlined into its search.
+# Upstream 400c23f97 folded it into `pseudo_legal`, and the gated row above is that merged
+# test: it validates a move from the transposition table, and it survives whole on both sides.

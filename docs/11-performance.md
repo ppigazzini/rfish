@@ -379,8 +379,8 @@ simulates rather than samples, so the answer is deterministic — which matters 
 NPS cannot settle a few per cent.
 
 It is **not** immune at the caller, and that limit is load-bearing: upstream inlines
-`legal`, `gives_check`, `see_ge` and `undo_move` into its search templates under LTO, so its
-symbol counts omit every inlined site. Those four are therefore NOT gated, and
+`gives_check`, `see_ge` and `undo_move` into its search templates under LTO, so its symbol
+counts omit every inlined site. Those three are therefore NOT gated, and
 `tools/fingerprint_groups.tsv` records why with the numbers. The proof needs no second
 measurement: upstream reports `do_move` 163345 and `undo_move` 68736 over the same bench, and
 every do_move in a search is undone, so 94609 of its undo_moves were inlined away. Gating

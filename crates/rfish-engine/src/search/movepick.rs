@@ -290,7 +290,7 @@ impl MovePicker {
         depth: i32,
         ply: Ply,
     ) -> MovePicker {
-        let usable = tt_move.is_ok() && pos.pseudo_legal(tt_move);
+        let usable = tt_move.is_ok() && pos.legal(tt_move);
         let stage = if pos.in_check() {
             if usable { Stage::EvasionTt } else { Stage::EvasionInit }
         } else if depth > 0 {
@@ -321,7 +321,7 @@ impl MovePicker {
     #[must_use]
     pub fn new_probcut(pos: &Position, tt_move: Move, threshold: Value) -> MovePicker {
         debug_assert!(!pos.in_check(), "ProbCut is never entered in check");
-        let usable = tt_move.is_ok() && pos.is_capture_stage(tt_move) && pos.pseudo_legal(tt_move);
+        let usable = tt_move.is_ok() && pos.is_capture_stage(tt_move) && pos.legal(tt_move);
         MovePicker {
             continuations: [ContKey::UNREAD; 6],
             tt_move: if usable { tt_move } else { Move::NONE },
@@ -598,15 +598,15 @@ impl MovePicker {
 
     fn score_quiets(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
         let us = pos.side_to_move();
-        let them = !us;
 
         // Squares attacked by a piece cheaper than the one being moved. Moving ONTO one is
         // a threat against the mover; moving OFF one escapes a threat. The table is built
-        // once per node and indexed by the mover's type.
-        let pawn_att = pos.attacks_by(them, PieceType::Pawn);
-        let knight_att = pos.attacks_by(them, PieceType::Knight);
-        let bishop_att = pos.attacks_by(them, PieceType::Bishop);
-        let rook_att = pos.attacks_by(them, PieceType::Rook);
+        // once per node and indexed by the mover's type, from the threats the position
+        // already holds -- which are taken through the mover's own king, as upstream's are.
+        let pawn_att = pos.threats_by(PieceType::Pawn);
+        let knight_att = pos.threats_by(PieceType::Knight);
+        let bishop_att = pos.threats_by(PieceType::Bishop);
+        let rook_att = pos.threats_by(PieceType::Rook);
         let mut threat_by_lesser = [crate::board::bitboard::Bitboard::EMPTY; 7];
         threat_by_lesser[PieceType::Knight.index()] = pawn_att;
         threat_by_lesser[PieceType::Bishop.index()] = pawn_att;
@@ -788,7 +788,7 @@ mod tests {
         out
     }
 
-    /// The picker must yield every pseudo-legal move exactly once. A move yielded twice is
+    /// The picker must yield every legal move exactly once. A move yielded twice is
     /// searched twice; a move missed is never searched at all, and neither shows up as
     /// anything but a wrong node count much later.
     #[test]
@@ -804,7 +804,7 @@ mod tests {
             let mut picked = collect(&pos, &h, Move::NONE);
             let mut legal: Vec<Move> = generate_legal(&pos).iter().copied().collect();
 
-            picked.retain(|&m| pos.legal(m));
+            assert!(picked.iter().all(|&m| pos.legal(m)), "{fen}: yielded an illegal move");
             picked.sort_unstable();
             let before = picked.len();
             picked.dedup();

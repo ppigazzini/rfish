@@ -143,14 +143,26 @@ hook.
 
 ## `movegen.rs` — the generators
 
-Every generator is PSEUDO-legal except `generate_legal`. `Position::legal` is the filter,
-and the search applies it lazily so the cost is paid only for moves it actually searches.
+Every generator is LEGAL, as upstream's are since 400c23f97, so the search plays what the
+move picker yields without testing it. A pinned piece moves only along the line through its
+king, which for a pawn means pushing on the king's file or capturing along the king's
+diagonal. The king never steps onto, or castles across, a square in `threats_by(ALL_PIECES)`
+— the squares the side not to move attacks, taken with the moving side's king OFF the board,
+so a retreat along a checking line is attacked too. An en-passant capture needs no test of its
+own: `do_move` records the square only when some pawn can legally take on it, and the pin
+masks settle which.
 
-`legal` only checks the three cases that can go wrong, exactly as upstream does: an
-en-passant capture that unmasks a rank attack (both pawns leave at once, so neither is a
-blocker on its own), a king move onto an attacked square (with the king itself removed from
-the occupancy, or it "blocks" the ray it is fleeing), and a pinned piece leaving the pin
-line.
+**The threat set is computed where it is read, not kept per ply.** Upstream fills a
+`threats[]` array in `StateInfo` on every `do_move` and null move; here `threats_by` scans the
+enemy pieces when asked, and the generator asks only when the king has a square to test —
+which in quiescence, where the king rarely has a capture in reach, is almost never. Against
+the per-ply array, bit-exact on the same tree, that is −0.90% of the bench's instructions at
+`avx2` and −0.58% at `sse41`. The quiet scoring reads the per-type sets, so those are taken
+through the king too, as upstream's are.
+
+`Position::legal` is now the one test for a move from OUTSIDE the generator — a
+transposition-table move, which a key collision can make arbitrary: geometry for a `Normal`
+move, generation for the rare encodings.
 
 **The generated ORDER is part of the contract.** Two engines that generate the same set in a
 different order search different trees once move ordering is only partially deterministic.
@@ -176,17 +188,17 @@ output**, which must name the rook's file in Shredder form rather than `KQkq`. M
 a second, and it lives with the generators: standard chess names the king's destination, 960
 names the rook's square.
 
-**Castling legality used to be a third, and that was a defect.** `legal` ran its rook test —
-the one that asks whether the rook's departure unmasks a rank attack on the king's destination
-— only when the flag was set, which is upstream's own `return !chess960 || ...`. The option is
-not evidence about the board: `set` does not require the castling field to agree with the
-pieces, and for a `K`/`Q` token it walks in from the corner and adopts the first rook it meets.
-So `4k3/8/8/8/8/8/8/qR2K3 w Q` records a 960 rook square under the standard dialect, and the
+**Castling legality used to be a third, and that was a defect.** The rook test — does the
+castling rook alone screen its king from a slider on the back rank — ran only when the flag
+was set, which was upstream's own `return !chess960 || ...`. The option is not evidence about
+the board: `set` does not require the castling field to agree with the pieces, and for a
+`K`/`Q` token it walks in from the corner and adopts the first rook it meets. So
+`4k3/8/8/8/8/8/8/qR2K3 w Q` records a 960 rook square under the standard dialect, and the
 short-circuit declared `e1c1` legal with the enemy queen on a1 screened by the castling rook
 alone — nine moves where there are eight, and a played move whose king can be captured. The
-test now runs on the geometry always. It changes nothing in standard geometry, where a corner
-rook lies on no line between its own king and any slider, and it costs +0.0008% at `avx2` and
-+0.0006% at `sse41` on an unmoved node count.
+generator asks it of every castling move now, as upstream's does since 400c23f97. It changes
+nothing in standard geometry, where a corner rook lies on no line between its own king and any
+slider.
 
 **One right has one rook, and the mask kept two.** `set_castling_right` stores one square in
 `castling_rook_square[cr]` while `castling_rights_mask` carries the bit on every square ever
