@@ -1785,18 +1785,18 @@ impl SearchWorker {
                     }
                 }
             }
-            // Case B. No cutoff, but the depth was sufficient. The entry is not wrong, but
-            // its bound sits on the useless side of this window and it is occupying a deep
-            // slot. Penalise it so the slot can be reclaimed by one that would answer
-            // something.
-            else if tt_bound != Bound::Exact
-                && match tt_bound {
-                    Bound::Upper => tt_value >= beta,
-                    Bound::Lower => tt_value < beta,
-                    _ => false,
-                }
-                && depth > 5
-            {
+            // Case B. No cutoff, but the depth was sufficient -- past depth 4 Case A asks
+            // only the bound -- so the bound sits on the useless side of this window. The
+            // entry is not wrong, but it is occupying a deep slot. Penalise it so the slot
+            // can be reclaimed by one that would answer something.
+            else if depth > 5 {
+                debug_assert!(
+                    !matches!(
+                        (tt_bound, tt_value >= beta),
+                        (Bound::Exact, _) | (Bound::Lower, true) | (Bound::Upper, false)
+                    ),
+                    "a bound that could cut reached Case B"
+                );
                 tt.penalize(probe, 1);
             }
         }
@@ -2547,9 +2547,8 @@ impl SearchWorker {
                     Bonus::new((scaled_bonus * 324) >> 13),
                 );
             }
-        } else if let Some(prev_sq) = prev_sq.square()
-            && prior_capture
-        {
+        } else if let Some(prev_sq) = prev_sq.square() {
+            debug_assert!(prior_capture, "the arm above takes every quiet prior move");
             let captured = self.pos.captured_piece();
             let pc = self.pos.piece_on(prev_sq);
             self.histories.captures.update(pc, prev_sq, captured.piece_type(), Bonus::new(892));
@@ -2816,11 +2815,12 @@ impl SearchWorker {
             // Stand pat: the side to move is not obliged to capture, so the static
             // evaluation is a lower bound on what it can get.
             if best_value >= beta {
-                if !is_decisive(best_value) {
-                    // Blended toward beta rather than returned raw: nothing below this node
-                    // was searched, so the full margin was never proved.
-                    best_value = Value::new((441 * best_value.get() + 583 * beta.get()) / 1024);
-                }
+                // Never decisive: the static evaluation is clamped inside the tablebase range,
+                // and a table value replaces it only when it is not decisive either.
+                debug_assert!(!is_decisive(best_value), "a stand pat is never decisive");
+                // Blended toward beta rather than returned raw: nothing below this node was
+                // searched, so the full margin was never proved.
+                best_value = Value::new((441 * best_value.get() + 583 * beta.get()) / 1024);
                 if !tt_hit {
                     tt.store(
                         probe,
