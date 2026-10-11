@@ -24,7 +24,7 @@
 //! into a pinned piece, and the fifty-move counter mid-run — states no curated list covers.
 //! ../mcfish's `tools/upstream_nodes.py` walks for the same reason.
 
-use crate::board::movegen::{GenType, generate};
+use crate::board::movegen::generate_legal;
 use crate::board::position::{Position, START_FEN};
 use crate::board::types::Move;
 use crate::platform::threads::ThreadPool;
@@ -32,15 +32,12 @@ use crate::search::tt::TranspositionTable;
 use crate::search::worker::{SearchResult, SilentSink};
 use crate::state::{Limits, SearchOptions};
 
-/// Every legal move in `pos`.
-///
-/// The generators are PSEUDO-legal by design — the search filters as it goes, because most
-/// generated moves are never searched — so a harness that wants the real move list has to
-/// filter for itself. Evasions when in check, everything otherwise, which is the split the
-/// generator itself makes.
+/// Every legal move in `pos`, each one checked against `Position::legal` -- the test the
+/// search puts a transposition-table move through, which shares no code with generation.
 fn legal_moves(pos: &Position) -> Vec<Move> {
-    let gt = if pos.checkers().any() { GenType::Evasions } else { GenType::NonEvasions };
-    generate(pos, gt).iter().copied().filter(|&m| pos.legal(m)).collect()
+    let moves = generate_legal(pos).to_vec();
+    assert!(moves.iter().all(|&m| pos.legal(m)), "generated a move `legal` refuses");
+    moves
 }
 
 /// A seeded xorshift, so a failure reproduces from the seed the run printed.

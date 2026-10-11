@@ -553,6 +553,47 @@ pub fn both_attacks_bb(sq: Square, occ: Bitboard) -> (Bitboard, Bitboard) {
     (bishop_attacks(sq, occ), rook_attacks(sq, occ))
 }
 
+/// The a1-h8 diagonal through each square, and the h1-a8 anti-diagonal, the square
+/// included.
+///
+/// `const`, not a `LazyLock`: the generator reads one of each per call, and a lazy static
+/// pays its `Once` state check at every read.
+const DIAGONALS: [[Bitboard; SQUARE_NB]; 2] = {
+    let mut t = [[Bitboard::EMPTY; SQUARE_NB]; 2];
+    let mut s1 = 0;
+    while s1 < SQUARE_NB {
+        let (f1, r1) = ((s1 % 8) as i32, (s1 / 8) as i32);
+        let mut s2 = 0;
+        while s2 < SQUARE_NB {
+            let (f2, r2) = ((s2 % 8) as i32, (s2 / 8) as i32);
+            if r2 - f2 == r1 - f1 {
+                t[0][s1] = Bitboard::from_bits(t[0][s1].bits() | 1u64 << s2);
+            }
+            if r2 + f2 == r1 + f1 {
+                t[1][s1] = Bitboard::from_bits(t[1][s1].bits() | 1u64 << s2);
+            }
+            s2 += 1;
+        }
+        s1 += 1;
+    }
+    t
+};
+
+/// The a1-h8 diagonal through `s`, `s` included: the line a pawn pinned there may still
+/// capture along, toward north-east for White and south-west for Black.
+#[inline(always)]
+#[must_use]
+pub fn diag_bb(s: Square) -> Bitboard {
+    DIAGONALS[0][s.index()]
+}
+
+/// The h1-a8 anti-diagonal through `s`, `s` included; see [`diag_bb`].
+#[inline(always)]
+#[must_use]
+pub fn antidiag_bb(s: Square) -> Bitboard {
+    DIAGONALS[1][s.index()]
+}
+
 /// True when the three squares are collinear.
 ///
 /// The pin test: a pinned piece may only move along the line joining its king and the
@@ -620,6 +661,20 @@ mod tests {
             assert!((7..=13).contains(&b), "bishop on {sq} reaches {b}");
         }
         assert_eq!(queen_attacks(Square::A1, Bitboard::EMPTY).count(), 21);
+    }
+
+    /// The two diagonals through a square are its bishop rays, split by direction, plus
+    /// the square itself.
+    #[test]
+    fn the_diagonals_split_the_bishop_rays() {
+        for sq in Square::all() {
+            let (d, a) = (diag_bb(sq), antidiag_bb(sq));
+            assert_eq!(d & a, Bitboard::from_square(sq));
+            assert_eq!(d | a, bishop_attacks(sq, Bitboard::EMPTY) | sq);
+        }
+        let d4 = Square::make(File::new(3), Rank::new(3));
+        assert!(diag_bb(d4).contains(Square::A1) && diag_bb(d4).contains(Square::H8));
+        assert!(antidiag_bb(d4).contains(Square::make(File::new(6), Rank::new(0))));
     }
 
     #[test]

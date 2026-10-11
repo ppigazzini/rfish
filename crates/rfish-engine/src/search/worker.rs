@@ -1036,10 +1036,7 @@ impl SearchWorker {
         self.pos.do_move(best);
         if !self.pos.is_draw(Ply::new(1)) {
             let probe = tt.probe(self.pos.key());
-            if probe.hit
-                && probe.data.mv.is_ok()
-                && crate::board::movegen::generate_legal(&self.pos).contains(&probe.data.mv)
-            {
+            if probe.hit && probe.data.mv.is_ok() && self.pos.legal(probe.data.mv) {
                 self.root_moves[0].pv.push(probe.data.mv);
             }
         }
@@ -1763,7 +1760,6 @@ impl SearchWorker {
                 if self.pos.rule50_count() < 96 {
                     if depth >= 7
                         && tt_move.is_some()
-                        && self.pos.pseudo_legal(tt_move)
                         && self.pos.legal(tt_move)
                         && !is_decisive(tt_value)
                     {
@@ -1967,7 +1963,7 @@ impl SearchWorker {
                     if mv.is_none() {
                         break;
                     }
-                    if mv == excluded_move || !self.pos.legal(mv) {
+                    if mv == excluded_move {
                         continue;
                     }
 
@@ -2039,14 +2035,14 @@ impl SearchWorker {
         let mut value = best_value;
         let mut move_count = 0i32;
 
-        // Step 14. Loop through all pseudo-legal moves until no moves remain or a beta
-        // cutoff occurs.
+        // Step 14. Loop through all legal moves until no moves remain or a beta cutoff
+        // occurs.
         loop {
             let mv = mp.next_move(&self.pos, &self.histories, &mut self.move_pool[slot]);
             if mv.is_none() {
                 break;
             }
-            if mv == excluded_move || !self.pos.legal(mv) {
+            if mv == excluded_move {
                 continue;
             }
             if N::ROOT && !self.root_moves[self.pv_index..self.pv_last].iter().any(|rm| rm.mv == mv)
@@ -2863,15 +2859,12 @@ impl SearchWorker {
         let slot = SLOTS_PER_PLY * ply.index() + SLOT_QSEARCH;
         let mut mp = MovePicker::new(&self.pos, cont_keys, tt_move, DEPTH_QS, ply);
 
-        // Step 5. Loop through all pseudo-legal moves until no moves remain or a beta
-        // cutoff occurs.
+        // Step 5. Loop through all legal moves until no moves remain or a beta cutoff
+        // occurs.
         loop {
             let mv = mp.next_move(&self.pos, &self.histories, &mut self.move_pool[slot]);
             if mv.is_none() {
                 break;
-            }
-            if !self.pos.legal(mv) {
-                continue;
             }
 
             let gives_check = self.pos.gives_check(mv);

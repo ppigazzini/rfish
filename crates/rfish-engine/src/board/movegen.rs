@@ -1,10 +1,9 @@
 //! Move generation.
 //!
-//! Every generator here is PSEUDO-legal except [`generate_legal`]: a move it produces is
-//! reachable by the piece's geometry and lands on a square its own side does not occupy,
-//! but it may still leave its own king in check. [`crate::board::position::Position::legal`]
-//! is the filter, and the search applies it lazily so the cost is paid only for moves it
-//! actually searches.
+//! Every generator here is LEGAL: a pinned piece moves only along its pin line, and the
+//! king never steps onto, or castles across, a square the side not to move attacks, which
+//! [`Position::threats_by`] scans for only when the king has a square to test. It is what
+//! lets the search play every generated move without a second test.
 //!
 //! The generated ORDER is part of the port's contract. Two engines that generate the same
 //! set in a different order search different trees once move ordering is only partially
@@ -15,8 +14,8 @@
 
 use core::ops::Deref;
 
-use super::attacks::{between_bb, sliders};
-use super::bitboard::{Bitboard, KING_ATTACKS, pawn_attacks_from, relative_rank_bb};
+use super::attacks::{antidiag_bb, between_bb, diag_bb, line_bb, sliders};
+use super::bitboard::{Bitboard, KING_ATTACKS, file_bb, relative_rank_bb};
 use super::position::Position;
 use super::types::{
     CastlingRights, Color, Direction, File, MAX_MOVES, Move, MoveType, PieceType, Rank, Square,
@@ -74,8 +73,6 @@ impl MoveList {
     }
 
     /// Drop every move for which `keep` is false, preserving order.
-    ///
-    /// The legality filter: generation is pseudo-legal, and this is what makes it legal.
     pub fn retain(&mut self, mut keep: impl FnMut(Move) -> bool) {
         let mut out = 0;
         for i in 0..self.len {
@@ -144,17 +141,14 @@ pub enum GenType {
     Captures,
     /// Everything else: quiet moves and under-promotions.
     Quiets,
-    /// Every pseudo-legal move, for a position that is NOT in check.
-    NonEvasions,
-    /// Every pseudo-legal move that could answer a check.
+    /// Every move that answers a check.
     Evasions,
 }
 
-/// Generate the pseudo-legal moves of kind `gt`.
+/// Generate the legal moves of kind `gt`.
 ///
-/// When the side to move is in check, `Captures`, `Quiets` and `NonEvasions` are still
-/// answered from the evasion set, filtered — a move that does not answer the check is not
-/// pseudo-legal in a checked position.
+/// `Evasions` is for a position in check and only for one; `Captures` and `Quiets`
+/// partition the moves of a position that is not.
 #[must_use]
 pub fn generate(pos: &Position, gt: GenType) -> MoveList {
     let mut list = MoveList::new();
@@ -164,8 +158,10 @@ pub fn generate(pos: &Position, gt: GenType) -> MoveList {
 
 /// Generate into an existing list, so the move picker can reuse one buffer per ply.
 pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
+    debug_assert_eq!(gt == GenType::Evasions, pos.in_check(), "evasions are for a check");
     let us = pos.side_to_move();
     let checkers = pos.checkers();
+    let ksq = pos.king_square(us);
 
     // The four board sets every mask below is cut from, read ONCE. All four are field reads
     // LLVM will not merge across the `list` writes, because a `MoveSink` is free to alias
@@ -176,102 +172,105 @@ pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
 
     // The target mask is what makes one generator body serve every kind: the piece loops
     // are identical, only the set of acceptable destinations changes.
-    let target = if checkers.any() {
-        if checkers.more_than_one() {
-            // A double check can only be answered by a king move, so skip the piece loops
-            // entirely and go straight to the king.
-            generate_king_moves(pos, us, !own, list);
-            return;
-        }
-        // A single check: block on the line, or capture the checker.
-        between_bb(pos.king_square(us), checkers.lsb())
-    } else {
-        match gt {
+    let mut target = Bitboard::EMPTY;
+    // A double check can only be answered by a king move, so the piece loops are skipped.
+    if gt != GenType::Evasions || !checkers.more_than_one() {
+        target = match gt {
+            // A single check: block on the line, or capture the checker.
+            GenType::Evasions => between_bb(ksq, checkers.lsb()),
             GenType::Captures => enemy,
             GenType::Quiets => !occ,
-            GenType::NonEvasions | GenType::Evasions => !own,
-        }
-    };
+        };
 
-    // Under check the target is fixed by the checker, so a Captures/Quiets request has to
-    // be narrowed afterwards rather than before.
-    let target = if checkers.any() {
-        match gt {
-            GenType::Captures => target & enemy,
-            GenType::Quiets => target & !occ,
-            _ => target,
-        }
-    } else {
-        target
-    };
+        generate_pawn_moves(pos, us, gt, ksq, checkers, occ, enemy, target, list);
 
-    generate_pawn_moves(pos, us, gt, checkers, occ, enemy, target, list);
-
-    // Written out per piece type rather than looped over one, so `piece_attacks` resolves to
-    // that type's own kernel at each site. Through a RUNTIME piece type the match inside it
-    // cannot fold, and what is left is an indirect branch taken once per attacker that the
-    // predictor misses -- the same reason the NNUE threat scan is written out, where
-    // ../zfish 24883582 measured 193K misses over its bench from one such call.
-    //
-    // The ORDER is the loop's and must stay: two generators that emit the same set in a
-    // different sequence search different trees, because the move picker's partial sort
-    // leaves equal-scored moves in generation order.
-    // One borrow of the slider tables for all four loops: the free `piece_attacks` derefs
-    // the `LazyLock` once per ATTACKER, and the check is a real load LLVM does not hoist
-    // out of the loop.
-    let sl = sliders();
-    macro_rules! generate_for {
-        ($pt:expr) => {{
-            for from in pos.pieces_of(us, $pt) {
-                for to in sl.piece($pt, from, occ) & target {
-                    list.push_move(Move::new(from, to));
+        // Written out per piece type rather than looped over one, so `piece_attacks`
+        // resolves to that type's own kernel at each site. Through a RUNTIME piece type the
+        // match inside it cannot fold, and what is left is an indirect branch taken once per
+        // attacker that the predictor misses -- the same reason the NNUE threat scan is
+        // written out, where ../zfish 24883582 measured 193K misses over its bench from one
+        // such call.
+        //
+        // The ORDER is upstream's and must stay -- per type, the unpinned pieces and then
+        // the pinned ones: two generators that emit the same set in a different sequence
+        // search different trees, because the move picker's partial sort leaves
+        // equal-scored moves in generation order.
+        // One borrow of the slider tables for all four loops: the free `piece_attacks` derefs
+        // the `LazyLock` once per ATTACKER, and the check is a real load LLVM does not hoist
+        // out of the loop.
+        let sl = sliders();
+        let pinned = pos.blockers_for_king(us);
+        macro_rules! generate_for {
+            ($pt:expr) => {{
+                for from in pos.pieces_of(us, $pt) & !pinned {
+                    for to in sl.piece($pt, from, occ) & target {
+                        list.push_move(Move::new(from, to));
+                    }
                 }
-            }
-        }};
+                // A pinned piece may move only along the line through its king, so a pinned
+                // knight cannot move at all.
+                if $pt != PieceType::Knight {
+                    for from in pos.pieces_of(us, $pt) & pinned {
+                        for to in sl.piece($pt, from, occ) & target & line_bb(ksq, from) {
+                            list.push_move(Move::new(from, to));
+                        }
+                    }
+                }
+            }};
+        }
+        generate_for!(PieceType::Knight);
+        generate_for!(PieceType::Bishop);
+        generate_for!(PieceType::Rook);
+        generate_for!(PieceType::Queen);
     }
-    generate_for!(PieceType::Knight);
-    generate_for!(PieceType::Bishop);
-    generate_for!(PieceType::Rook);
-    generate_for!(PieceType::Queen);
 
     // The king is generated last, and never restricted to the check-answering target: it
-    // escapes by leaving, which no target mask describes.
-    let king_target = if checkers.any() {
-        match gt {
-            GenType::Captures => enemy,
-            GenType::Quiets => !occ,
-            _ => !own,
+    // escapes by leaving, which no target mask describes. It may not step onto an attacked
+    // square, and the attacks are taken THROUGH it, so retreating along a checking line is
+    // not mistaken for escaping it.
+    if gt == GenType::Evasions {
+        target = !own;
+    }
+    // The attacked squares are taken only when there is a square to test against them: a
+    // king with no capture in reach is the common case in quiescence.
+    let mut threats = None;
+    let king_moves = KING_ATTACKS[ksq.index()] & target;
+    if king_moves.any() {
+        let t = *threats.get_or_insert_with(|| pos.threats_by(PieceType::ALL_PIECES));
+        for to in king_moves & !t {
+            list.push_move(Move::new(ksq, to));
         }
-    } else {
-        target
-    };
-    generate_king_moves(pos, us, king_target, list);
+    }
 
     // Castling is a quiet move and impossible while in check.
-    if checkers.is_empty() && matches!(gt, GenType::Quiets | GenType::NonEvasions) {
-        generate_castling(pos, us, list);
+    if gt == GenType::Quiets {
+        generate_castling(pos, us, ksq, &mut threats, list);
     }
 }
 
-fn generate_king_moves<S: MoveSink>(pos: &Position, us: Color, target: Bitboard, list: &mut S) {
-    let ksq = pos.king_square(us);
-    for to in KING_ATTACKS[ksq.index()] & target {
-        list.push_move(Move::new(ksq, to));
-    }
-}
-
-fn generate_castling<S: MoveSink>(pos: &Position, us: Color, list: &mut S) {
+fn generate_castling<S: MoveSink>(
+    pos: &Position,
+    us: Color,
+    ksq: Square,
+    threats: &mut Option<Bitboard>,
+    list: &mut S,
+) {
     for cr in [CastlingRights::king_side(us), CastlingRights::queen_side(us)] {
         if pos.can_castle(cr) && !pos.castling_impeded(cr) {
-            // The move encodes the ROOK's square as its destination -- upstream's
-            // king-takes-rook convention, which is what makes Chess960 castling fit the
-            // same 16 bits as every other move.
-            list.push_move(Move::typed(
-                MoveType::Castling,
-                pos.king_square(us),
-                pos.castling_rook_square(cr),
-                PieceType::Knight,
-            ));
+            let rook_sq = pos.castling_rook_square(cr);
+            let king_to = Square::make(if rook_sq > ksq { File::G } else { File::C }, ksq.rank());
+            // The king may not cross or land on an attacked square, and the rook may not be
+            // the only man screening its king: in Chess960 it can stand between the king and
+            // an enemy rook on the back rank.
+            let threats = *threats.get_or_insert_with(|| pos.threats_by(PieceType::ALL_PIECES));
+            if (between_bb(ksq, king_to) & threats).is_empty()
+                && !pos.blockers_for_king(us).contains(rook_sq)
+            {
+                // The move encodes the ROOK's square as its destination -- upstream's
+                // king-takes-rook convention, which is what makes Chess960 castling fit the
+                // same 16 bits as every other move.
+                list.push_move(Move::typed(MoveType::Castling, ksq, rook_sq, PieceType::Knight));
+            }
         }
     }
 }
@@ -281,13 +280,13 @@ fn generate_pawn_moves<S: MoveSink>(
     pos: &Position,
     us: Color,
     gt: GenType,
+    ksq: Square,
     checkers: Bitboard,
     occ: Bitboard,
     enemies: Bitboard,
     target: Bitboard,
     list: &mut S,
 ) {
-    let them = !us;
     let up = Direction::pawn_push(us);
     let up_right = if us == Color::White { Direction::NorthEast } else { Direction::SouthWest };
     let up_left = if us == Color::White { Direction::NorthWest } else { Direction::SouthEast };
@@ -299,6 +298,13 @@ fn generate_pawn_moves<S: MoveSink>(
     let not_on_seventh = pawns & !seventh;
     let empty = !occ;
 
+    // A pinned pawn moves only along its pin: forward when pinned on the king's file, and
+    // diagonally when pinned on the diagonal it would capture along.
+    let pinned = pos.blockers_for_king(us);
+    let pushable = !pinned | file_bb(ksq);
+    let can_capture_left = !pinned | antidiag_bb(ksq);
+    let can_capture_right = !pinned | diag_bb(ksq);
+
     // Under check only the checker can be captured, so the enemy set collapses to it. Both
     // sets come from the caller, which read them once above the pushes that stop any hoist.
     let enemies = if gt == GenType::Evasions { checkers } else { enemies };
@@ -307,7 +313,7 @@ fn generate_pawn_moves<S: MoveSink>(
     // Single and double pushes. A pawn on the seventh is handled by the promotion block,
     // never here, so a Normal move can never reach the last rank.
     if gt != GenType::Captures {
-        let mut b1 = not_on_seventh.shift(up) & empty;
+        let mut b1 = (not_on_seventh & pushable).shift(up) & empty;
         let mut b2 = (b1 & third).shift(up) & empty;
 
         // Under check a push only counts when it blocks; the target says which squares do.
@@ -333,9 +339,9 @@ fn generate_pawn_moves<S: MoveSink>(
     // `Quiets`. That asymmetry is upstream's, and it is what makes `capture_stage` agree
     // with the class a move was generated in.
     if on_seventh.any() {
-        let b1 = on_seventh.shift(up_right) & enemies;
-        let b2 = on_seventh.shift(up_left) & enemies;
-        let mut b3 = on_seventh.shift(up) & empty;
+        let b1 = (on_seventh & can_capture_right).shift(up_right) & enemies;
+        let b2 = (on_seventh & can_capture_left).shift(up_left) & enemies;
+        let mut b3 = (on_seventh & pushable).shift(up) & empty;
         if evasions {
             b3 &= target;
         }
@@ -352,7 +358,7 @@ fn generate_pawn_moves<S: MoveSink>(
                 let underpromote = match gt {
                     GenType::Captures => enemy,
                     GenType::Quiets => !enemy,
-                    GenType::Evasions | GenType::NonEvasions => true,
+                    GenType::Evasions => true,
                 };
                 if underpromote {
                     for promo in [PieceType::Rook, PieceType::Bishop, PieceType::Knight] {
@@ -365,22 +371,30 @@ fn generate_pawn_moves<S: MoveSink>(
 
     // Ordinary captures, and en passant.
     if gt != GenType::Quiets {
-        for (set, dir) in
-            [(not_on_seventh.shift(up_right), up_right), (not_on_seventh.shift(up_left), up_left)]
-        {
+        for (set, dir) in [
+            ((not_on_seventh & can_capture_right).shift(up_right), up_right),
+            ((not_on_seventh & can_capture_left).shift(up_left), up_left),
+        ] {
             let back = opposite(dir);
             for to in set & enemies {
                 list.push_move(Move::new(to.shift(back), to));
             }
         }
 
-        if let Some(ep) = pos.ep_square().square() {
-            // An en passant capture cannot resolve a discovered check: it removes the
-            // pawn that blocked the line, so the check remains.
-            if evasions && (target & Bitboard::from_square(ep.shift(up))).any() {
-                return;
-            }
-            for from in pawn_attacks_from(them, ep) & not_on_seventh {
+        // An en passant capture cannot resolve a discovered check: it removes the pawn that
+        // blocked the line, so the check remains.
+        if let Some(ep) = pos.ep_square().square()
+            && !(evasions && target.contains(ep.shift(up)))
+        {
+            // The square is recorded only when some pawn can legally take on it, so the pin
+            // masks are the whole legality test left -- including the rank pin that removing
+            // two pawns at once would expose.
+            let ep_bb = Bitboard::from_square(ep);
+            let movers = not_on_seventh
+                & ((can_capture_right & ep_bb.shift(opposite(up_right)))
+                    | (can_capture_left & ep_bb.shift(opposite(up_left))));
+            debug_assert!(movers.any(), "an en-passant square no pawn can take on");
+            for from in movers {
                 list.push_move(Move::typed(MoveType::EnPassant, from, ep, PieceType::Knight));
             }
         }
@@ -402,55 +416,34 @@ const fn opposite(d: Direction) -> Direction {
     }
 }
 
-/// Every legal move in the position.
+/// Every legal move in the position: the evasions in check, else the captures and then
+/// the quiets.
+///
+/// The ORDER is observable: the root move list is built from it, and `syzygy_extend_pv`
+/// picks the first of several moves the tables rank equally.
 #[must_use]
 pub fn generate_legal(pos: &Position) -> MoveList {
-    let gt = if pos.in_check() { GenType::Evasions } else { GenType::NonEvasions };
-    let mut list = generate(pos, gt);
-    // Upstream filters IN PLACE by moving the LAST element over the rejected one, which does
-    // not preserve order, and the order is observable: `syzygy_extend_pv` picks the first of
-    // several moves the tables rank equally, so a stable compaction here shows a different
-    // winning line from upstream's for the same position. Reproduce the swap, not the intent.
-    let mut cur = 0;
-    while cur < list.len {
-        let m = list.moves[cur];
-        if needs_legality_test(pos, m) && !pos.legal(m) {
-            list.len -= 1;
-            list.moves[cur] = list.moves[list.len];
-        } else {
-            cur += 1;
-        }
+    let mut list = MoveList::new();
+    if pos.in_check() {
+        generate_into(pos, GenType::Evasions, &mut list);
+    } else {
+        generate_into(pos, GenType::Captures, &mut list);
+        generate_into(pos, GenType::Quiets, &mut list);
     }
     list
 }
 
-/// Whether `m` could possibly be illegal, so the expensive test is worth running.
-///
-/// Only three classes can be: a piece that is pinned against its own king, a king move
-/// (which must not walk into an attack), and an en-passant capture (which removes two
-/// pieces from one rank and can expose the king along it). Everything else was already
-/// proven legal by generation, and upstream's `generate<LEGAL>` filters on exactly this
-/// predicate rather than testing every move.
-///
-/// Testing everything is not a small overcharge: `Position::legal` is one of the hottest
-/// functions in the engine, and a full pass over ~35 pseudo-legal moves runs it about
-/// seven times more often than it is needed.
-#[inline]
-fn needs_legality_test(pos: &Position, m: Move) -> bool {
-    let us = pos.side_to_move();
-    (pos.blockers_for_king(us) & pos.colored(us)).contains(m.from())
-        || m.from() == pos.king_square(us)
-        || m.move_type() == MoveType::EnPassant
-}
-
 /// True when the side to move has at least one legal move.
 ///
-/// Cheaper than generating them all: the stalemate and checkmate tests only need to know
-/// whether the set is empty, and the first legal move answers that.
+/// The stalemate and checkmate tests only need to know whether the set is empty, so the
+/// quiets are not generated when a capture already answers it.
 #[must_use]
 pub fn has_legal_move(pos: &Position) -> bool {
-    let gt = if pos.in_check() { GenType::Evasions } else { GenType::NonEvasions };
-    generate(pos, gt).iter().any(|&m| !needs_legality_test(pos, m) || pos.legal(m))
+    if pos.in_check() {
+        !generate(pos, GenType::Evasions).is_empty()
+    } else {
+        !generate(pos, GenType::Captures).is_empty() || !generate(pos, GenType::Quiets).is_empty()
+    }
 }
 
 /// Count the leaf nodes of the game tree to `depth`.
@@ -617,12 +610,52 @@ mod tests {
             if pos.in_check() {
                 continue;
             }
-            let mut all: Vec<Move> = generate(&pos, GenType::NonEvasions).to_vec();
-            let mut split: Vec<Move> = generate(&pos, GenType::Captures).to_vec();
-            split.extend(generate(&pos, GenType::Quiets).iter().copied());
+            let captures = generate(&pos, GenType::Captures);
+            let quiets = generate(&pos, GenType::Quiets);
+            let mut all: Vec<Move> = generate_legal(&pos).to_vec();
+            let mut split: Vec<Move> = captures.to_vec();
+            split.extend(quiets.iter().copied());
+            assert!(captures.iter().all(|&m| pos.is_capture_stage(m)), "{fen}");
+            assert!(quiets.iter().all(|&m| !pos.is_capture_stage(m)), "{fen}");
             all.sort_unstable();
             split.sort_unstable();
             assert_eq!(all, split, "{fen}: captures + quiets must partition the move set");
+        }
+    }
+
+    /// `Position::legal` is what a transposition-table move is put through, and it shares no
+    /// code with generation for a `Normal` move. Hold the two to the same set over EVERY
+    /// encoding, at a battery of roots and each position one move from them -- which is where
+    /// the pins, checks and en-passant squares the roots lack turn up.
+    #[test]
+    fn legal_accepts_exactly_the_generated_moves() {
+        let fens = [
+            START_FEN,
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        ];
+        let check = |pos: &Position| {
+            let generated = generate_legal(pos);
+            for raw in 0..=u16::MAX {
+                let m = Move::from_raw(raw);
+                // A `Normal` move with promotion bits set is no move at all: upstream asserts
+                // it away rather than testing it, and nothing produces one.
+                if m.move_type() == MoveType::Normal && raw >> 12 & 3 != 0 {
+                    continue;
+                }
+                assert_eq!(pos.legal(m), generated.contains(&m), "{} {m:?}", pos.fen());
+            }
+        };
+        for fen in fens {
+            let mut pos = Position::from_fen(fen, false).expect("valid");
+            check(&pos);
+            for m in generate_legal(&pos) {
+                pos.do_move(m);
+                check(&pos);
+                pos.undo_move(m);
+            }
         }
     }
 
