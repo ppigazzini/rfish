@@ -116,13 +116,15 @@ pub fn scale_evaluation(nnue: Value, optimism: Value, pos: &Position) -> Value {
     // compensation the material does not show.
     let se_norm = (se * 1024) / (se.abs() + 1024);
     let nnue_norm = (nnue * 1024) / (nnue.abs() + 1024);
-    let alignment = (se_norm * nnue_norm) / 512;
+    let correl = (se_norm * nnue_norm) / 512;
 
-    // Favour a straightforward position when winning, and a complicated one when losing.
-    let base_eval = nnue + (nnue * alignment) / 65536 + (optimism * alignment) / 16384;
+    // Boost a straightforward position when winning, and a complicated one when losing.
+    let v = nnue + (nnue * correl) / 65536 + (optimism * correl) / 16384;
 
+    // Scale by the material on the board. Upstream spells this `v += m * v / 90649`, which
+    // is the same quotient -- `m` is never negative -- and costs more here.
     let material = 521 * pos.count_both(PieceType::Pawn) + pos.non_pawn_material_total().get();
-    let v = i64::from(base_eval) * i64::from(90649 + material) / 90649;
+    let v = i64::from(v) * i64::from(90649 + material) / 90649;
     damp_and_clamp(Value::new(v as i32), pos)
 }
 
