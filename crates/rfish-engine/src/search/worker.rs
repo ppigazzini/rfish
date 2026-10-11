@@ -272,9 +272,16 @@ pub struct SearchWorker {
     published_tb_hits: u64,
     sel_depth: i32,
     root_depth: i32,
-    /// `seek_mate_threshold(root_depth)`, set beside `root_depth` so a node reads it rather
-    /// than dividing for it.
-    seek_mate_bar: i32,
+    /// Whether the root is hunting a mate: the line being searched is already worth more
+    /// than any material advantage, by a margin that shrinks as the iteration deepens. While
+    /// it holds Steps 8, 13 and 16 stand down, Step 9 shortens its futility cutoff, the null
+    /// move is searched deeper and the late move reductions favour checks, so the tree
+    /// collapses onto forcing lines instead of re-proving the moves around them.
+    ///
+    /// Decided once per root window, from the score the move being searched brought into it;
+    /// see [`seek_mate_threshold`]. A node reads it here at each use: a copy in a local
+    /// measured dearer at both tiers.
+    seek_mate: bool,
     completed_depth: i32,
     pv_index: usize,
     /// One past the last root move sharing the current tablebase rank.
@@ -366,7 +373,7 @@ impl SearchWorker {
             tb_hits: 0,
             sel_depth: 0,
             root_depth: 0,
-            seek_mate_bar: 0,
+            seek_mate: false,
             completed_depth: 0,
             pv_index: 0,
             pv_last: 0,
@@ -1124,7 +1131,6 @@ impl SearchWorker {
             && !(self.limits.depth.is_some() && main_thread && self.root_depth >= max_depth)
         {
             self.root_depth += 1;
-            self.seek_mate_bar = seek_mate_threshold(self.root_depth);
 
             if main_thread {
                 // Halve rather than clear: a move that was unstable two iterations ago is
@@ -1179,6 +1185,12 @@ impl SearchWorker {
                 let avg = self.root_moves[pv_idx].average_score;
                 let mut alpha = (avg - delta).max(-VALUE_INFINITE);
                 let mut beta = (avg + delta).min(VALUE_INFINITE);
+
+                // Asked of the score this move brings into the window, and held for every
+                // re-search of it: a score that crosses the bar mid-search does not change how
+                // the rest of the tree is searched.
+                self.seek_mate =
+                    self.root_moves[pv_idx].score.abs() >= seek_mate_threshold(self.root_depth);
 
                 // The evaluation is nudged toward the side that is already doing well, so
                 // a won position is evaluated by a network that expects to win it.
@@ -1525,18 +1537,6 @@ impl SearchWorker {
         }
         depth = depth.min(MAX_PLY as i32 - 1);
 
-        // Whether the root is hunting a mate: the line being reported is already worth more
-        // than any material advantage, by a margin that shrinks as the iteration deepens.
-        // Steps 8 and 16 stand down while this holds and Step 9 shortens its futility cutoff,
-        // so the tree collapses onto the mating line instead of re-proving the moves around
-        // it.
-        //
-        // Asked once, at the ROOT's depth and of the ROOT's score, and answered the same way
-        // at every node of the iteration. Read AFTER the quiescence dive, not beside the
-        // node-kind constants where upstream declares it: a leaf returns above without
-        // reaching any reader.
-        let seek_mate = self.root_moves[self.pv_index].score.abs() >= self.seek_mate_bar;
-
         // A move that repeats a position already on the board is available here, so the
         // side to move can guarantee at least a draw. Checked before anything else,
         // because it can raise alpha above beta outright.
@@ -1851,7 +1851,7 @@ impl SearchWorker {
             // Never under a mate hunt. The margin is a claim about MATERIAL -- a position
             // this far behind will not climb back to alpha -- and a forced mate owes nothing
             // to material, so skipping the full search is how the line is lost.
-            if all_node && eval < alpha - 342 * depth && !seek_mate {
+            if all_node && eval < alpha - 342 * depth && !self.seek_mate {
                 return self.qsearch::<NonPv>(alpha, beta, ply, tt);
             }
 
@@ -1862,7 +1862,7 @@ impl SearchWorker {
             // it is not a tuning knob: a mate hunt prunes at 6 so the search reaches the
             // mating line, and everything else at 19.
             if !self.stack[si.index()].tt_pv
-                && depth < if seek_mate { 6 } else { 19 }
+                && depth < if self.seek_mate { 6 } else { 19 }
                 && eval >= beta
                 && (tt_move.is_none() || tt_capture)
                 && !is_loss(beta)
@@ -1903,7 +1903,12 @@ impl SearchWorker {
                 // Moving the `max` off it is what would break the identity. rustc pays the
                 // round-toward-zero correction for the division -- `lea 0xff(%rax),%edx`,
                 // `test`, `cmovns` ahead of the `sar $0x8` -- and the shift is the sar alone.
-                let r = 7 + depth / 3 + ((self.stack[si.index()].static_eval - beta) >> 8).max(0);
+                let mut r =
+                    7 + depth / 3 + ((self.stack[si.index()].static_eval - beta) >> 8).max(0);
+                // Halved while hunting a mate, so the null move cannot hide a forced line.
+                if self.seek_mate {
+                    r -= r / 2;
+                }
                 self.do_null_move(si);
                 let null_value = -self.node::<NonPv>(
                     -beta,
@@ -2016,6 +2021,7 @@ impl SearchWorker {
             && !is_decisive(beta)
             && is_valid(tt_value)
             && !is_decisive(tt_value)
+            && !self.seek_mate
         {
             return prob_cut_beta;
         }
@@ -2181,7 +2187,7 @@ impl SearchWorker {
                 && (tt_bound == Bound::Lower || tt_bound == Bound::Exact)
                 && tt_depth >= depth - 3
                 && !self.is_shuffling(mv, si)
-                && !seek_mate
+                && !self.seek_mate
             {
                 let singular_beta = tt_value
                     - (59 + 66 * i32::from(self.stack[si.index()].tt_pv && !N::PV)) * depth / 63;
@@ -2318,6 +2324,12 @@ impl SearchWorker {
             // costs the least and saves the most.
             if all_node {
                 r += r * 276 / (256 * depth + 268);
+            }
+
+            // While hunting a mate, reduce a checking move a quarter less and any other a
+            // quarter more.
+            if self.seek_mate && r > 0 {
+                r += if gives_check { -r } else { r } / 4;
             }
 
             // Apply the computed reduction.
