@@ -703,15 +703,17 @@ impl SearchWorker {
         Bonus::new(bonus.get().wrapping_mul(scale) / 65_536)
     }
 
-    /// Reward or punish the follow-ups to the moves played one to six plies back.
+    /// Reward or punish the follow-ups to the moves played one to six plies back, five
+    /// excepted.
     ///
     /// The multiplier grows with how many of those planes already rate this follow-up
     /// positively: a move several previous contexts agree about is stronger evidence than
     /// one only the immediate parent likes.
     fn update_continuation_histories(&mut self, si: StackIx, pc: Piece, to: Square, bonus: Bonus) {
-        const CMHC_MULTIPLIERS: [i32; 7] = [94, 103, 110, 106, 119, 126, 121];
-        /// The per-ply weight, in the order the plies are visited.
-        const CMHC_WEIGHTS: [i32; 6] = [520, 390, 145, 251, 66, 209];
+        const CMHC_MULTIPLIERS: [i32; 6] = [94, 103, 110, 106, 119, 126];
+        /// The per-ply weight, in the order the plies are visited: one, two, three, four and
+        /// SIX. The move picker does not read ply five, so it is not updated either.
+        const CMHC_WEIGHTS: [i32; 5] = [520, 390, 145, 251, 209];
         /// `weight * multiplier`, which is a table rather than an `imul`.
         ///
         /// Both factors are decided before the bonus is: the weight is a constant of the
@@ -726,8 +728,8 @@ impl SearchWorker {
         /// ../Stockfish `refish` 56c6bfdd, whose other half — a shared counter loaded twice
         /// because a relaxed atomic may not be folded — has no analogue: these histories are
         /// plain `i16`.
-        const CMHC_SCALED: [[i32; 7]; 6] = {
-            let mut scaled = [[0i32; 7]; 6];
+        const CMHC_SCALED: [[i32; 6]; 5] = {
+            let mut scaled = [[0i32; 6]; 5];
             let mut ply = 0;
             while ply < CMHC_WEIGHTS.len() {
                 let mut seen = 0;
@@ -751,9 +753,10 @@ impl SearchWorker {
         // to `in_check` or to `false`.
         //
         // Skipping each late ply individually is the same thing as breaking out of the loop
-        // at the first one: `in_check` does not change within a call.
+        // at the first one: `in_check` does not change within a call. `$w` is the ply's row
+        // in the weight table, which skips ply five.
         macro_rules! ply_back {
-            ($i:literal) => {{
+            ($i:literal, $w:literal) => {{
                 if !(in_check && $i > 2) {
                     let entry = &self.stack[si.back($i).index()];
                     if entry.current_move.is_ok() {
@@ -761,7 +764,7 @@ impl SearchWorker {
                         if histories.continuation.get(plane, pc, to) > 0 {
                             positive_count += 1;
                         }
-                        let scale = CMHC_SCALED[$i - 1][positive_count];
+                        let scale = CMHC_SCALED[$w][positive_count];
                         let delta = Self::continuation_delta(bonus, scale) + 73 * i32::from($i < 2);
                         histories.continuation.update(plane, pc, to, delta);
                     }
@@ -770,12 +773,11 @@ impl SearchWorker {
         }
         // In check only the two nearest plies are updated: the rest of the line was forced,
         // so crediting it teaches the ordering nothing.
-        ply_back!(1);
-        ply_back!(2);
-        ply_back!(3);
-        ply_back!(4);
-        ply_back!(5);
-        ply_back!(6);
+        ply_back!(1, 0);
+        ply_back!(2, 1);
+        ply_back!(3, 2);
+        ply_back!(4, 3);
+        ply_back!(6, 4);
     }
 
     /// Reward or punish a quiet move across every table that orders quiet moves.
