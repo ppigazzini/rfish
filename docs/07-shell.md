@@ -47,11 +47,10 @@ grep for.
 
 **`export_net` writes the loaded network back out**, and the round trip is the point rather
 than the file: reader and writer are mirrors, so a net that survives the trip proves they
-agree. The shipped net comes back byte-identical, all 95 MB of it, which is the strongest
-statement available that the format code is right — every LEB128 group, every split point,
-every hash. The hashes are recomputed from the saving build's own constants rather than
-copied from the file that was loaded, so a saved net asserts the architecture the binary
-actually implements.
+agree. The shipped net comes back byte-identical, which is the strongest statement
+available that the format code is right — every block, every split point, every hash. The
+hashes are recomputed from the saving build's own constants rather than copied from the file
+that was loaded, so a saved net asserts the architecture the binary actually implements.
 
 `cargo xtask net-roundtrip` is what makes that a fact rather than a sentence, and it runs in
 `parity`. It had to be built: the claim above shipped with the format and **nothing drove the

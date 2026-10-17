@@ -49,7 +49,7 @@ Do not document, gate, or optimise around the current shape as if it were the in
 state. Check the state against the tree before acting on it:
 
 - **NNUE** — **ported, and bit-exact.** All three feature sets, the feature transformer
-  and the eight output stacks are in
+  and the thirty-two output stacks are in
   `crates/rfish-engine/src/eval/nnue/`, and `cargo xtask nnue-check` proves the raw network
   output equals a pristine upstream build's on every position in `tools/cases/eval.fens`.
   The accumulator is updated by **diffing the recomputed feature sets** rather than from a

@@ -176,7 +176,7 @@ graph LR
   ContKey["ContKey — cont_plane_index"] --> B["continuation planes"]
   CorrKey["CorrKey — corr_plane_index"] --> C["correction planes"]
   PawnRow["PawnRow — PawnHistory::row"] --> D["pawn planes"]
-  KaIndex["KaIndex — halfka_index"] --> E["king-piece weights"]
+  KaIndex["KaIndex — k32q2_index"] --> E["king-piece weights"]
   TpIndex["TpIndex — threat / pawn_pair"] --> F["threat and pawn-pair weights"]
   TbFile["TbFile — for_board_file"] --> G["Syzygy sub-tables"]
 ```
@@ -322,7 +322,7 @@ index, and can the compiler tell?*
   `PieceToPlane`-shaped tables. Three types rather than one because the correction space is a
   *subrange* of the continuation space: a swap reads a real plane of the wrong table and never
   panics.
-- **`KaIndex`, `TpIndex`** — the two NNUE feature index spaces. `halfka_index` addresses the
+- **`KaIndex`, `TpIndex`** — the two NNUE feature index spaces. `k32q2_index` addresses the
   king-piece weight table; `threat_index` and `pawn_pair_index` address a second, shared
   table. `TpIndex::pawn_pair` adds the base and is the only thing that does, so the
   concatenation of the two feature blocks is a property of the constructor rather than a
