@@ -152,7 +152,9 @@ Four factors scale the optimum between iterations, and each answers a different 
 about whether the current answer can be trusted. A **falling evaluation**, against the last
 move and against the last four iterations, says the position is turning and buys time. A
 best move that has been **stable** across iterations is unlikely to change now and sells it
-back. **Best-move changes**, pooled across every thread, buy time. And a best move that
+back. **Best-move changes**, pooled across every thread, buy time — counted once each, where
+the root search adopts a new first move, and never again by the iteration that sees it
+arrive. And a best move that
 already accounts for most of the tree — its `effort` — has little left that could displace
 it, so it sells time too. The product is clamped by the maximum, always.
 
@@ -393,6 +395,11 @@ The time manager, the strength limiter and pondering are no longer on that list:
 model is `timeman.cpp` line for line, `Skill` is upstream's, and `ponderhit` converts a
 ponder into a real search while honouring a budget that ran out on the opponent's clock.
 None of them touch the signature, because a fixed-depth bench never consults a clock.
+`tools/cases/timeman.uci` is the golden that does: one search under `nodestime`, so the clock
+is a node count and its stopping depth is deterministic, re-derived from upstream. It is the
+case that found the iteration counting a best-move change the root search had already
+counted, which over-bought time on every unstable move and which no fixed-depth gate could
+reach.
 
 ## The gates
 
@@ -402,6 +409,7 @@ None of them touch the signature, because a fixed-depth bench never consults a c
 | `signature` | the search visits upstream's nodes over the bench list | [10-tooling-ci.md](10-tooling-ci.md) |
 | `upstream-nodes` | the same, node for node, on positions no fixed list contains | [10-tooling-ci.md](10-tooling-ci.md) |
 | `async-check` | an INTERRUPTED search still answers `stop`, `ponderhit` and `quit` | [07-shell.md](07-shell.md) |
+| `golden` | `timeman.uci`: a time-managed search stops where upstream's does, under `nodestime` | [07-shell.md](07-shell.md) |
 | `tsan` | a four-thread search does not race on the table or the counters | [10-tooling-ci.md](10-tooling-ci.md) |
 
 ### `repro-search` — what a COMPLETED search leaves for the next one
