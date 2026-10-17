@@ -292,7 +292,9 @@ pub struct SearchWorker {
     /// The previous iteration's principal variation for the current PV slot, which the
     /// follow-PV test compares against.
     last_iteration_pv: Vec<Move>,
-    /// How often this thread's root best move changed, pooled by the time manager.
+    /// How often the MAIN thread's root best move changed since the time manager last read
+    /// it. A helper counts into the pool instead, which is the only place the main thread can
+    /// read it from.
     best_move_changes: f64,
     /// The log-scaled reduction table, indexed by depth and by move number.
     /// A boxed ARRAY: `reduction` reads it twice per move searched, and a `Vec` makes each
@@ -2703,7 +2705,13 @@ impl SearchWorker {
             self.stack[si.next().index()].pv = child;
 
             if move_count > 1 && self.pv_index == 0 {
-                self.best_move_changes += 1.0;
+                // The main thread sums every worker's count, as upstream's walks every
+                // worker's counter: its own from here, the helpers' from the pool.
+                if self.id == 0 {
+                    self.best_move_changes += 1.0;
+                } else {
+                    self.shared.note_best_move_change();
+                }
             }
         } else {
             // Every move but the PV is set to the lowest value. The sort is stable, so the
