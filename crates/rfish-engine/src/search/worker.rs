@@ -1298,9 +1298,6 @@ impl SearchWorker {
             if !self.shared.stopped() {
                 if last_best_pv.is_empty() || last_best_pv[0] != self.root_moves[0].pv[0] {
                     last_best_depth = self.root_depth;
-                    if !last_best_pv.is_empty() {
-                        self.best_move_changes += 1.0;
-                    }
                 }
                 if !forgotten_mate {
                     last_best_pv.clone_from(&self.root_moves[0].pv);
