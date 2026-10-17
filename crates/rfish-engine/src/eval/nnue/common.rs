@@ -117,8 +117,8 @@ pub const L2: usize = 32;
 /// Outputs of the second fully connected layer.
 pub const L3: usize = 32;
 
-/// Independent output heads, selected by the same bucket.
-pub const LAYER_STACKS: usize = 8;
+/// Independent output heads, selected by the piece count and the two sides' queens.
+pub const LAYER_STACKS: usize = 32;
 
 /// Scales the final output into centipawn-adjacent units.
 pub const OUTPUT_SCALE: i64 = 16;
@@ -128,17 +128,6 @@ pub const WEIGHT_SCALE_BITS: u32 = 6;
 pub const FT_MAX_VAL: i32 = 255;
 /// The quantised value of 1.0 inside the hidden layers.
 pub const HIDDEN_ONE_VAL: i64 = 128;
-
-/// The most memory a LEB128 block's DECLARED length may reserve before a byte is read.
-///
-/// A capacity hint rather than a limit: the real bound is the file, and a legitimate block
-/// larger than this still reads, growing as it goes. Sixty-four mebibytes clears the largest
-/// block a shipped net carries — the feature transformer's 23,068,672 weights at about 1.28
-/// bytes each — so the common case is one allocation and no copy.
-const MAX_BLOCK_HINT: usize = 1 << 26;
-
-/// The magic string that precedes every LEB128-compressed block.
-pub const LEB128_MAGIC: &[u8] = b"COMPRESSED_LEB128";
 
 /// What went wrong while reading a net.
 #[derive(Debug)]
@@ -157,12 +146,8 @@ pub enum NetError {
     WrongComponent { what: &'static str, expected: u32, found: u32 },
     /// The file ended before the structure did.
     Truncated,
-    /// A compressed block did not begin with the magic string.
-    NotCompressed,
     /// The file has trailing bytes after the last layer stack.
     TrailingData,
-    /// A compressed block declared more bytes than its values consume.
-    BlockNotConsumed,
 }
 
 impl std::fmt::Display for NetError {
@@ -177,11 +162,7 @@ impl std::fmt::Display for NetError {
                 write!(f, "{what}: hash {found:#010x} does not match {expected:#010x}")
             }
             NetError::Truncated => f.write_str("network file ends before its structure does"),
-            NetError::NotCompressed => f.write_str("a weight block is missing its LEB128 marker"),
             NetError::TrailingData => f.write_str("network file has trailing data"),
-            NetError::BlockNotConsumed => {
-                f.write_str("a weight block has bytes left after its last value")
-            }
         }
     }
 }
@@ -194,29 +175,7 @@ impl From<io::Error> for NetError {
     }
 }
 
-/// The narrowing a LEB128 block applies on its way into the destination width.
-///
-/// Sealed by being private: the decode is `i32` internally because that is the width the
-/// encoding is defined over, and the two blocks a net carries land in `i32` and `i16`.
-trait FromI32Truncating: Copy {
-    fn from_i32_truncating(v: i32) -> Self;
-}
-
-impl FromI32Truncating for i32 {
-    fn from_i32_truncating(v: i32) -> i32 {
-        v
-    }
-}
-
-impl FromI32Truncating for i16 {
-    /// Truncating, exactly as the narrowing pass this replaced was: the trainer keeps every
-    /// value in range and a wrap here means a corrupt net rather than a value to saturate.
-    fn from_i32_truncating(v: i32) -> i16 {
-        v as i16
-    }
-}
-
-/// A reader that also decodes the two encodings a net uses.
+/// A reader for the little-endian blocks a net is made of.
 pub struct NetReader<R: Read> {
     inner: R,
 }
@@ -256,11 +215,8 @@ impl<R: Read> NetReader<R> {
         Ok(())
     }
 
-    /// `out.len()` `i8`s, uncompressed.
-    ///
-    /// The threat and pawn-pair weight blocks are stored this way — NOT LEB128 — because
-    /// they are already one byte per weight and the compression would cost a byte on any
-    /// value outside `-64..64`.
+    /// `out.len()` `i8`s, uncompressed — the encoding every feature-transformer weight block
+    /// uses.
     pub fn i8s(&mut self, out: &mut [i8]) -> Result<(), NetError> {
         let mut buf = vec![0u8; out.len()];
         self.read_exact(&mut buf)?;
@@ -278,141 +234,6 @@ impl<R: Read> NetReader<R> {
             *o = i32::from_le_bytes(*c);
         }
         Ok(())
-    }
-
-    /// One LEB128-compressed block holding exactly `out.len()` signed values.
-    ///
-    /// Signed LEB128: seven payload bits per byte, low group first, continuation in bit 7.
-    /// A value whose last byte has bit 6 set is negative and gets sign-extended. The sign
-    /// extension is skipped once 32 bits have been consumed, because the value is already
-    /// complete — reproducing that special case matters, since it is what lets a full-range
-    /// `i32` weight round-trip.
-    pub fn leb128(&mut self, out: &mut [i32]) -> Result<(), NetError> {
-        self.leb128_block(out)
-    }
-
-    /// One LEB128 block decoded into `i16`s.
-    ///
-    /// Decoded STRAIGHT into the `i16`s. It used to decode into a `vec![0i32; out.len()]`
-    /// and narrow afterwards, and on the main weight block that temporary is 23,068,672
-    /// entries — **92 MiB, allocated and page-faulted in to be read once and thrown away**,
-    /// which is most of what made a `quit`-only run peak at 253 MiB.
-    pub fn leb128_i16(&mut self, out: &mut [i16]) -> Result<(), NetError> {
-        self.leb128_block(out)
-    }
-
-    /// One LEB128 block decoded into a sequence of fixed-size `i16` GROUPS.
-    ///
-    /// The feature transformer stores its king-piece weights as vector lanes, so that a row's
-    /// alignment is carried by its type. That storage has no `&mut [i16]` view a caller can
-    /// hand over without reinterpreting bytes, and `Simd::as_mut_array` gives one group at a
-    /// time instead.
-    ///
-    /// Each group is a slice walk of a length the type states, which is the shape the block
-    /// already decoded into -- so the 23,068,672-entry weight block costs what it did before:
-    /// measured against the same tree, a `quit`-only profile reads 1,281,493,841 instructions
-    /// either way, and peak RSS 216,448 KB against 216,580 KB.
-    pub fn leb128_i16_groups<'a, const N: usize>(
-        &mut self,
-        out: impl Iterator<Item = &'a mut [i16; N]>,
-    ) -> Result<(), NetError> {
-        let bytes = self.leb128_bytes()?;
-        let mut src = bytes.iter();
-        for group in out {
-            // Threaded BY VALUE so the byte walk stays in registers across groups, which is
-            // the residency the walk-the-output rewrite bought for the flat block.
-            src = Self::leb128_values(src, group)?;
-        }
-        Self::whole(src.as_slice())
-    }
-
-    /// The decode both widths share, walking the OUTPUT and consuming bytes as it needs them.
-    ///
-    /// The loop used to walk the BYTES and index the output, which put two tests on the
-    /// per-byte path that belong on neither: `if i == out.len()` ran once per byte where a
-    /// value takes one or two, and `out[i] = ...` was a bounds test against a runtime length.
-    /// Walking `out.iter_mut()` and pulling bytes from an iterator moves the length test to
-    /// once per VALUE and removes the store's test outright — the same shape as the fold's
-    /// weight rows in the transformer, one zone over.
-    ///
-    /// The arithmetic is unchanged, including the `% 32` and the `shift >= 32` guard that
-    /// skips sign extension once the value is already complete. That guard is what lets a
-    /// full-range `i32` weight round-trip, and `leb128_survives_a_round_trip_over_the_whole_signed_range`
-    /// pins it.
-    fn leb128_block<T: FromI32Truncating>(&mut self, out: &mut [T]) -> Result<(), NetError> {
-        let bytes = self.leb128_bytes()?;
-        Self::whole(Self::leb128_values(bytes.iter(), out)?.as_slice())
-    }
-
-    /// Refuse a block with bytes left after its last value.
-    ///
-    /// The declared length and the value count are two statements of the same fact, written
-    /// at opposite ends of the format. A block that satisfies one but not the other has a
-    /// structure this build does not share -- and it reaches here only when every hash
-    /// already matched, which is exactly when accepting it silently costs the most.
-    fn whole(rest: &[u8]) -> Result<(), NetError> {
-        if rest.is_empty() { Ok(()) } else { Err(NetError::BlockNotConsumed) }
-    }
-
-    /// A LEB128 block's header, checked, and its payload.
-    ///
-    /// **The declared length is a capacity HINT, never the allocation.** It is an unvalidated
-    /// `u32` read out of the file, so a twenty-two byte net can claim `0xFFFFFFFF` and a
-    /// reader that believes it commits four gibibytes before discovering the file is empty —
-    /// a denial of service from `setoption name EvalFile`, and the same defect upstream has
-    /// at its own `read_header`, which this port already bounds one zone over.
-    ///
-    /// The bound that actually holds is the FILE: `take` stops at the declared count and
-    /// `read_to_end` stops at end-of-input, so a short file yields a short read and the
-    /// length test below turns it into `Truncated`. Nothing is trusted about the header
-    /// except how much to hope for.
-    fn leb128_bytes(&mut self) -> Result<Vec<u8>, NetError> {
-        let mut magic = [0u8; 17];
-        self.read_exact(&mut magic)?;
-        if magic != LEB128_MAGIC {
-            return Err(NetError::NotCompressed);
-        }
-        let byte_count = self.u32()? as usize;
-        // Sized so the largest block a real net carries — the feature transformer's
-        // 23,068,672 weights at about 1.28 bytes each — still lands in ONE allocation, which
-        // is what keeps this off the startup profile. A larger legitimate block still reads,
-        // it just grows; a hostile one never gets to ask for more than this up front.
-        let mut bytes = Vec::with_capacity(byte_count.min(MAX_BLOCK_HINT));
-        let read = std::io::Read::by_ref(&mut self.inner)
-            .take(byte_count as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|_| NetError::Truncated)?;
-        if read != byte_count {
-            return Err(NetError::Truncated);
-        }
-        Ok(bytes)
-    }
-
-    /// As many values as `out` holds, pulled from `src`.
-    fn leb128_values<'b, T: FromI32Truncating>(
-        mut src: std::slice::Iter<'b, u8>,
-        out: &mut [T],
-    ) -> Result<std::slice::Iter<'b, u8>, NetError> {
-        for o in out.iter_mut() {
-            let mut result: i32 = 0;
-            let mut shift: u32 = 0;
-            loop {
-                let Some(&byte) = src.next() else {
-                    return Err(NetError::Truncated);
-                };
-                result |= i32::from(byte & 0x7F) << (shift % 32);
-                shift += 7;
-                if byte & 0x80 == 0 {
-                    if shift < 32 && byte & 0x40 != 0 {
-                        // Sign-extend: every bit above the payload becomes one.
-                        result |= !((1i32 << shift).wrapping_sub(1));
-                    }
-                    break;
-                }
-            }
-            *o = T::from_i32_truncating(result);
-        }
-        Ok(src)
     }
 
     /// True when the stream holds nothing more.
@@ -484,7 +305,7 @@ impl<W: Write> NetWriter<W> {
         self.write_all(&buf)
     }
 
-    /// `i8`s, uncompressed — the encoding the threat and pawn-pair blocks use.
+    /// `i8`s, uncompressed — the encoding every feature-transformer weight block uses.
     pub fn i8s(&mut self, v: &[i8]) -> Result<(), NetError> {
         let buf: Vec<u8> = v.iter().map(|x| *x as u8).collect();
         self.write_all(&buf)
@@ -499,48 +320,6 @@ impl<W: Write> NetWriter<W> {
         self.write_all(&buf)
     }
 
-    /// One LEB128-compressed block.
-    ///
-    /// The encoder has to agree with the decoder's stopping rule exactly: emit groups of
-    /// seven bits, low group first, and stop once the remaining bits are all sign bits AND
-    /// the sign bit of the payload agrees with them. Stopping one group early would make
-    /// the decoder sign-extend a positive value into a negative one.
-    pub fn leb128(&mut self, v: &[i32]) -> Result<(), NetError> {
-        self.write_all(LEB128_MAGIC)?;
-
-        let mut bytes: Vec<u8> = Vec::with_capacity(v.len());
-        for &value in v {
-            let mut x = value;
-            loop {
-                let byte = (x & 0x7F) as u8;
-                // Arithmetic shift: the sign bits keep arriving, which is what lets the
-                // test below detect that nothing but sign is left.
-                x >>= 7;
-                let sign_bit_set = byte & 0x40 != 0;
-                let done = (x == 0 && !sign_bit_set) || (x == -1 && sign_bit_set);
-                bytes.push(if done { byte } else { byte | 0x80 });
-                if done {
-                    break;
-                }
-            }
-        }
-
-        self.u32(u32::try_from(bytes.len()).map_err(|_| NetError::Truncated)?)?;
-        self.write_all(&bytes)
-    }
-
-    /// One LEB128 block from `i16`s.
-    pub fn leb128_i16(&mut self, v: &[i16]) -> Result<(), NetError> {
-        self.leb128_i16_from(v.iter().copied())
-    }
-
-    /// The same block, from any walk of `i16`s -- the mirror of
-    /// [`NetReader::leb128_i16_into`], and there for the same storage.
-    pub fn leb128_i16_from(&mut self, v: impl Iterator<Item = i16>) -> Result<(), NetError> {
-        let wide: Vec<i32> = v.map(i32::from).collect();
-        self.leb128(&wide)
-    }
-
     /// Flush whatever the wrapped writer is buffering.
     pub fn flush(&mut self) -> Result<(), NetError> {
         self.inner.flush().map_err(NetError::Io)
@@ -549,40 +328,6 @@ impl<W: Write> NetWriter<W> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn leb128_survives_a_round_trip_over_the_whole_signed_range() {
-        // The encoder's stopping rule and the decoder's sign extension have to agree
-        // EXACTLY, and they disagree only at the boundaries -- so test the boundaries.
-        let mut values: Vec<i32> = vec![
-            0,
-            1,
-            -1,
-            63,
-            64,
-            -64,
-            -65,
-            8191,
-            8192,
-            -8192,
-            -8193,
-            i32::MAX,
-            i32::MIN,
-            i32::MAX - 1,
-            i32::MIN + 1,
-        ];
-        for shift in 0..31 {
-            values.push(1i32 << shift);
-            values.push(-(1i32 << shift));
-        }
-
-        let mut buf = Vec::new();
-        super::NetWriter::new(&mut buf).leb128(&values).expect("writes");
-
-        let mut back = vec![0i32; values.len()];
-        super::NetReader::new(buf.as_slice()).leb128(&mut back).expect("reads");
-        assert_eq!(back, values);
-    }
-
     #[test]
     fn the_uncompressed_encodings_round_trip_too() {
         let i16s: Vec<i16> = vec![0, 1, -1, i16::MAX, i16::MIN, 300, -300];
@@ -609,127 +354,6 @@ mod tests {
 
     use super::*;
 
-    fn leb_block(values: &[i32]) -> Vec<u8> {
-        // Encode with the standard signed LEB128 the trainer writes.
-        let mut payload = Vec::new();
-        for &v in values {
-            let mut value = v;
-            loop {
-                let byte = (value & 0x7F) as u8;
-                value >>= 7;
-                let done = (value == 0 && byte & 0x40 == 0) || (value == -1 && byte & 0x40 != 0);
-                payload.push(if done { byte } else { byte | 0x80 });
-                if done {
-                    break;
-                }
-            }
-        }
-        let mut out = LEB128_MAGIC.to_vec();
-        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        out.extend_from_slice(&payload);
-        out
-    }
-
-    #[test]
-    fn leb128_round_trips_the_whole_signed_range() {
-        let values = [0, 1, -1, 63, 64, -64, -65, 127, -128, 1000, -1000, i32::MAX, i32::MIN];
-        let bytes = leb_block(&values);
-        let mut out = vec![0i32; values.len()];
-        NetReader::new(bytes.as_slice()).leb128(&mut out).expect("decodes");
-        assert_eq!(out, values);
-    }
-
-    /// A block that declares four gibibytes and delivers eight bytes.
-    ///
-    /// The declared length is a `u32` straight out of the file, so this is what a hostile
-    /// `setoption name EvalFile` looks like. The reader must reserve its bounded hint and
-    /// then discover the truth from the FILE, not commit to the header and find out during
-    /// the read.
-    ///
-    /// **The negative control for this one is deliberately not executed.** Restoring the
-    /// `vec![0u8; byte_count]` it replaced makes this test allocate and ZERO four gibibytes,
-    /// which is the denial of service being fixed and which has taken this machine down
-    /// twice in its `speedtest` form. What the test can assert without running that is the
-    /// fixed behaviour, and it is asserted on a declared count far above the hint so the
-    /// clamped-reservation path is the one taken.
-    #[test]
-    fn a_block_claiming_more_than_the_file_holds_is_truncated_not_reserved() {
-        let mut bytes = LEB128_MAGIC.to_vec();
-        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
-        bytes.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
-
-        let mut out = vec![0i32; 4];
-        assert!(matches!(
-            NetReader::new(bytes.as_slice()).leb128(&mut out),
-            Err(NetError::Truncated)
-        ));
-
-        // The same claim with no payload at all, which is the twenty-two byte file.
-        let empty = [LEB128_MAGIC, &u32::MAX.to_le_bytes()[..]].concat();
-        let mut out = vec![0i32; 1];
-        assert!(matches!(
-            NetReader::new(empty.as_slice()).leb128(&mut out),
-            Err(NetError::Truncated)
-        ));
-    }
-
-    /// The hint must stay a hint: a legitimate block LARGER than it still reads.
-    ///
-    /// Otherwise the bound quietly becomes a maximum net size, and the next architecture
-    /// that outgrows it fails to load with a truncation error naming the wrong cause.
-    #[test]
-    fn a_block_larger_than_the_hint_still_reads() {
-        // Not built at 64 MiB -- the property is that the count is a hint rather than a
-        // limit, and `min` is what expresses it. Pin the expression instead of the volume.
-        let declared = MAX_BLOCK_HINT * 4;
-        assert_eq!(declared.min(MAX_BLOCK_HINT), MAX_BLOCK_HINT);
-        // And a block SMALLER than the hint reserves only what it declared.
-        assert_eq!((MAX_BLOCK_HINT / 4).min(MAX_BLOCK_HINT), MAX_BLOCK_HINT / 4);
-    }
-
-    #[test]
-    fn a_block_without_the_magic_string_is_rejected() {
-        let mut bytes = leb_block(&[1, 2, 3]);
-        bytes[0] = b'X';
-        let mut out = vec![0i32; 3];
-        assert!(matches!(
-            NetReader::new(bytes.as_slice()).leb128(&mut out),
-            Err(NetError::NotCompressed)
-        ));
-    }
-
-    #[test]
-    fn a_short_block_is_truncated_rather_than_zero_filled() {
-        let bytes = leb_block(&[1, 2]);
-        let mut out = vec![0i32; 5];
-        assert!(matches!(
-            NetReader::new(bytes.as_slice()).leb128(&mut out),
-            Err(NetError::Truncated)
-        ));
-    }
-
-    /// A block that declares more bytes than its values consume is refused.
-    ///
-    /// The complement of the truncation row above: too FEW bytes ends inside a value and is
-    /// caught there, while too many decodes every value successfully and leaves the rest
-    /// unread.
-    #[test]
-    fn a_block_with_bytes_left_over_is_refused() {
-        let mut bytes = leb_block(&[1, 2, 3]);
-        // One more payload byte than the three values need, and a declared length that
-        // counts it: a well-formed encoding of nothing the reader was asked for. The count
-        // sits immediately after the magic string, which is what fixes its offset.
-        let at = LEB128_MAGIC.len();
-        let declared = u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
-        bytes[at..at + 4].copy_from_slice(&(declared + 1).to_le_bytes());
-        bytes.push(0x00);
-        let mut out = vec![0i32; 3];
-        assert!(matches!(
-            NetReader::new(bytes.as_slice()).leb128(&mut out),
-            Err(NetError::BlockNotConsumed)
-        ));
-    }
-
     #[test]
     fn fixed_width_readers_are_little_endian() {
         let bytes = [0x01, 0x02, 0x03, 0x04, 0xFF, 0xFF];
@@ -752,7 +376,7 @@ mod tests {
         assert_eq!(L1, 1024);
         assert_eq!(L2, 32);
         assert_eq!(L3, 32);
-        assert_eq!(LAYER_STACKS, 8);
+        assert_eq!(LAYER_STACKS, 32);
         assert_eq!(ceil_to_multiple(1024, 32), 1024);
         assert_eq!(ceil_to_multiple(60, 32), 64);
     }

@@ -29,16 +29,14 @@
 //! Golden: `Stockfish/src/nnue/nnue_feature_transformer.h`,
 //! `Stockfish/src/nnue/nnue_accumulator.cpp`.
 
-use core::simd::Simd;
-
 use crate::board::position::Position;
 use crate::board::threats::{DirtyPawnPairs, DirtyThreat};
 use crate::board::types::{COLOR_NB, Color, Key, MAX_PLY, Piece, Ply, PosKey, SQUARE_NB, Square};
 
 use super::common::{Aligned, FT_MAX_VAL, L1, NetError, NetReader, NetWriter};
 use super::features::{
-    HALFKA_DIMENSIONS, KaIndex, THREAT_AND_PP_DIMENSIONS, TpIndex, halfka_delta, pawn_pair_active,
-    pawn_pair_delta, threat_active, threat_delta, threat_mirror,
+    K32Q2_DIMENSIONS, KaIndex, THREAT_AND_PP_DIMENSIONS, TpIndex, k32q2_delta, opp_queen,
+    pawn_pair_active, pawn_pair_delta, threat_active, threat_delta, threat_mirror,
 };
 
 /// The transformer's weights.
@@ -49,20 +47,12 @@ pub struct FeatureTransformer {
     /// One bias per output, shared by both perspectives.
     biases: Aligned<i16>,
     /// `weights[index * L1 + j]` for the king-piece features.
-    /// Stored as VECTOR LANES rather than as `i16`, so that a weight row's ALIGNMENT is
-    /// carried by its type.
     ///
-    /// A legacy-SSE instruction folds a memory operand only where the compiler can prove it is
-    /// 16-byte aligned. Through `[i16; TILE]` -- which an `as_chunks` view produces, and whose
-    /// alignment is the ELEMENT's two bytes -- it cannot, so the fold's row loop at sse41
-    /// emitted `movdqu` then `psubw` where one `psubw` with a memory operand would do: sixteen
-    /// instructions per (row, tile) instead of eight. `Simd<i16, LANE>` has the alignment of
-    /// its own width, so the load folds. ../mcfish carries the same note on its `_load_a`
-    /// forms and calls the alignment load-bearing.
-    ///
-    /// avx2 is unaffected: a VEX-encoded `vpsubw` takes an unaligned memory operand, and the
-    /// disassembly there showed the row already folded before this change.
-    weights: Aligned<Simd<i16, LANE>>,
+    /// `i8` since upstream `5c4cef0bf`, like the threat and pawn-pair rows below: each is widened
+    /// to `i16` as it is folded in, so the two tables share one row shape. The vector-lane
+    /// storage the `i16` rows needed for an aligned legacy-SSE memory operand went with them —
+    /// a sign extension from memory takes no alignment.
+    weights: Aligned<i8>,
     /// `threat_and_pp_weights[index * L1 + j]`, `i8` because these features are many and
     /// their individual contributions small.
     threat_and_pp_weights: Aligned<i8>,
@@ -192,6 +182,9 @@ struct PlySlot {
     /// The two king squares on that placement, so the walk-back can test the chain for a king
     /// move without scanning the board for one.
     king: [Square; COLOR_NB],
+    /// Per perspective, whether its OPPONENT has a queen on that placement — the second half
+    /// of the bucket every king-piece index is keyed off, stamped for the same reason.
+    queen: [bool; COLOR_NB],
 }
 
 impl PlySlot {
@@ -204,6 +197,7 @@ impl PlySlot {
             recorded: false,
             board: [Piece::NONE; SQUARE_NB],
             king: [Square::A1; COLOR_NB],
+            queen: [false; COLOR_NB],
         }
     }
 }
@@ -234,29 +228,31 @@ pub struct EvalScratch {
     /// check compares against an immediate rather than loading a length. The same change on
     /// the search stack was worth 16.0M instructions on a bench.
     plies: Box<[PlySlot; PLY_SLOTS]>,
-    /// One slot per king square per perspective — upstream's accumulator refresh cache.
+    /// One slot per bucket per perspective — upstream's accumulator refresh cache, indexed by
+    /// [`bucket`].
     ///
     /// A king move re-indexes EVERY feature that perspective sees, both orientations being
-    /// keyed off the king square, so the live slot after one is worth nothing and the diff
-    /// against it is the whole set. What this holds is the last accumulator computed for
-    /// each king square, which is a far closer starting point than the biases: the diff
-    /// against it is only the pieces that moved since, not all of them.
+    /// keyed off the king square, and so does the opponent's last queen leaving or a first one
+    /// arriving, so the live slot after either is worth nothing and the diff against it is the
+    /// whole set. What this holds is the last accumulator computed for each bucket, which is a
+    /// far closer starting point than the biases: the diff against it is only the pieces that
+    /// moved since, not all of them.
     ///
-    /// Grown to 64 slots on first use rather than allocated up front, because a worker that
-    /// never evaluates should not pay for it.
+    /// Grown to [`BUCKETS`] slots on first use rather than allocated up front, because a worker
+    /// that never evaluates should not pay for it.
     cache: [Vec<CacheSlot>; COLOR_NB],
-    /// One slot per king square per perspective holding the KING-PIECE half ALONE.
+    /// One slot per bucket per perspective holding the KING-PIECE half ALONE.
     ///
     /// Upstream's `AccumulatorCaches::Cache` is this and not [`EvalScratch::cache`]: it holds
-    /// the biases plus the `HalfKA` rows and no threat rows at all. Keeping that separately is
+    /// the biases plus the `K32Q2` rows and no threat rows at all. Keeping that separately is
     /// what makes a king move cost a delta instead of a refresh — see
     /// [`FeatureTransformer::hybrid`], which reaches the child from
     ///
     /// ```text
-    ///   HalfKA(live, new king) + parent - HalfKA(parent, old king) +- this move's threats
+    ///   K32Q2(live, new king) + parent - K32Q2(parent, old king) +- this move's threats
     /// ```
     ///
-    /// and needs the two `HalfKA` terms to exist without their threat rows mixed in. The full
+    /// and needs the two `K32Q2` terms to exist without their threat rows mixed in. The full
     /// cache beside it cannot serve: its entries are a whole accumulator and the two halves
     /// cannot be separated once summed.
     ka_cache: [Vec<Side>; COLOR_NB],
@@ -329,6 +325,16 @@ const MARK_WORDS: usize = THREAT_AND_PP_DIMENSIONS.div_ceil(64);
 
 /// The key of a slot no evaluation has filled yet. No real position hashes to it.
 const EMPTY_KEY: PosKey = PosKey::new(Key::MAX);
+
+/// Refresh-cache slots per perspective: one per king square, in each opponent-queen state.
+const BUCKETS: usize = 2 * SQUARE_NB;
+
+/// The cache slot a king square and an opponent-queen state select: upstream's
+/// `cache[opponentHasQueen][ksq]`, flattened.
+#[inline(always)]
+fn bucket(ksq: Square, opp_queen: bool) -> usize {
+    usize::from(opp_queen) * SQUARE_NB + ksq.index()
+}
 
 impl Default for EvalScratch {
     fn default() -> EvalScratch {
@@ -431,6 +437,7 @@ impl EvalScratch {
         slot.recorded = true;
         slot.board = *pos.board();
         slot.king = [pos.king_square(Color::White), pos.king_square(Color::Black)];
+        slot.queen = [opp_queen(pos, Color::White), opp_queen(pos, Color::Black)];
     }
 
     /// The list [`EvalScratch::record`] appends this hop's threat records to.
@@ -455,6 +462,7 @@ impl EvalScratch {
         slot.recorded = true;
         slot.board = *pos.board();
         slot.king = [pos.king_square(Color::White), pos.king_square(Color::Black)];
+        slot.queen = [opp_queen(pos, Color::White), opp_queen(pos, Color::Black)];
     }
 }
 
@@ -495,28 +503,6 @@ const TILE: usize = 128;
 #[cfg(not(target_feature = "avx2"))]
 const TILE: usize = 64;
 
-/// `i16`s per stored weight vector.
-///
-/// **This is the REGISTER WIDTH, not a tuning knob**, and getting that wrong is expensive in
-/// one direction only. The point of the type is its alignment ([`FeatureTransformer::weights`]),
-/// but the width it names is also the width the fold's row loop is emitted at: pinned at eight
-/// `i16` -- 128 bits -- the avx2 fold ran on `xmm` where it had been running on `ymm`, and
-/// `bench 16 1 8` went 1,505,457,814 to 1,834,100,765. **+328.6M, +21.8%.** LLVM does not widen
-/// adjacent explicit vectors back up.
-///
-/// So each tier names its own register width. Unlike [`TILE`], no rung of this is a measured
-/// optimum to be swept — it follows from the ISA, which is why the avx512 rung is taken here
-/// and not there.
-#[cfg(target_feature = "avx512f")]
-const LANE: usize = 32;
-#[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
-const LANE: usize = 16;
-#[cfg(all(not(target_feature = "avx512f"), not(target_feature = "avx2")))]
-const LANE: usize = 8;
-
-/// Vectors per [`TILE`]-wide weight row.
-const KA_LANES: usize = TILE / LANE;
-
 /// [`FT_MAX_VAL`] at the accumulator's own width.
 const FT_MAX: i16 = FT_MAX_VAL as i16;
 
@@ -532,7 +518,7 @@ impl FeatureTransformer {
     pub fn new() -> FeatureTransformer {
         FeatureTransformer {
             biases: Aligned::new(L1),
-            weights: Aligned::new(L1 * HALFKA_DIMENSIONS / LANE),
+            weights: Aligned::new(L1 * K32Q2_DIMENSIONS),
             threat_and_pp_weights: Aligned::new(L1 * THREAT_AND_PP_DIMENSIONS),
         }
     }
@@ -540,27 +526,27 @@ impl FeatureTransformer {
     /// How many bytes of weights this transformer holds.
     #[must_use]
     pub fn weight_bytes(&self) -> usize {
-        self.biases.len() * 2 + self.weights.len() * LANE * 2 + self.threat_and_pp_weights.len()
+        self.biases.len() * 2 + self.weights.len() + self.threat_and_pp_weights.len()
     }
 
     /// Read the transformer's parameters.
     ///
     /// **The order is the file's, and it is not negotiable.** Biases, then the threat
-    /// weights, then the pawn-pair weights, then the king-piece weights. The `i8` blocks are
-    /// stored raw and the `i16` ones LEB128-compressed, because a byte-wide weight gains
-    /// nothing from a variable-length encoding.
+    /// weights, then the pawn-pair weights, then the king-piece weights. Every block is plain
+    /// little-endian since upstream `5c4cef0bf` dropped the LEB128 compression: the `i16` biases
+    /// and three `i8` weight blocks.
     pub fn read(&mut self, r: &mut NetReader<impl std::io::Read>) -> Result<(), NetError> {
         use super::features::{PP_DIMENSIONS, THREAT_DIMENSIONS};
         let threat_dims = THREAT_DIMENSIONS as usize;
         let pp_dims = PP_DIMENSIONS as usize;
 
-        r.leb128_i16(&mut self.biases)?;
+        r.i16s(&mut self.biases)?;
 
         let (threat_w, pp_w) = self.threat_and_pp_weights.split_at_mut(threat_dims * L1);
         r.i8s(threat_w)?;
         r.i8s(&mut pp_w[..pp_dims * L1])?;
 
-        r.leb128_i16_groups(self.weights.iter_mut().map(Simd::as_mut_array))?;
+        r.i8s(&mut self.weights)?;
 
         // `permute_weights` is skipped on purpose: it exists only so a vector `packus` can
         // read adjacent lanes in order, and the permutation is the identity when no vector
@@ -578,13 +564,13 @@ impl FeatureTransformer {
         let threat_dims = THREAT_DIMENSIONS as usize;
         let pp_dims = PP_DIMENSIONS as usize;
 
-        w.leb128_i16(&self.biases)?;
+        w.i16s(&self.biases)?;
 
         let (threat_w, pp_w) = self.threat_and_pp_weights.split_at(threat_dims * L1);
         w.i8s(threat_w)?;
         w.i8s(&pp_w[..pp_dims * L1])?;
 
-        w.leb128_i16_from(self.weights.iter().flat_map(|v| v.as_array().iter().copied()))?;
+        w.i8s(&self.weights)?;
         Ok(())
     }
 
@@ -677,25 +663,24 @@ impl FeatureTransformer {
         // `index * ROWS_PER_FEATURE + t`, and indexing two `[i16; TILE]` arrays by
         // `0..TILE` needs no check at either end.
         const ROWS_PER_FEATURE: usize = L1 / TILE;
-        let ka_rows = <[Simd<i16, LANE>]>::as_chunks::<KA_LANES>(&self.weights).0;
+        let ka_rows = <[i8]>::as_chunks::<TILE>(&self.weights).0;
         let tp_rows = <[i8]>::as_chunks::<TILE>(&self.threat_and_pp_weights).0;
         let src_rows = src.as_chunks::<TILE>().0;
         for (t, chunk) in dst.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
             let mut tile = src_rows[t];
-            let lanes = tile.as_chunks_mut::<LANE>().0;
             for &index in ka.1 {
                 let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
-                for j in 0..KA_LANES {
+                for j in 0..TILE {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
-                    // rather than a value to saturate. `Simd` arithmetic wraps.
-                    lanes[j] = (Simd::from_array(lanes[j]) - w[j]).to_array();
+                    // rather than a value to saturate.
+                    tile[j] = tile[j].wrapping_sub(i16::from(w[j]));
                 }
             }
             for &index in ka.0 {
                 let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
-                for j in 0..KA_LANES {
-                    lanes[j] = (Simd::from_array(lanes[j]) + w[j]).to_array();
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_add(i16::from(w[j]));
                 }
             }
             for &index in tp.1 {
@@ -738,25 +723,24 @@ impl FeatureTransformer {
         // the other half of the same fold and had been left behind, and it is worth 28.9M
         // here because a refresh applies MORE rows than a one-hop delta does.
         const ROWS_PER_FEATURE: usize = L1 / TILE;
-        let ka_rows = <[Simd<i16, LANE>]>::as_chunks::<KA_LANES>(&self.weights).0;
+        let ka_rows = <[i8]>::as_chunks::<TILE>(&self.weights).0;
         let tp_rows = <[i8]>::as_chunks::<TILE>(&self.threat_and_pp_weights).0;
         let mirror_tiles = mirror.as_chunks_mut::<TILE>().0;
         for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
             let mut tile = *chunk;
-            let lanes = tile.as_chunks_mut::<LANE>().0;
             for &index in ka.1 {
                 let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
-                for j in 0..KA_LANES {
+                for j in 0..TILE {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
-                    // rather than a value to saturate. `Simd` arithmetic wraps.
-                    lanes[j] = (Simd::from_array(lanes[j]) - w[j]).to_array();
+                    // rather than a value to saturate.
+                    tile[j] = tile[j].wrapping_sub(i16::from(w[j]));
                 }
             }
             for &index in ka.0 {
                 let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
-                for j in 0..KA_LANES {
-                    lanes[j] = (Simd::from_array(lanes[j]) + w[j]).to_array();
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_add(i16::from(w[j]));
                 }
             }
             for &index in tp.1 {
@@ -786,23 +770,22 @@ impl FeatureTransformer {
     /// source to read and no threat table to touch.
     fn fold_ka_inplace(&self, acc: &mut [i16], ka: (&[KaIndex], &[KaIndex])) {
         const ROWS_PER_FEATURE: usize = L1 / TILE;
-        let ka_rows = <[Simd<i16, LANE>]>::as_chunks::<KA_LANES>(&self.weights).0;
+        let ka_rows = <[i8]>::as_chunks::<TILE>(&self.weights).0;
         for (t, chunk) in acc.as_chunks_mut::<TILE>().0.iter_mut().enumerate() {
             let mut tile = *chunk;
-            let lanes = tile.as_chunks_mut::<LANE>().0;
             for &index in ka.1 {
                 let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
-                for j in 0..KA_LANES {
+                for j in 0..TILE {
                     // Wrapping is upstream's behaviour: the accumulator is `i16` and the
                     // trainer keeps the sum in range, so a wrap here means a corrupt net
-                    // rather than a value to saturate. `Simd` arithmetic wraps.
-                    lanes[j] = (Simd::from_array(lanes[j]) - w[j]).to_array();
+                    // rather than a value to saturate.
+                    tile[j] = tile[j].wrapping_sub(i16::from(w[j]));
                 }
             }
             for &index in ka.0 {
                 let w = &ka_rows[index.get() as usize * ROWS_PER_FEATURE + t];
-                for j in 0..KA_LANES {
-                    lanes[j] = (Simd::from_array(lanes[j]) + w[j]).to_array();
+                for j in 0..TILE {
+                    tile[j] = tile[j].wrapping_add(i16::from(w[j]));
                 }
             }
             *chunk = tile;
@@ -878,12 +861,16 @@ impl FeatureTransformer {
     /// Three conditions, and all three are cheap. The base must have been COMPUTED for the
     /// position the search actually reached that ply with — the search leaves and returns,
     /// and a slot it left behind holds a cousin. It must have been computed against the SAME
-    /// king square, because every index a perspective sees is keyed off it. And every hop
-    /// between must be recorded, or the chain has a gap no records describe.
-    ///
-    /// The king squares BETWEEN do not matter. A record is a geometric tuple, not an index,
-    /// so the whole chain is indexed against the current square when it is applied.
-    fn rollforward_base(scratch: &EvalScratch, p: Color, ply: usize, ksq: Square) -> Option<usize> {
+    /// bucket — king square and opponent-queen state — because every king-piece index a
+    /// perspective sees is keyed off both. And every hop between must be recorded, or the
+    /// chain has a gap no records describe.
+    fn rollforward_base(
+        scratch: &EvalScratch,
+        p: Color,
+        ply: usize,
+        ksq: Square,
+        queen: bool,
+    ) -> Option<usize> {
         let i = p.index();
         let mut at = ply;
         loop {
@@ -893,11 +880,12 @@ impl FeatureTransformer {
             // the chain into one fold did not need this — nothing between was written, so
             // nothing between had to be a valid accumulator — but stamping the intermediates
             // is the whole point here, and one stamped against a king square the position
-            // did not have would be read as valid by the next evaluation.
+            // did not have would be read as valid by the next evaluation. The queen state is
+            // the other half of the same bucket and is held to the same rule.
             //
-            // It costs almost nothing: a king moves rarely, and the base has always had to
-            // match anyway.
-            if slot.king[i] != ksq {
+            // It costs almost nothing: a king moves rarely, a queen leaves the board once, and
+            // the base has always had to match anyway.
+            if slot.king[i] != ksq || slot.queen[i] != queen {
                 return None;
             }
             let side = &slot.side[i];
@@ -933,15 +921,14 @@ impl FeatureTransformer {
     /// roll-forward against a refresh's 17.3, which is why the cap it needed was two.
     fn roll_forward(
         &self,
-        pos: &Position,
         p: Color,
         ply: usize,
         base: usize,
         ksq: Square,
+        queen: bool,
         scratch: &mut EvalScratch,
     ) {
         let i = p.index();
-        let _ = pos;
         for hop in base + 1..=ply {
             scratch.adds[i].clear();
             scratch.subs[i].clear();
@@ -952,7 +939,7 @@ impl FeatureTransformer {
             // are written, and the two are distinct fields of the same scratch.
             let (plies, adds, subs) = (&scratch.plies, &mut scratch.adds[i], &mut scratch.subs[i]);
             let (from, to) = (&plies[hop - 1].board, &plies[hop].board);
-            halfka_delta(from, to, p, ksq, adds, subs);
+            k32q2_delta(from, to, p, ksq, queen, adds, subs);
             let (plies, adds, subs) =
                 (&scratch.plies, &mut scratch.tp_adds[i], &mut scratch.tp_subs[i]);
             threat_delta(&plies[hop].dts, p, ksq, adds, subs);
@@ -1000,9 +987,13 @@ impl FeatureTransformer {
     /// cannot roll forward, while "the nearest computed ancestor is on another square"
     /// describes nearly all of them.
     ///
-    /// Two conditions remain:
+    /// Three conditions remain:
     ///
     /// - the ancestor's king square must DIFFER, or `rollforward_base` would have taken it;
+    /// - its opponent-queen state must be the SAME, upstream's guard against a king that
+    ///   takes the queen. The two cache entries could be read under two queen states and the
+    ///   sum would still be exact, but that route measured dearer than the refresh it
+    ///   replaces: refusing it was −0.1367% at avx2 and −0.4775% at sse41 on `bench 16 1 8`;
     /// - **both squares must put the threat numbering in the same MIRROR HALF.** The
     ///   ancestor's accumulator carries its threat rows indexed against ITS king square and
     ///   this path keeps them, which is sound only while the two squares number them
@@ -1014,6 +1005,7 @@ impl FeatureTransformer {
         p: Color,
         ply: usize,
         ksq: Square,
+        queen: bool,
     ) -> Option<(usize, Square)> {
         let i = p.index();
         let mut at = ply;
@@ -1022,7 +1014,8 @@ impl FeatureTransformer {
             let side = &slot.side[i];
             if side.computed_for != EMPTY_KEY && side.computed_for == slot.reached {
                 let anc = side.king?;
-                if anc == ksq || threat_mirror(anc) != threat_mirror(ksq) {
+                if anc == ksq || slot.queen[i] != queen || threat_mirror(anc) != threat_mirror(ksq)
+                {
                     return None;
                 }
                 return Some((at, anc));
@@ -1044,16 +1037,18 @@ impl FeatureTransformer {
         &self,
         p: Color,
         ksq: Square,
+        queen: bool,
         board: &[Piece; SQUARE_NB],
         second: bool,
         scratch: &mut EvalScratch,
     ) {
         let i = p.index();
+        let b = bucket(ksq, queen);
 
         // The base placement, read out before anything is borrowed mutably. An unseeded
         // entry starts from the biases against an EMPTY board, so its diff is the whole
         // placement and one code path serves the seeded and the from-scratch case.
-        let slot = &scratch.ka_cache[i][ksq.index()];
+        let slot = &scratch.ka_cache[i][b];
         let seeded = slot.king.is_some();
         let base_board = if seeded { slot.board } else { [Piece::NONE; SQUARE_NB] };
 
@@ -1067,14 +1062,14 @@ impl FeatureTransformer {
         };
         add_buf.clear();
         sub_buf.clear();
-        halfka_delta(&base_board, board, p, ksq, add_buf, sub_buf);
+        k32q2_delta(&base_board, board, p, ksq, queen, add_buf, sub_buf);
 
         let ka = if second {
             (&scratch.adds2[i][..], &scratch.subs2[i][..])
         } else {
             (&scratch.adds[i][..], &scratch.subs[i][..])
         };
-        let slot = &mut scratch.ka_cache[i][ksq.index()];
+        let slot = &mut scratch.ka_cache[i][b];
         if !seeded {
             slot.acc.copy_from_slice(&self.biases);
         }
@@ -1093,11 +1088,11 @@ impl FeatureTransformer {
     /// swapping the king-piece half out and leaving the threat half in place:
     ///
     /// ```text
-    ///   a       = biases + HalfKA(this position, new king)        the new king's cache
-    ///   parent  = biases + HalfKA(parent, old king) + threats(parent)
-    ///   b       = biases + HalfKA(parent, old king)               the old king's cache
+    ///   a       = biases + K32Q2(this position, new king)         the new king's cache
+    ///   parent  = biases + K32Q2(parent, old king) + threats(parent)
+    ///   b       = biases + K32Q2(parent, old king)                the old king's cache
     ///
-    ///   a + parent - b = biases + HalfKA(this position, new king) + threats(parent)
+    ///   a + parent - b = biases + K32Q2(this position, new king) + threats(parent)
     /// ```
     ///
     /// The biases cancel to exactly one copy, which is what makes the three-way sum an
@@ -1109,6 +1104,7 @@ impl FeatureTransformer {
     /// refresh has to materialise the whole threat and pawn-pair set through `active_sets`
     /// and diff it through `collect_diff`, and those two are the reason a king move was the
     /// dearest thing this evaluation did.
+    #[allow(clippy::too_many_arguments)]
     fn hybrid(
         &self,
         pos: &Position,
@@ -1116,20 +1112,22 @@ impl FeatureTransformer {
         ply: usize,
         base: usize,
         ksq: Square,
+        queen: bool,
         src_ksq: Square,
         scratch: &mut EvalScratch,
     ) {
         let i = p.index();
         if scratch.ka_cache[i].is_empty() {
-            scratch.ka_cache[i].resize(SQUARE_NB, Side::empty());
+            scratch.ka_cache[i].resize(BUCKETS, Side::empty());
         }
 
         // `a`: the NEW king square's cache, brought to this position.
         let live = *pos.board();
-        self.ka_cache_to(p, ksq, &live, false, scratch);
-        // `b`: the ANCESTOR's king square's cache, brought to the ancestor's position.
+        self.ka_cache_to(p, ksq, queen, &live, false, scratch);
+        // `b`: the ANCESTOR's king square's cache, brought to the ancestor's position, under
+        // the same queen state -- `hybrid_base` refuses an ancestor with another.
         let base_board = scratch.plies[base].board;
-        self.ka_cache_to(p, src_ksq, &base_board, true, scratch);
+        self.ka_cache_to(p, src_ksq, queen, &base_board, true, scratch);
 
         // Every hop's threat and pawn-pair records, indexed against the NEW king square.
         // Concatenated rather than netted for the reason `roll_forward` gives, and bounded
@@ -1156,9 +1154,9 @@ impl FeatureTransformer {
         dst.board = *board;
         dst.computed_for = *reached;
         self.fold_hybrid(
-            &ka_cache[ksq.index()].acc,
+            &ka_cache[bucket(ksq, queen)].acc,
             &parent_acc.acc,
-            &ka_cache[src_ksq.index()].acc,
+            &ka_cache[bucket(src_ksq, queen)].acc,
             &mut dst.acc,
             tp,
         );
@@ -1168,20 +1166,23 @@ impl FeatureTransformer {
     ///
     /// The ONLY path that materialises a feature set, and the only one that needs to: a
     /// cache entry is reached by a DIFF rather than by records, so the other side of the
-    /// comparison has to exist. Taken when the king has moved, when the search has jumped,
-    /// or when the nearest computed ancestor is further than [`HOP_CAP`].
+    /// comparison has to exist. Taken when the bucket has changed in a way the king-move delta
+    /// cannot serve, when the search has jumped, or when the nearest computed ancestor is
+    /// further than [`HOP_CAP`].
     fn refresh(
         &self,
         pos: &Position,
         p: Color,
         ply: usize,
         ksq: Square,
+        queen: bool,
         scratch: &mut EvalScratch,
     ) {
         let i = p.index();
         if scratch.cache[i].is_empty() {
-            scratch.cache[i].resize(SQUARE_NB, CacheSlot::empty());
+            scratch.cache[i].resize(BUCKETS, CacheSlot::empty());
         }
+        let b = bucket(ksq, queen);
         scratch.adds[i].clear();
         scratch.subs[i].clear();
         scratch.tp_adds[i].clear();
@@ -1190,14 +1191,14 @@ impl FeatureTransformer {
         // With no entry for this king square the base is the biases and an empty active set,
         // so the "diff" is every feature -- which is exactly the from-scratch computation.
         // One code path serves both, so there is no second implementation to disagree.
-        let src = &scratch.cache[i][ksq.index()];
+        let src = &scratch.cache[i][b];
         let seeded = src.side.king.is_some();
         let base_board = if seeded { src.side.board } else { [Piece::NONE; SQUARE_NB] };
 
         let (plies, adds, subs) = (&scratch.plies, &mut scratch.adds[i], &mut scratch.subs[i]);
         let _ = plies;
-        halfka_delta(&base_board, pos.board(), p, ksq, adds, subs);
-        let old: &[TpIndex] = if seeded { &scratch.cache[i][ksq.index()].threats } else { &[] };
+        k32q2_delta(&base_board, pos.board(), p, ksq, queen, adds, subs);
+        let old: &[TpIndex] = if seeded { &scratch.cache[i][b].threats } else { &[] };
         Self::collect_diff(
             old,
             &scratch.next_threats[i],
@@ -1207,9 +1208,9 @@ impl FeatureTransformer {
         );
 
         // The fold runs IN the cache slot and mirrors each tile out to the ply slot, so this
-        // king square's entry becomes what was just computed without a second sweep. Seed the
-        // slot first: an unseeded one starts from the biases, which is the from-scratch case.
-        let cache_slot = &mut scratch.cache[i][ksq.index()];
+        // bucket's entry becomes what was just computed without a second sweep. Seed the slot
+        // first: an unseeded one starts from the biases, which is the from-scratch case.
+        let cache_slot = &mut scratch.cache[i][b];
         if !seeded {
             cache_slot.side.acc.copy_from_slice(&self.biases);
         }
@@ -1228,7 +1229,7 @@ impl FeatureTransformer {
         );
         let ka = (&adds[..], &subs[..]);
         let tp = (&tp_adds[..], &tp_subs[..]);
-        let slot = &mut cache[ksq.index()];
+        let slot = &mut cache[b];
         let dst = &mut plies[ply].side[i];
         dst.king = Some(ksq);
         dst.board = *pos.board();
@@ -1262,6 +1263,7 @@ impl FeatureTransformer {
                 scratch.mark = vec![0; MARK_WORDS];
             }
             let ksq = [pos.king_square(Color::White), pos.king_square(Color::Black)];
+            let queen = [opp_queen(pos, Color::White), opp_queen(pos, Color::Black)];
             // The root stamps its own arrival; every other ply's is written by `do_move`.
             // The PLACEMENT goes with it: a roll-forward diffs each hop's two boards, and
             // the root is the one ply no `do_move` reaches.
@@ -1270,19 +1272,21 @@ impl FeatureTransformer {
                 scratch.plies[0].recorded = false;
                 scratch.plies[0].board = *pos.board();
                 scratch.plies[0].king = ksq;
+                scratch.plies[0].queen = queen;
             }
 
             // Decide BOTH perspectives before doing either. `active_sets` fills the sets
             // for both at once, so asking for it inside a per-perspective refresh built
             // every set twice when both refreshed, and built the other perspective's for
             // nothing when only one did.
-            let bases = [0, 1].map(|i| Self::rollforward_base(scratch, Color::ALL[i], ply, ksq[i]));
+            let bases = [0, 1]
+                .map(|i| Self::rollforward_base(scratch, Color::ALL[i], ply, ksq[i], queen[i]));
             // A perspective with no roll-forward base may still be reachable as a KING-MOVE
             // delta, which costs no feature set either. Decide that before `wanted`, or the
             // set would be built for a perspective that is not going to read it.
             let hybrids = [0, 1].map(|i| match bases[i] {
                 Some(_) => None,
-                None => Self::hybrid_base(scratch, Color::ALL[i], ply, ksq[i]),
+                None => Self::hybrid_base(scratch, Color::ALL[i], ply, ksq[i], queen[i]),
             });
 
             // Only the perspectives that will actually REFRESH need a set. A king move
@@ -1302,11 +1306,13 @@ impl FeatureTransformer {
                     // Already this position, for this perspective: the other one had to be
                     // recomputed, this one did not.
                     (Some(base), _) if base == ply => {}
-                    (Some(base), _) => self.roll_forward(pos, p, ply, base, ksq[i], scratch),
-                    (None, Some((base, src))) => {
-                        self.hybrid(pos, p, ply, base, ksq[i], src, scratch);
+                    (Some(base), _) => {
+                        self.roll_forward(p, ply, base, ksq[i], queen[i], scratch);
                     }
-                    (None, None) => self.refresh(pos, p, ply, ksq[i], scratch),
+                    (None, Some((base, src))) => {
+                        self.hybrid(pos, p, ply, base, ksq[i], queen[i], src, scratch);
+                    }
+                    (None, None) => self.refresh(pos, p, ply, ksq[i], queen[i], scratch),
                 }
                 scratch.plies[ply].side[i].computed_for = key;
             }
@@ -1360,7 +1366,7 @@ mod tests {
     fn an_unloaded_transformer_has_the_right_shape() {
         let ft = FeatureTransformer::new();
         assert_eq!(ft.biases.len(), L1);
-        assert_eq!(ft.weights.len() * LANE, L1 * HALFKA_DIMENSIONS);
+        assert_eq!(ft.weights.len(), L1 * K32Q2_DIMENSIONS);
         assert_eq!(ft.threat_and_pp_weights.len(), L1 * THREAT_AND_PP_DIMENSIONS);
         // Around 112 MiB: worth knowing, and worth failing on if a dimension moves.
         assert!(ft.weight_bytes() > 100 << 20);
@@ -1383,8 +1389,8 @@ mod tests {
         use crate::board::movegen::generate_legal;
 
         let mut ft = FeatureTransformer::new();
-        for (i, w) in ft.weights.iter_mut().flat_map(|v| v.as_mut_array().iter_mut()).enumerate() {
-            *w = ((i * 7919) % 61) as i16 - 30;
+        for (i, w) in ft.weights.iter_mut().enumerate() {
+            *w = ((i * 7919) % 61) as i8 - 30;
         }
         for (i, w) in ft.threat_and_pp_weights.iter_mut().enumerate() {
             *w = ((i * 104_729) % 41) as i8 - 20;
@@ -1426,12 +1432,73 @@ mod tests {
         }
     }
 
+    /// Every route reaches the refresh's accumulator across a change of opponent-queen state.
+    ///
+    /// The second axis of the K32Q2 bucket re-indexes every king-piece feature, and no bench
+    /// position takes it on the delta paths: a queen leaves the board, or a first one arrives,
+    /// on a ply that would otherwise roll forward or take the king-move delta. Each line is
+    /// chosen to cross the change on one of them — a king taking the last queen in its own
+    /// mirror half, a pawn taking it, a promotion making one — and then to keep walking in
+    /// the new bucket, and every ply is compared, accumulator for accumulator, with a scratch
+    /// that has seen nothing.
+    #[test]
+    fn every_route_survives_a_change_of_queen_state() {
+        use crate::board::movegen::parse_uci_move;
+
+        let mut ft = FeatureTransformer::new();
+        for (i, w) in ft.weights.iter_mut().enumerate() {
+            *w = ((i * 7919) % 61) as i8 - 30;
+        }
+        for (i, w) in ft.threat_and_pp_weights.iter_mut().enumerate() {
+            *w = ((i * 104_729) % 41) as i8 - 20;
+        }
+
+        let lines: [(&str, &[&str]); 3] = [
+            // Kxe2 takes the only queen without leaving the e-h half, then the king crosses
+            // to d3 and back.
+            (
+                "4k3/pppppppp/8/8/8/8/PPPPqPPP/RNBQKBNR w KQ - 0 1",
+                &["e1e2", "e7e6", "e2d3", "d7d6", "d3e2", "e8e7"],
+            ),
+            // exd5 takes the only queen, the black king crosses, b8=Q makes the first one,
+            // and the black king crosses back.
+            ("4k3/1P6/8/3q4/4P3/8/8/4K3 w - - 0 1", &["e4d5", "e8d7", "b7b8q", "d7e7", "b8b7"]),
+            // Qxe2+ takes White's queen, Kxe2 takes Black's.
+            ("4k3/8/8/4q3/8/8/4Q3/4K3 b - - 0 1", &["e5e2", "e1e2", "e8d7", "e2e3", "d7e6"]),
+        ];
+
+        for (fen, moves) in lines {
+            let mut pos = Position::from_fen(fen, false).expect("valid fen");
+            let mut walk = EvalScratch::default();
+            ft.transform(&pos, 0, &mut walk);
+            for (n, uci) in moves.iter().enumerate() {
+                let ply = n + 1;
+                let m = parse_uci_move(&pos, uci).unwrap_or_else(|| panic!("{fen}: {uci}"));
+                let gives_check = pos.gives_check(m);
+                let dts = walk.record_threats(Ply::new(ply as i32));
+                let dpp = pos.do_move_recording(m, gives_check, Some(dts));
+                walk.record(Ply::new(ply as i32), &pos, pos.raw_key(), dpp);
+                ft.transform(&pos, ply, &mut walk);
+
+                let mut fresh = EvalScratch::default();
+                ft.transform(&pos, 0, &mut fresh);
+                for p in Color::ALL {
+                    assert_eq!(
+                        walk.plies[ply].side[p.index()].acc,
+                        fresh.plies[0].side[p.index()].acc,
+                        "{fen}: after {uci}, perspective {p:?}: accumulator differs"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn diffing_reaches_the_same_state_as_starting_over() {
         let mut ft = FeatureTransformer::new();
         // Give the weights some structure, or every difference is zero and proves nothing.
-        for (i, w) in ft.weights.iter_mut().flat_map(|v| v.as_mut_array().iter_mut()).enumerate() {
-            *w = ((i * 7919) % 61) as i16 - 30;
+        for (i, w) in ft.weights.iter_mut().enumerate() {
+            *w = ((i * 7919) % 61) as i8 - 30;
         }
         for (i, w) in ft.threat_and_pp_weights.iter_mut().enumerate() {
             *w = ((i * 104_729) % 41) as i8 - 20;

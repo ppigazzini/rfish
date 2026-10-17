@@ -14,9 +14,9 @@
 //!                                                                        fc_2 (128→1)
 //! ```
 //!
-//! Eight independent output stacks exist; the material count selects one, and its output is
-//! the network's whole answer. Upstream `a17c0ce28` removed the PSQT head that used to be
-//! summed beside it.
+//! Thirty-two independent output stacks exist; the material count and which sides have a
+//! queen select one, and its output is the network's whole answer. Upstream `a17c0ce28`
+//! removed the PSQT head that used to be summed beside it.
 //!
 //! # No embedded net
 //!
@@ -43,7 +43,7 @@ use common::{
     HIDDEN_ONE_VAL, L1, L2, L3, LAYER_STACKS, NetReader, NetWriter, OUTPUT_SCALE, VERSION,
     WEIGHT_SCALE_BITS,
 };
-use features::{HALFKA_DIMENSIONS, THREAT_AND_PP_DIMENSIONS};
+use features::{K32Q2_DIMENSIONS, THREAT_AND_PP_DIMENSIONS};
 use layers::{AffineLayer, clipped_relu, sqr_clipped_relu};
 use transformer::{EvalScratch, FeatureTransformer};
 
@@ -52,7 +52,7 @@ use transformer::{EvalScratch, FeatureTransformer};
 /// Read from here, never recited into prose: it changes on every net-swapping upstream
 /// sync, and a doc that names the old one sends a reader looking for a file that no longer
 /// exists.
-pub const DEFAULT_NET: &str = "nn-a8bcb689c267.nnue";
+pub const DEFAULT_NET: &str = "nn-c9e480e92425.nnue";
 
 /// The concatenated activation buffer the two hidden layers share.
 const CONCAT: usize = L2 * 2 + L3 * 2;
@@ -254,7 +254,7 @@ impl Network {
         format!(
             "{}MiB, ({}, {}, {}, {}, 1)",
             bytes / (1024 * 1024),
-            HALFKA_DIMENSIONS + THREAT_AND_PP_DIMENSIONS,
+            K32Q2_DIMENSIONS + THREAT_AND_PP_DIMENSIONS,
             L1,
             L2,
             L3
@@ -268,12 +268,9 @@ impl Network {
     }
 
     /// Evaluate `pos`: the raw network output, which `eval` prints as internal units.
-    ///
-    /// The bucket is chosen by material: `(pieces - 1) / 4`, so an endgame and a full board
-    /// get different output stacks.
     #[must_use]
     pub fn evaluate(&self, pos: &Position, ply: Ply, scratch: &mut EvalScratch) -> Value {
-        let bucket = (pos.piece_total() as usize - 1) / 4;
+        let bucket = stack_bucket(pos);
         self.transformer.transform(pos, ply.index(), scratch);
         let positional = self.stacks[bucket].propagate(scratch.transformed());
         Value::new((i64::from(positional) / OUTPUT_SCALE) as i32)
@@ -284,13 +281,13 @@ impl Network {
     /// What `eval` prints. Upstream runs every output stack over the one set of transformed
     /// features rather than reading the chosen one, so the table shows what each stack WOULD
     /// have said — that is the diagnostic, and evaluating only the live bucket would leave
-    /// seven rows blank. The features do not depend on the bucket, so they are transformed
-    /// once, as upstream's trace does.
+    /// every other row blank. The features do not depend on the bucket, so they are
+    /// transformed once, as upstream's trace does.
     #[must_use]
     pub fn trace_evaluate(&self, pos: &Position, scratch: &mut EvalScratch) -> NetworkTrace {
         let mut trace = NetworkTrace {
             positional: [VALUE_ZERO; LAYER_STACKS],
-            correct_bucket: (pos.piece_total() as usize - 1) / 4,
+            correct_bucket: stack_bucket(pos),
         };
         self.transformer.transform(pos, 0, scratch);
         for bucket in 0..LAYER_STACKS {
@@ -301,12 +298,25 @@ impl Network {
     }
 }
 
+/// The output stack a position reads: four per piece-count bucket, one per queen state.
+///
+/// Material picks the group, `(pieces - 1) / 4`, so an endgame and a full board get different
+/// stacks; within it, bit 1 says the side to move has a queen and bit 0 that its opponent does.
+fn stack_bucket(pos: &Position) -> usize {
+    use crate::board::types::PieceType;
+    let pc_bucket = (pos.piece_total() as usize - 1) / 4;
+    let us = pos.side_to_move();
+    let queen_bucket = (usize::from(pos.pieces_of(us, PieceType::Queen).any()) << 1)
+        | usize::from(pos.pieces_of(!us, PieceType::Queen).any());
+    pc_bucket * 4 + queen_bucket
+}
+
 /// Every output stack's answer for one position.
 #[derive(Clone, Copy, Debug)]
 pub struct NetworkTrace {
     /// Each output stack's evaluation, per bucket.
     pub positional: [Value; LAYER_STACKS],
-    /// The bucket the piece count selects.
+    /// The bucket the piece count and the queens select.
     pub correct_bucket: usize,
 }
 
@@ -322,7 +332,7 @@ mod hash {
     /// The hash each feature set carries, from upstream.
     const THREAT_HASH: u32 = 0x2e6b_9d04;
     const PAIR_HASH: u32 = 0x86f2_b1dd;
-    const PSQ_HASH: u32 = 0x7f23_4cb8;
+    const PSQ_HASH: u32 = 0x32b5_e284;
 
     /// Fold a list of component hashes, rotating one bit between each.
     const fn combine(hashes: [u32; 3]) -> u32 {
@@ -415,7 +425,7 @@ mod tests {
         // Derived from the layer shapes; if a shape moves these move with it, which is the
         // whole point. The values are recorded so a refactor that silently changes the
         // derivation is caught here rather than by a net that will not load.
-        assert_eq!(hash::FEATURE_TRANSFORMER, 0xCB68_5313);
+        assert_eq!(hash::FEATURE_TRANSFORMER, 0x86FE_FD2F);
         assert_eq!(hash::NETWORK, hash::FEATURE_TRANSFORMER ^ hash::ARCHITECTURE);
         assert_ne!(hash::ARCHITECTURE, 0);
     }
