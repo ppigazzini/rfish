@@ -58,7 +58,7 @@ jobs:
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Formatting first: it is the cheapest gate and it blocks everything after it, so a
       # whitespace mistake is reported in seconds rather than after a two-minute bench.
       - run: cargo xtask fmt
@@ -105,7 +105,7 @@ jobs:
       - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The `gate` profile: release code generation PLUS the debug assertions the search
       # states its invariants with. A release-only run turns a violated invariant into a
       # plausible wrong number instead of a failure.
@@ -136,7 +136,7 @@ jobs:
       - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The network is a runtime input, not a build product, and the signature is measured
       # WITH it. Keyed by the module that names it: a net never changes content under a
       # name, so a hit is always valid and a miss only happens on an upstream net swap.
@@ -190,7 +190,7 @@ jobs:
           toolchain: ${{ steps.rt.outputs.channel }}
           # `std` is rebuilt from source under the sanitizer, so its source must be present.
           components: rust-src
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: resources/*.nnue
@@ -227,7 +227,7 @@ jobs:
       - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: resources/*.nnue
@@ -256,7 +256,7 @@ jobs:
       - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: resources/*.nnue
@@ -307,7 +307,7 @@ jobs:
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # `check`, not `build`: the runner has no cross LINKER for either target, so a build
       # fails at the link step having already proven everything this lane is for. What it is
       # for is catching a `cfg` sneaking into engine code -- the engine's only real platform
