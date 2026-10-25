@@ -360,6 +360,16 @@ earlier (`3883af90`), from this port's own harness finding — the two ports kee
 other's residue, and the shape to look for is a validated field whose *consumers* read more out
 of it than the validation checked.
 
+**Not every corrupt file panics; one recursed.** A symmetric table probes every position as
+white to move, and only a PAWNLESS one is exempt from the DTZ side check. So a symmetric
+pawnful `.rtbz` whose STM flag claims black answers `ChangeStm` for both sides, and
+`probe_dtz`'s one-ply search recursed down the quiet moves until the stack ran out — in safe
+Rust an abort, after a heap that grew with the square of the depth, because every level
+clones a `Position` whose history is one longer. `../mcfish`'s nightly lane found it on
+KPvKP (`9659811f`), and pristine upstream segfaults on the same file. `TbTable::parse` now
+refuses it; a real one has the flag clear on every file. This harness cannot reach it: its
+seeds are the 3-man set, and KPvKP is the smallest symmetric pawnful table.
+
 ## The gates
 
 | gate | what it proves here | owned by |
