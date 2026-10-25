@@ -1,7 +1,7 @@
 # Three-man positions for the differential Syzygy gate.
 #
 # `cargo xtask tb` drives rfish and a pristine upstream build over each of these and
-# compares the WDL verdict and the DTZ distance.
+# compares the WDL verdict and the DTZ distance, each with the state its probe left.
 #
 # Every entry is LEGAL. An illegal one -- where the side not to move is in check -- makes
 # the oracle exit rather than answer, which reads to a gate as a broken engine rather than
@@ -18,6 +18,10 @@
 #     black side reach it.
 #   - CHANGE_STM. A DTZ file stores one side to move only. When the probe wants the other,
 #     the answer comes from a one-ply search that minimises the distance, not from the file.
+#
+# The last two are for the states nothing above reaches: a mated side to move, whose one-ply
+# search has no move and leaves CHANGE_STM standing (-1), and a side whose every legal move
+# is a capture, which leaves the WDL probe at ZEROING_BEST_MOVE (2).
 
 4k3/8/8/8/8/8/8/Q3K3 w - - 0 1
 4k3/8/8/8/8/5Q2/8/4K3 w - - 0 1
@@ -151,3 +155,5 @@ N3k3/8/2K5/8/8/8/8/8 w - - 0 1
 3rk3/8/8/8/8/8/8/4K3 b - - 0 1
 4k3/8/8/8/8/8/4p3/4K3 b - - 0 1
 4k3/8/8/8/8/8/3n4/4K3 w - - 0 1
+7R/8/8/8/8/8/5K1k/8 b - - 0 1
+7k/6R1/8/8/8/8/8/K7 b - - 0 1

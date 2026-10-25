@@ -8,8 +8,8 @@ Golden: `Stockfish/src/syzygy/tbprobe.cpp`.
 ## Status: ported, and verified against upstream
 
 `cargo xtask tb` drives rfish and a pristine upstream build over the positions in
-`tools/cases/tb.fens` and compares the **WDL verdict and the DTZ distance**, position by
-position. Every one matches.
+`tools/cases/tb.fens` and compares the **WDL verdict and the DTZ distance**, each with the
+state its probe left, position by position. Every one matches.
 
 That is the only gate shape worth having here. A tablebase answer is EXACT, so "close" is
 meaningless: an index computed one off reads a different position's entry and returns a
@@ -382,7 +382,7 @@ seeds are the 3-man set, and KPvKP is the smallest symmetric pawnful table.
 
 | gate | what it proves here | owned by |
 |---|---|---|
-| `tb` | rfish's WDL verdict and DTZ distance equal a pristine upstream build's, position by position | this page |
+| `tb` | rfish's WDL verdict and DTZ distance, and the state each probe left, equal a pristine upstream build's, position by position | this page |
 | `fuzz` | mutated table bytes reach no panic — the only input here that no part of the process vouches for | [10-tooling-ci.md](10-tooling-ci.md) |
 | `perf-budget` with `--syzygy` | what the prober COSTS: the bench list never enters it, so this is the only workload that measures this zone at all | [11-performance.md](11-performance.md) |
 
@@ -390,6 +390,14 @@ seeds are the 3-man set, and KPvKP is the smallest symmetric pawnful table.
 
 The differential tablebase gate: rfish's WDL verdict and DTZ distance must equal a pristine
 upstream build's, position by position.
+
+It compares the `d` command's tablebase lines WHOLE, state included. Upstream's DTZ probe
+has no state of its own — the WDL search, the table read and every child of the one-ply
+search write one shared `result`, and it returns holding whatever the last of them left —
+and the search reads only whether that is `Fail`. So a state reported wrong moves no score,
+no PV and no node count, and `d` is the only place it shows: `../mcfish` `e35b5ab1` found its
+port reporting a zeroing best move as a plain one there. rfish's `d` printed no state at
+all, and printed nothing for a failed probe where upstream prints `0 (0)`.
 
 A tablebase answer is exact, so "close" is meaningless — an index computed one off reads a
 different position's entry and returns a confident wrong verdict. A golden pinning rfish's

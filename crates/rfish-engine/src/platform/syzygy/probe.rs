@@ -86,6 +86,19 @@ pub enum ProbeState {
     ChangeStm,
 }
 
+impl ProbeState {
+    /// Upstream's integer for the state, which its `d` command prints.
+    #[must_use]
+    pub const fn code(self) -> i32 {
+        match self {
+            ProbeState::Fail => 0,
+            ProbeState::Ok => 1,
+            ProbeState::ChangeStm => -1,
+            ProbeState::ZeroingBestMove => 2,
+        }
+    }
+}
+
 /// Compute the index for `pos` in `entry` and read the value there.
 ///
 /// Returns `None` when the table is one-sided and stores the other side to move — the
