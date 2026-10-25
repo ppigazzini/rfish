@@ -8,6 +8,7 @@
 //! is reason enough — but the deciding reason is that committing it would make the bench
 //! anchor look like a property of this repository rather than of a file fetched separately.
 
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::runner::Outcome;
@@ -76,24 +77,71 @@ fn rfish_default_net() -> &'static str {
         .unwrap_or(FALLBACK)
 }
 
-/// Where the 3-man Syzygy set is mirrored.
+/// Where the Syzygy tables are mirrored.
 const TB_BASE_URL: &str = "https://tablebase.lichess.ovh/tables/standard";
 
-/// The 3-man material configurations, and the two files each has.
-const TB_STEMS: [&str; 5] = ["KPvK", "KNvK", "KBvK", "KRvK", "KQvK"];
+/// One set of tables `tb-fetch` installs, and the corpus `tb` differences it over.
+pub(crate) struct TbSet {
+    /// The directory under `resources/`.
+    pub(crate) dir: &'static str,
+    /// The material configurations, each a `.rtbw` and a `.rtbz`.
+    pub(crate) stems: &'static [&'static str],
+    /// The positions that probe the set, relative to the workspace root.
+    pub(crate) corpus: &'static str,
+}
 
-/// Fetch the 3-man Syzygy set into `resources/syzygy/`.
+/// Every set `tb-fetch` installs, each in its own directory.
+///
+/// The 3-man set is the one both sibling ports fetch, and the one `tbpv` and the probing
+/// perf workload read. `KPvKP` sits apart, as `../mcfish` keeps its 5-man set in `syzygy5/`,
+/// because it presents two things no 3-man file does: it is the smallest SYMMETRIC pawnful
+/// table, and its DTZ file REMAPS its values, a branch of `map_score` no 3-man file enters.
+/// Kept apart, it adds to what `tb` proves without moving anything the 3-man gates see.
+pub(crate) const TB_SETS: [TbSet; 2] = [
+    TbSet {
+        dir: "syzygy",
+        stems: &["KPvK", "KNvK", "KBvK", "KRvK", "KQvK"],
+        corpus: "tools/cases/tb.fens",
+    },
+    TbSet { dir: "syzygy4", stems: &["KPvKP"], corpus: "tools/cases/tb4.fens" },
+];
+
+impl TbSet {
+    /// The set's directory.
+    pub(crate) fn path(&self) -> PathBuf {
+        resources_dir().join(self.dir)
+    }
+
+    /// The set's files that are absent or empty.
+    pub(crate) fn missing(&self) -> Vec<String> {
+        let dir = self.path();
+        self.stems
+            .iter()
+            .flat_map(|stem| ["rtbw", "rtbz"].map(|ext| format!("{stem}.{ext}")))
+            .filter(|f| !dir.join(f).metadata().is_ok_and(|m| m.len() > 0))
+            .collect()
+    }
+
+    /// The most men any table in the set covers.
+    pub(crate) fn men(&self) -> usize {
+        self.stems
+            .iter()
+            .map(|s| s.chars().filter(char::is_ascii_uppercase).count())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// Fetch every set in [`TB_SETS`] into its directory under `resources/`.
 ///
 /// The tablebase gates and the `tbpv` golden case need real tables; without them both skip,
-/// and a gate that can only skip teaches people to ignore a skip. The set is ~26 KiB, so it
-/// is cheap enough for CI to carry — the sibling ports both fetch and cache it the same way.
+/// and a gate that can only skip teaches people to ignore a skip. The 3-man set is ~26 KiB and
+/// `KPvKP` ~300 KiB, so both are cheap enough for CI to carry.
 ///
 /// **The magic number is checked, not just the HTTP status.** A mirror that answers a missing
 /// file with a 200 and an HTML error page would otherwise be stored as a table and fail much
 /// later inside the decoder, reported as a corrupt file rather than as a bad download.
 pub(crate) fn fetch_tb() -> Result<Outcome, String> {
-    let dir = resources_dir().join("syzygy");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     if !have("curl") && !have("wget") {
         return Ok(Outcome::Skipped(
             "neither curl nor wget is available to fetch the tablebases".to_string(),
@@ -101,32 +149,40 @@ pub(crate) fn fetch_tb() -> Result<Outcome, String> {
     }
 
     let mut fetched = 0usize;
-    for stem in TB_STEMS {
-        for (ext, sub, magic) in [
-            ("rtbw", "3-4-5-wdl", [0x71u8, 0xe8, 0x23, 0x5d]),
-            ("rtbz", "3-4-5-dtz", [0xd7u8, 0x66, 0x0c, 0xa5]),
-        ] {
-            let dest = dir.join(format!("{stem}.{ext}"));
-            if dest.metadata().is_ok_and(|m| m.len() > 0) {
-                continue;
+    for set in &TB_SETS {
+        let dir = set.path();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for stem in set.stems {
+            for (ext, sub, magic) in [
+                ("rtbw", "3-4-5-wdl", [0x71u8, 0xe8, 0x23, 0x5d]),
+                ("rtbz", "3-4-5-dtz", [0xd7u8, 0x66, 0x0c, 0xa5]),
+            ] {
+                let dest = dir.join(format!("{stem}.{ext}"));
+                if dest.metadata().is_ok_and(|m| m.len() > 0) {
+                    continue;
+                }
+                let url = format!("{TB_BASE_URL}/{sub}/{stem}.{ext}");
+                if have("curl") {
+                    run(Command::new("curl")
+                        .args(["-fL", "--retry", "3", "-o"])
+                        .arg(&dest)
+                        .arg(&url))?;
+                } else {
+                    run(Command::new("wget").arg("-O").arg(&dest).arg(&url))?;
+                }
+                let head = std::fs::read(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+                if head.len() < 4 || head[..4] != magic {
+                    let _ = std::fs::remove_file(&dest);
+                    return Err(format!(
+                        "{stem}.{ext} is not a Syzygy table: it does not start with the {ext} magic"
+                    ));
+                }
+                fetched += 1;
             }
-            let url = format!("{TB_BASE_URL}/{sub}/{stem}.{ext}");
-            if have("curl") {
-                run(Command::new("curl").args(["-fL", "--retry", "3", "-o"]).arg(&dest).arg(&url))?;
-            } else {
-                run(Command::new("wget").arg("-O").arg(&dest).arg(&url))?;
-            }
-            let head = std::fs::read(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
-            if head.len() < 4 || head[..4] != magic {
-                let _ = std::fs::remove_file(&dest);
-                return Err(format!(
-                    "{stem}.{ext} is not a Syzygy table: it does not start with the {ext} magic"
-                ));
-            }
-            fetched += 1;
         }
     }
-    println!("tb-fetch: {fetched} downloaded, 3-man set present in {}", dir.display());
+    let dirs: Vec<String> = TB_SETS.iter().map(|s| s.path().display().to_string()).collect();
+    println!("tb-fetch: {fetched} downloaded, every set present in {}", dirs.join(" and "));
     Ok(Outcome::Pass)
 }
 

@@ -697,10 +697,11 @@ mod tests {
 
     /// A remapped DTZ value is read at its own entry of the map, not at the one before it.
     ///
-    /// No 3-man file sets `flag::MAPPED`, so neither `tb` nor the tests above reach the
-    /// remap, and it read one entry early from the port onwards: a 4-man sweep against the
-    /// oracle found 73 wrong distances in 2,800 probes, every one in a remapped table, and
-    /// `8/3k4/8/1K4p1/6P1/8/8/8 b` read 5 where upstream reads 7. This pair needs no corpus:
+    /// No 3-man file sets `flag::MAPPED`, so neither the 3-man `tb` corpus nor the tests above
+    /// reach the remap, and it read one entry early from the port onwards: a 4-man sweep
+    /// against the oracle found 73 wrong distances in 2,800 probes, every one in a remapped
+    /// table, and `8/3k4/8/1K4p1/6P1/8/8/8 b` read 5 where upstream reads 7. `tb` now reaches
+    /// it through `KPvKP` and `tb4.fens`, where the oracle is built; this pair needs no corpus:
     /// `KPvKP`'s own header bytes, a WDL file won everywhere, and a DTZ file whose sub-tables
     /// all store the single value 1 through maps of `[3, 6]` — so entry 1 is 6, which is 13
     /// plies, and the entry before it would be 7.

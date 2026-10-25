@@ -313,7 +313,7 @@ fn map_score(entry: &TbTable, loaded: &Loaded, file: TbFile, value: i32, wdl: Wd
 
     if flags & flag::MAPPED != 0 {
         // `slot` already steps past the run's count, so entry `value` is at `slot + value`.
-        // No 3-man file sets MAPPED, so `tb` cannot see this line; 4-man KPvKP does.
+        // No 3-man file sets MAPPED; `tb` reaches this line through `tb4.fens`'s KPvKP.
         let slot = d.map_idx[WDL_MAP[(wdl as i32 + 2) as usize]] as usize;
         value = if flags & flag::WIDE != 0 {
             let off = entry_map(loaded) + 2 * (slot + value as usize);

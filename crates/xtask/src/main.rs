@@ -163,7 +163,7 @@ cargo xtask <step> — the rfish build driver
   Build and run
     build [--profile P] [--arch TIER]  build the engine binary
     net [NAME]                         fetch the NNUE network into resources/
-    tb-fetch                           fetch the 3-man Syzygy set into resources/syzygy/
+    tb-fetch                           fetch the 3-man set and KPvKP into resources/
     bench [ARGS...]                    run the benchmark
 
   Gates — a behaviour-changing edit is not done until one of these says so

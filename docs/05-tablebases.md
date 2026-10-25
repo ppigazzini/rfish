@@ -74,8 +74,10 @@ through a per-outcome table (`flag::MAPPED`), and **no 3-man file does**. `map_s
 one entry early from the port onwards, and `tb` stayed green on every probe because it
 never entered that branch. A 4-man sweep against the oracle found 73 wrong distances in
 2,800 probes, every one in a remapped table (KPvKP, KQvKR, KRvKP among them) and every WDL
-verdict right. `a_remapped_dtz_value_is_read_at_its_own_entry` pins the read with a crafted
-pair, because the 3-man set cannot.
+verdict right. `tb-fetch` now installs KPvKP in `resources/syzygy4/` and `tb` differences
+it through `tools/cases/tb4.fens`, which goes red on five of its rows with the read put
+back; `a_remapped_dtz_value_is_read_at_its_own_entry` pins it with a crafted pair where no
+oracle is built.
 
 ## The probe is not a bare table read
 
@@ -406,6 +408,8 @@ own output would pin whatever it currently does; only the comparison catches tha
 It also checks the property that makes an unconfigured engine safe: with no path set nothing
 is discovered, no probe fires, and the signature is unaffected.
 
-SKIPs without `resources/syzygy/` or without an upstream build. Every entry in the battery is
-LEGAL — an illegal position makes the oracle exit rather than answer, which reads to a gate
-as a broken engine rather than as a position to skip.
+SKIPs without every set `tb-fetch` installs or without an upstream build. Each set brings
+its own corpus — `tb.fens` for the 3-man set, `tb4.fens` for KPvKP — probed through one
+`SyzygyPath` naming both directories, because a KPvKP capture lands in the 3-man set.
+Every entry in the battery is LEGAL — an illegal position makes the oracle exit rather than
+answer, which reads to a gate as a broken engine rather than as a position to skip.

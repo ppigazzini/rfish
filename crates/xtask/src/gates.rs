@@ -6,6 +6,7 @@
 
 use std::process::Command;
 
+use crate::net::{TB_SETS, TbSet};
 use crate::runner::{
     GATE_PROFILE, Outcome, build_engine, cargo, compared_something, drive, drive_at, engine_path,
     node_total,
@@ -1481,23 +1482,35 @@ fn markdown_link_targets(line: &str) -> Vec<&str> {
 /// A position where upstream declines to answer — an illegal one, where the side not to move
 /// is in check — is skipped by both sides rather than counted as a mismatch.
 ///
-/// Needs the 3-man table set and an upstream binary; either missing is a SKIP.
+/// Every set `tb-fetch` installs is probed, each over its own corpus, through one `SyzygyPath`
+/// naming all of them: the `KPvKP` probes walk captures down into the 3-man set.
+///
+/// Needs every set and an upstream binary; either missing is a SKIP.
 pub(crate) fn tb() -> Result<Outcome, String> {
     let engine = build_engine(GATE_PROFILE)?;
-    let dir = resources_dir().join("syzygy");
-    if !dir.join("KQvK.rtbw").is_file() {
-        return Ok(Outcome::Skipped(format!(
-            "{} holds no tables; fetch the 3-man set into it",
-            dir.display()
-        )));
+    for set in &TB_SETS {
+        let missing = set.missing();
+        if !missing.is_empty() {
+            return Ok(Outcome::Skipped(format!(
+                "{} lacks {}; run `cargo xtask tb-fetch`",
+                set.path().display(),
+                missing.join(", ")
+            )));
+        }
     }
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let dirs: Vec<String> = TB_SETS.iter().map(|s| s.path().display().to_string()).collect();
+    let dirs = dirs.join(sep);
 
     // Discovery first, and the property that makes a missing path safe: no tables, no
     // effect on the search, so the bench signature cannot move.
-    let set = format!("setoption name SyzygyPath value {}", dir.display());
+    let set = format!("setoption name SyzygyPath value {dirs}");
     let found = drive(&engine, &[&set, "isready"])?;
-    if !found.contains("Found 5 WDL and 5 DTZ tablebase files (up to 3-man).") {
-        return Ok(Outcome::Fail(format!("discovery failed in {}", dir.display())));
+    let files: usize = TB_SETS.iter().map(|s| s.stems.len()).sum();
+    let men = TB_SETS.iter().map(TbSet::men).max().unwrap_or(0);
+    let want = format!("Found {files} WDL and {files} DTZ tablebase files (up to {men}-man).");
+    if !found.contains(&want) {
+        return Ok(Outcome::Fail(format!("discovery in {dirs} did not report `{want}`")));
     }
     let empty = drive(&engine, &["setoption name SyzygyPath value <empty>", "isready"])?;
     if empty.contains("Found ") {
@@ -1512,15 +1525,18 @@ pub(crate) fn tb() -> Result<Outcome, String> {
         ));
     };
     let oracle_dir = oracle.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
-    let oracle_set = format!("setoption name SyzygyPath value {}", dir.display());
+    let oracle_set = set.clone();
 
-    let path = workspace_root().join("tools/cases/tb.fens");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(Outcome::Skipped(format!("{} does not exist", path.display())));
-    };
+    let mut text = String::new();
+    for corpus in TB_SETS.iter().map(|s| workspace_root().join(s.corpus)) {
+        let Ok(t) = std::fs::read_to_string(&corpus) else {
+            return Ok(Outcome::Skipped(format!("{} does not exist", corpus.display())));
+        };
+        text.push_str(&t);
+    }
 
     // One invocation each, for the same reason as `nnue-check`: a per-position spawn reloads
-    // the network 264 times and turns a seconds-long gate into a minutes-long one.
+    // the network once per position and turns a seconds-long gate into a minutes-long one.
     let fens: Vec<&str> =
         text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
     let mut script = vec![set.clone()];
@@ -1555,7 +1571,7 @@ pub(crate) fn tb() -> Result<Outcome, String> {
     for f in failures.iter().take(8) {
         eprintln!("  {f}");
     }
-    if let Some(refusal) = compared_something(checked, "probes", "tools/cases/tb.fens") {
+    if let Some(refusal) = compared_something(checked, "probes", "tools/cases/tb*.fens") {
         return Ok(refusal);
     }
     println!(

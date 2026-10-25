@@ -119,8 +119,10 @@ jobs:
           key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: resources/syzygy
-          key: syzygy-3man-${{ hashFiles('crates/xtask/src/net.rs') }}
+          path: |
+            resources/syzygy
+            resources/syzygy4
+          key: syzygy-3man-kpvkp-${{ hashFiles('crates/xtask/src/net.rs') }}
       - run: cargo xtask net
       - run: cargo xtask tb-fetch
 
