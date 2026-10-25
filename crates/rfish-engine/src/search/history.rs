@@ -478,7 +478,7 @@ impl ContKey {
     /// The plane given to a slot a picker never reads.
     ///
     /// Not every move-picker sequence reads all six planes: the quiescence and `ProbCut`
-    /// sequences reach `score_quiets` only from `QuietInit`, which they never enter. Those
+    /// sequences reach `score_quiets` only from `init_quiets`, which they never call. Those
     /// slots were `Option<usize>`, which put a branch per plane on the picker's hottest line
     /// -- 17.2M instructions on a bench, in a branch that could never be taken.
     ///

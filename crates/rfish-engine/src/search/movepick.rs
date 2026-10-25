@@ -36,29 +36,27 @@ use super::history::{ContKey, Histories, PawnHistory, PawnRow};
 /// [`super::history`] alongside the table they index.
 pub type ContKeys = [ContKey; 6];
 
-/// Where the picker is in its sequence. The numbering is upstream's, and the fallthrough
-/// order below depends on it.
+/// Where the picker is in its sequence. The numbering is upstream's.
+///
+/// The KIND of picker -- main search, quiescence, evasion or `ProbCut` -- is not a stage
+/// of its own: it is the stage [`Stage::Init`] hands over to, held in
+/// `first_stage`, so every kind shares the two stages that open it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Stage {
-    MainTt,
-    CaptureInit,
-    GoodCapture,
-    QuietInit,
-    GoodQuiet,
-    BadCapture,
-    BadQuiet,
+    Tt,
+    /// Upstream's `INIT_FIRST_STAGE`.
+    Init,
 
-    EvasionTt,
-    EvasionInit,
+    GoodCapture,
+    GoodQuiet,
+    /// The bad captures, then the bad quiets, from one contiguous region.
+    BadMoves,
+
+    QSearch,
+
     Evasion,
 
-    ProbCutTt,
-    ProbCutInit,
     ProbCut,
-
-    QSearchTt,
-    QCaptureInit,
-    QCapture,
 
     /// Not upstream's: the sequence has ended. Upstream falls off the end of `select`
     /// instead, which needs a pointer one past the last move; an explicit terminal state
@@ -107,6 +105,13 @@ impl MoveBuf {
     #[inline(always)]
     pub fn clear(&mut self) {
         self.len = 0;
+    }
+
+    /// Drop every move from `len` on, keeping the storage.
+    #[inline(always)]
+    fn truncate(&mut self, len: usize) {
+        debug_assert!(len <= self.len);
+        self.len = len;
     }
 }
 
@@ -183,7 +188,7 @@ const SORTED_PAST_DEPTH: i32 = (-GOOD_QUIET_THRESHOLD + QUIET_SORT_SLOPE - 1) / 
 /// prefix runs out before the threshold does and a walk may stop at the first move that
 /// fails it.
 ///
-/// See [`MovePicker::select_while_above`], which this decides, and
+/// See [`MovePicker::select_good_quiet_sorted`], which this decides, and
 /// [`tests::good_quiets_are_sorted_past_the_threshold`], which holds it to the product form
 /// it replaces at every depth an `i32` can carry the product at.
 fn sorted_past(depth: i32) -> bool {
@@ -249,6 +254,8 @@ pub struct MovePicker {
     /// The static-exchange threshold `ProbCut` requires. Unused by the other constructors.
     threshold: Value,
     stage: Stage,
+    /// The stage [`Stage::Init`] enters, which is what kind of picker this is.
+    first_stage: Stage,
     depth: i32,
     ply: Ply,
     skip_quiets: bool,
@@ -257,13 +264,12 @@ pub struct MovePicker {
     cur: usize,
     /// One past the last move the current stage may yield.
     end_cur: usize,
-    /// One past the last capture demoted to the bad-capture region, which grows from the
-    /// front of the buffer as `GoodCapture` rejects entries.
+    /// One past the last bad capture. The quiets are generated from here, over the slots
+    /// of the captures already yielded.
     end_bad_captures: usize,
-    /// One past the last generated capture.
-    end_captures: usize,
-    /// One past everything generated.
-    end_generated: usize,
+    /// One past the last move deferred to [`Stage::BadMoves`]: the region grows from the
+    /// front of the buffer, captures first and then the quiets `GoodQuiet` rejects.
+    end_bad_moves: usize,
 
     pawn_row: PawnRow,
 }
@@ -291,28 +297,26 @@ impl MovePicker {
         ply: Ply,
     ) -> MovePicker {
         let usable = tt_move.is_ok() && pos.legal(tt_move);
-        let stage = if pos.in_check() {
-            if usable { Stage::EvasionTt } else { Stage::EvasionInit }
+        let first_stage = if pos.in_check() {
+            Stage::Evasion
         } else if depth > 0 {
-            if usable { Stage::MainTt } else { Stage::CaptureInit }
-        } else if usable {
-            Stage::QSearchTt
+            Stage::GoodCapture
         } else {
-            Stage::QCaptureInit
+            Stage::QSearch
         };
         MovePicker {
             continuations,
             tt_move: if usable { tt_move } else { Move::NONE },
             threshold: VALUE_ZERO,
-            stage,
+            stage: if usable { Stage::Tt } else { Stage::Init },
+            first_stage,
             depth,
             ply,
             skip_quiets: false,
             cur: 0,
             end_cur: 0,
             end_bad_captures: 0,
-            end_captures: 0,
-            end_generated: 0,
+            end_bad_moves: 0,
             pawn_row: PawnHistory::row(pos.st().pawn_key),
         }
     }
@@ -326,25 +330,33 @@ impl MovePicker {
             continuations: [ContKey::UNREAD; 6],
             tt_move: if usable { tt_move } else { Move::NONE },
             threshold,
-            stage: if usable { Stage::ProbCutTt } else { Stage::ProbCutInit },
+            stage: if usable { Stage::Tt } else { Stage::Init },
+            first_stage: Stage::ProbCut,
             depth: 0,
             ply: Ply::ROOT,
             skip_quiets: false,
             cur: 0,
             end_cur: 0,
             end_bad_captures: 0,
-            end_captures: 0,
-            end_generated: 0,
+            end_bad_moves: 0,
             pawn_row: PawnHistory::row(pos.st().pawn_key),
         }
     }
 
     /// Stop yielding quiet moves from the next call on.
+    ///
+    /// Once the quiets exist, cut them off where they are: the stage that is yielding them
+    /// stops at the bad captures, and the bad-moves region forgets the quiets it was given.
     pub fn skip_quiet_moves(&mut self) {
         self.skip_quiets = true;
+        if matches!(self.stage, Stage::BadMoves | Stage::GoodQuiet) {
+            self.end_cur = self.end_bad_captures;
+            self.end_bad_moves = self.end_bad_captures;
+        }
     }
 
-    /// Generate, score and sort the captures, and enter the stage that yields them.
+    /// Generate, score and sort what the first stage yields -- the captures, or the evasions
+    /// in check -- and enter it.
     ///
     /// **Outlined deliberately, and the `inline(never)` is the point of the function.** This
     /// runs ONCE per picker; [`MovePicker::next_move`] runs once per move yielded, 1,268,056
@@ -352,139 +364,92 @@ impl MovePicker {
     /// insertion sort sit inside `next_move`'s body, and every one of those calls pays for
     /// them in frame size: the prologue alone measured 30 instructions a call. Hoisting the
     /// once-per-stage work out leaves the per-move path a short walk over a cursor.
-    ///
-    /// The three `*Init` stages share this body because they differ only in which stage they
-    /// hand over to, which is upstream's structure (`movepick.cpp`'s fallthrough) and not a
-    /// merge done here.
     #[inline(never)]
-    fn init_captures(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
-        Self::generate(pos, GenType::Captures, buf);
-        Self::score_captures(pos, h, buf);
+    fn init_first_stage(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
+        if self.first_stage == Stage::Evasion {
+            Self::generate(pos, GenType::Evasions, buf);
+            self.score_evasions(pos, h, buf);
+        } else {
+            Self::generate(pos, GenType::Captures, buf);
+            Self::score_captures(pos, h, buf);
+        }
         self.cur = 0;
-        self.end_bad_captures = 0;
+        self.end_bad_moves = 0;
         self.end_cur = buf.len();
-        self.end_captures = buf.len();
-        self.end_generated = buf.len();
         full_insertion_sort(&mut buf[..self.end_cur]);
-        self.stage = match self.stage {
-            Stage::CaptureInit => Stage::GoodCapture,
-            Stage::ProbCutInit => Stage::ProbCut,
-            _ => Stage::QCapture,
-        };
+        self.stage = self.first_stage;
     }
 
-    /// Append, score and partially sort the quiet moves. Outlined for the reason above.
+    /// Generate, score and partially sort the quiet moves behind the bad captures, and enter
+    /// the stage that yields them. Outlined for the reason above.
     ///
-    /// The caller keeps the `skip_quiets` test and the stage handover: this must not run at
-    /// all when quiets are skipped, and a call that returned immediately would still cost the
-    /// call.
+    /// The caller keeps the `skip_quiets` test: this must not run at all when quiets are
+    /// skipped, and a call that returned immediately would still cost the call.
     #[inline(never)]
     fn init_quiets(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
+        self.cur = self.end_bad_moves;
+        buf.truncate(self.cur);
         Self::generate_append(pos, GenType::Quiets, buf);
         self.score_quiets(pos, h, buf);
         self.end_cur = buf.len();
-        self.end_generated = buf.len();
         let from = self.cur;
         let to = self.end_cur;
         partial_insertion_sort(&mut buf[from..to], quiet_sort_limit(self.depth));
+        self.stage = Stage::GoodQuiet;
     }
 
-    /// Generate, score and sort the evasions. Outlined for the reason above.
-    #[inline(never)]
-    fn init_evasions(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) {
-        Self::generate(pos, GenType::Evasions, buf);
-        self.score_evasions(pos, h, buf);
+    /// Rewind to the bad-moves region at the front of the buffer, and enter the stage that
+    /// yields it.
+    fn enter_bad_moves(&mut self) {
         self.cur = 0;
-        self.end_cur = buf.len();
-        self.end_generated = buf.len();
-        full_insertion_sort(&mut buf[..self.end_cur]);
+        self.end_cur = self.end_bad_moves;
+        self.stage = Stage::BadMoves;
     }
 
     /// The next move, or [`Move::NONE`] when the sequence is exhausted.
     pub fn next_move(&mut self, pos: &Position, h: &Histories, buf: &mut MoveBuf) -> Move {
         loop {
             match self.stage {
-                Stage::MainTt | Stage::EvasionTt | Stage::QSearchTt | Stage::ProbCutTt => {
-                    self.stage = match self.stage {
-                        Stage::MainTt => Stage::CaptureInit,
-                        Stage::EvasionTt => Stage::EvasionInit,
-                        Stage::QSearchTt => Stage::QCaptureInit,
-                        _ => Stage::ProbCutInit,
-                    };
+                Stage::Tt => {
+                    self.stage = Stage::Init;
                     return self.tt_move;
                 }
 
-                Stage::CaptureInit | Stage::ProbCutInit | Stage::QCaptureInit => {
-                    self.init_captures(pos, h, buf);
-                }
+                Stage::Init => self.init_first_stage(pos, h, buf),
 
                 Stage::GoodCapture => {
-                    // A capture whose exchange does not hold is demoted rather than
-                    // dropped: it moves to the front region and is retried after the
+                    // A capture whose exchange does not hold is deferred rather than
+                    // dropped: it is copied to the front region and retried after the
                     // quiet moves. The threshold scales with the move's own score, so a
                     // capture the history likes is given more benefit of the doubt.
                     while self.cur < self.end_cur {
                         let sm = buf[self.cur];
+                        self.cur += 1;
                         if sm.mv == self.tt_move {
-                            self.cur += 1;
                             continue;
                         }
                         if pos.see_ge(sm.mv, Value::new(-sm.score / 18)) {
-                            self.cur += 1;
                             return sm.mv;
                         }
-                        buf.swap(self.end_bad_captures, self.cur);
-                        self.end_bad_captures += 1;
-                        self.cur += 1;
+                        buf[self.end_bad_moves] = sm;
+                        self.end_bad_moves += 1;
                     }
-                    self.stage = Stage::QuietInit;
-                }
-
-                Stage::QuietInit => {
-                    if !self.skip_quiets {
+                    self.end_bad_captures = self.end_bad_moves;
+                    if self.skip_quiets {
+                        self.enter_bad_moves();
+                    } else {
                         self.init_quiets(pos, h, buf);
                     }
-                    self.stage = Stage::GoodQuiet;
                 }
 
                 Stage::GoodQuiet => {
-                    if !self.skip_quiets
-                        && let Some(m) = self.select_while_above(pos, buf, GOOD_QUIET_THRESHOLD)
-                    {
+                    if let Some(m) = self.select_good_quiet(buf) {
                         return m;
                     }
-                    // Rewind to the bad captures, which sit at the front of the buffer.
-                    self.cur = 0;
-                    self.end_cur = self.end_bad_captures;
-                    self.stage = Stage::BadCapture;
+                    self.enter_bad_moves();
                 }
 
-                Stage::BadCapture => {
-                    if let Some(m) = self.select(pos, buf, |_, _| true) {
-                        return m;
-                    }
-                    // Then the quiet moves the good-quiet stage left behind.
-                    self.cur = self.end_captures;
-                    self.end_cur = self.end_generated;
-                    self.stage = Stage::BadQuiet;
-                }
-
-                Stage::BadQuiet => {
-                    if !self.skip_quiets
-                        && let Some(m) =
-                            self.select(pos, buf, |sm, _| sm.score <= GOOD_QUIET_THRESHOLD)
-                    {
-                        return m;
-                    }
-                    self.stage = Stage::Done;
-                }
-
-                Stage::EvasionInit => {
-                    self.init_evasions(pos, h, buf);
-                    self.stage = Stage::Evasion;
-                }
-
-                Stage::Evasion | Stage::QCapture => {
+                Stage::BadMoves | Stage::QSearch | Stage::Evasion => {
                     if let Some(m) = self.select(pos, buf, |_, _| true) {
                         return m;
                     }
@@ -504,37 +469,63 @@ impl MovePicker {
         }
     }
 
-    /// The next move in `[cur, end_cur)` scoring above `threshold`, stopping at the first
-    /// move that is not -- where [`Self::select`] would walk the rest of the list to find
-    /// nothing.
+    /// The next quiet scoring above [`GOOD_QUIET_THRESHOLD`], deferring every quiet at or
+    /// below it to the bad-moves region on the way.
+    fn select_good_quiet(&mut self, buf: &mut MoveBuf) -> Option<Move> {
+        if sorted_past(self.depth) {
+            self.select_good_quiet_sorted(buf)
+        } else {
+            self.select_good_quiet_walk(buf)
+        }
+    }
+
+    /// Upstream's walk: every quiet is tested, and each one at or below the threshold is
+    /// copied behind the bad captures as it is passed.
+    fn select_good_quiet_walk(&mut self, buf: &mut MoveBuf) -> Option<Move> {
+        while self.cur < self.end_cur {
+            let sm = buf[self.cur];
+            self.cur += 1;
+            if sm.mv == self.tt_move {
+                continue;
+            }
+            if sm.score > GOOD_QUIET_THRESHOLD {
+                return Some(sm.mv);
+            }
+            buf[self.end_bad_moves] = sm;
+            self.end_bad_moves += 1;
+        }
+        None
+    }
+
+    /// The same stage, stopping at the first quiet at or below the threshold -- where the
+    /// walk would test the rest of the list one move at a time to defer all of it.
     ///
     /// [`partial_insertion_sort`] leaves the list in two pieces: a prefix that descends, and
     /// a tail every member of which scores below the sort's own limit. So once the walk has
     /// seen one move at or below the threshold, the rest of the prefix is at or below it BY
-    /// THE ORDERING and the tail is below it BY THE LIMIT -- and there is nothing left to
-    /// find.
+    /// THE ORDERING and the tail is below it BY THE LIMIT -- and the whole remainder is
+    /// deferred, in its order, by one copy.
     ///
     /// **The tail half of that argument holds only while the limit is at or below the
     /// threshold.** The limit is `-3560 * depth` and the threshold is
     /// [`GOOD_QUIET_THRESHOLD`], so the limit first reaches it at depth 4; below that a tail
-    /// move can still outscore the threshold and the walk has to run to the end.
+    /// move can still outscore the threshold and the stage has to walk.
     /// [`Self::good_quiets_are_sorted_past_the_threshold`] is the test that decides which
     /// form the stage takes, and it is a test of the CONSTANTS rather than of a position.
-    fn select_while_above(
-        &mut self,
-        pos: &Position,
-        buf: &MoveBuf,
-        threshold: i32,
-    ) -> Option<Move> {
-        if !sorted_past(self.depth) {
-            return self.select(pos, buf, |sm, _| sm.score > threshold);
-        }
+    ///
+    /// Nothing has been deferred before the first bad quiet, so the copy lands directly
+    /// behind the bad captures; the transposition move may ride along, and
+    /// [`Stage::BadMoves`] skips it as every stage does.
+    fn select_good_quiet_sorted(&mut self, buf: &mut MoveBuf) -> Option<Move> {
         while self.cur < self.end_cur {
             let sm = buf[self.cur];
-            if sm.score <= threshold {
-                // Everything from here down is at or below the threshold, so the stage is
-                // finished -- but `cur` stays where it is: the BAD_QUIET stage resumes from
-                // `end_captures` and wants these moves.
+            if sm.score <= GOOD_QUIET_THRESHOLD {
+                let rest = self.cur..self.end_cur;
+                self.end_bad_moves += rest.len();
+                if rest.start != self.end_bad_captures {
+                    buf.copy_within(rest, self.end_bad_captures);
+                }
+                self.cur = self.end_cur;
                 return None;
             }
             self.cur += 1;
@@ -628,8 +619,8 @@ impl MovePicker {
         let low_ply = (self.ply.index() < super::history::LOW_PLY_HISTORY_SIZE)
             .then(|| h.low_ply.row(self.ply));
 
-        // The quiet list starts where the captures ended; only the new entries are scored.
-        let start = self.end_captures;
+        // The quiet list starts behind the bad captures; only the new entries are scored.
+        let start = self.cur;
         for slot in &mut buf[start..] {
             let mv = slot.mv;
             let from = mv.from();
@@ -706,7 +697,7 @@ mod tests {
     /// The depth at which the quiet sort's limit falls to the good-quiet threshold, which is
     /// what decides whether the stage may stop at the first move below the bar.
     ///
-    /// A test of the CONSTANTS, not of a position: `select_while_above`'s tail argument is
+    /// A test of the CONSTANTS, not of a position: `select_good_quiet_sorted`'s tail argument is
     /// sound exactly while the sort's limit is at or below the threshold, and both numbers
     /// are tuned values a sync can move. If either moves, this says which way.
     #[test]
@@ -742,35 +733,44 @@ mod tests {
         assert!(!sorted_past(i32::MIN));
     }
 
-    /// The stage yields exactly the moves `select` would, on a list the sort has arranged.
+    /// The stage yields exactly the moves the walk would, and defers the rest in the same
+    /// order, on a list the sort has arranged.
     ///
-    /// The two forms have to agree move for move: the early stop is an optimisation of the
-    /// walk and not a change to what the stage picks.
+    /// The two forms have to agree move for move on BOTH outputs: the early stop is an
+    /// optimisation of the walk and not a change to what the stage picks, nor to the order
+    /// [`Stage::BadMoves`] later yields the deferred quiets in.
     #[test]
     fn the_early_stop_yields_what_the_full_walk_yields() {
-        let pos = Position::from_fen(START_FEN, false).expect("valid");
         let h = Histories::default();
-        for depth in [1, 3, 4, 8, 20] {
-            let mut full = Vec::new();
-            let mut early = Vec::new();
-            for (out, stop_early) in [(&mut full, false), (&mut early, true)] {
-                let mut buf = MoveBuf::new();
-                let mut mp =
-                    MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, depth, Ply::ROOT);
-                mp.init_quiets(&pos, &h, &mut buf);
-                loop {
-                    let m = if stop_early {
-                        mp.select_while_above(&pos, &buf, GOOD_QUIET_THRESHOLD)
-                    } else {
-                        mp.select(&pos, &buf, |sm, _| sm.score > GOOD_QUIET_THRESHOLD)
-                    };
-                    match m {
-                        Some(m) => out.push(m),
-                        None => break,
+        for fen in
+            [START_FEN, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"]
+        {
+            let pos = Position::from_fen(fen, false).expect("valid");
+            for depth in [1, 3, 4, 8, 20] {
+                let mut runs = Vec::new();
+                for stop_early in [false, true] {
+                    let mut buf = MoveBuf::new();
+                    let mut mp =
+                        MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, depth, Ply::ROOT);
+                    mp.init_quiets(&pos, &h, &mut buf);
+                    let mut good = Vec::new();
+                    loop {
+                        let m = if stop_early {
+                            mp.select_good_quiet(&mut buf)
+                        } else {
+                            mp.select_good_quiet_walk(&mut buf)
+                        };
+                        match m {
+                            Some(m) => good.push(m),
+                            None => break,
+                        }
                     }
+                    let deferred: Vec<Move> =
+                        buf[mp.end_bad_captures..mp.end_bad_moves].iter().map(|sm| sm.mv).collect();
+                    runs.push((good, deferred));
                 }
+                assert_eq!(runs[0], runs[1], "{fen}: the two walks disagree at depth {depth}");
             }
-            assert_eq!(full, early, "the two walks disagree at depth {depth}");
         }
     }
 
@@ -900,6 +900,31 @@ mod tests {
         }
         // The start position has no captures, so skipping quiets leaves nothing.
         assert_eq!(seen, 0);
+    }
+
+    /// Skipping once the quiets are being yielded cuts them off where they stand, and the
+    /// bad captures deferred before them still come out.
+    #[test]
+    fn skip_quiets_after_a_quiet_leaves_only_the_bad_captures() {
+        let h = Histories::default();
+        // The one capture, Qxd5, loses the queen to cxd5, so it is deferred as bad.
+        let pos = Position::from_fen("4k3/8/2p5/3p4/8/8/3Q4/4K3 w - - 0 1", false).expect("valid");
+        let mut mp = MovePicker::new(&pos, [ContKey::UNREAD; 6], Move::NONE, 4, Ply::ROOT);
+        let mut buf = MoveBuf::new();
+        let first = mp.next_move(&pos, &h, &mut buf);
+        assert!(!first.is_none() && !pos.is_capture_stage(first), "{first:?} is not a quiet");
+        mp.skip_quiet_moves();
+        let mut rest = Vec::new();
+        loop {
+            let m = mp.next_move(&pos, &h, &mut buf);
+            if m.is_none() {
+                break;
+            }
+            rest.push(m);
+        }
+        let capture =
+            Move::new(Square::make(File::D, Rank::new(1)), Square::make(File::D, Rank::new(4)));
+        assert_eq!(rest, [capture]);
     }
 
     /// `ProbCut` yields only captures that beat its threshold.
