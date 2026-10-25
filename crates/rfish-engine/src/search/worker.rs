@@ -494,6 +494,12 @@ impl SearchWorker {
         self.previous_time_reduction = 0.85;
         self.best_previous_score = VALUE_INFINITE;
         self.best_previous_average_score = VALUE_INFINITE;
+        // Here and NOT per search, as upstream zeroes `callsCnt` only in
+        // `ThreadPool::clear`: the countdown carries its phase from one `go` to the next
+        // within a game, so a node-limited stop after the first search lands where
+        // upstream's does. Zeroing it per search moved that stop by 164 nodes on the
+        // `tbcursed` case's last leg, and no depth-limited gate can see it.
+        self.calls_cnt = 0;
     }
 
     /// The static evaluation of the worker's current position.
@@ -953,7 +959,6 @@ impl SearchWorker {
         self.completed_depth = 0;
         self.nmp_min_ply = Ply::ROOT;
         self.best_move_changes = 0.0;
-        self.calls_cnt = 0;
         self.optimism = [VALUE_ZERO; 2];
 
         // Build the root move list, honouring `searchmoves` when the caller gave one.
