@@ -154,6 +154,11 @@ impl TableRegistry {
         self.wdl_search(&mut pos.clone(), false).map(|(v, _)| v)
     }
 
+    /// [`Self::probe_wdl`] with the state its search left, which the `d` command prints.
+    pub fn probe_wdl_state(&self, pos: &Position) -> Result<(Wdl, ProbeState), ProbeState> {
+        self.wdl_search(&mut pos.clone(), false)
+    }
+
     /// The shared body of the WDL probe.
     ///
     /// `check_zeroing` extends the search from captures alone to every clock-zeroing move,
@@ -223,19 +228,30 @@ impl TableRegistry {
     /// The value can be off by one: a returned `n` may mean `n + 1` plies. That is a
     /// property of the format, not of this port.
     pub fn probe_dtz(&self, pos: &Position) -> Result<i32, ProbeState> {
+        self.probe_dtz_state(pos).map(|(dtz, _)| dtz)
+    }
+
+    /// [`Self::probe_dtz`] with the state upstream's `result` is left holding, which the `d`
+    /// command prints.
+    ///
+    /// Upstream's probe has no state of its own: the WDL search, the table read and every
+    /// child probe of the one-ply search write one shared variable in turn, so it returns
+    /// `ZeroingBestMove` when the best move zeroes, the LAST child's state after the one-ply
+    /// search, and `ChangeStm` when that search had no move at all.
+    pub fn probe_dtz_state(&self, pos: &Position) -> Result<(i32, ProbeState), ProbeState> {
         let mut work = pos.clone();
         let (wdl, state) = self.wdl_search(&mut work, true)?;
         if wdl == Wdl::Draw {
-            return Ok(0); // DTZ tables store no draws.
+            return Ok((0, state)); // DTZ tables store no draws.
         }
         if state == ProbeState::ZeroingBestMove {
-            return Ok(dtz_before_zeroing(wdl));
+            return Ok((dtz_before_zeroing(wdl), state));
         }
 
         match self.probe_table(pos, TbType::Dtz, wdl) {
             Ok(dtz) => {
                 let cursed = i32::from(wdl == Wdl::BlessedLoss || wdl == Wdl::CursedWin);
-                Ok((dtz + 100 * cursed) * sign_of(wdl as i32))
+                Ok(((dtz + 100 * cursed) * sign_of(wdl as i32), state))
             }
             // The table stores the other side to move. Play one ply and take the winning
             // move that minimises the distance.
@@ -244,9 +260,14 @@ impl TableRegistry {
         }
     }
 
-    fn dtz_by_one_ply_search(&self, pos: &Position, wdl: Wdl) -> Result<i32, ProbeState> {
+    fn dtz_by_one_ply_search(
+        &self,
+        pos: &Position,
+        wdl: Wdl,
+    ) -> Result<(i32, ProbeState), ProbeState> {
         let mut work = pos.clone();
         let mut min_dtz = 0xFFFF;
+        let mut state = ProbeState::ChangeStm;
         for &mv in generate_legal(pos).as_slice() {
             let zeroing = work.is_capture(mv)
                 || work.piece_on(mv.from()).piece_type() == PieceType::Pawn
@@ -256,10 +277,13 @@ impl TableRegistry {
             // For a zeroing move the distance wanted is the one BEFORE it, or the answer
             // would be the length of the next sequence rather than of this one.
             let mut dtz = if zeroing {
-                let (v, _) = self.wdl_search(&mut work.clone(), false)?;
+                let (v, s) = self.wdl_search(&mut work.clone(), false)?;
+                state = s;
                 -dtz_before_zeroing(v)
             } else {
-                -self.probe_dtz(&work)?
+                let (d, s) = self.probe_dtz_state(&work)?;
+                state = s;
+                -d
             };
 
             // A move that mates ends it in one ply, whatever the table says.
@@ -275,7 +299,7 @@ impl TableRegistry {
             work.undo_move(mv);
         }
         // No legal move at all means mate.
-        Ok(if min_dtz == 0xFFFF { -1 } else { min_dtz })
+        Ok((if min_dtz == 0xFFFF { -1 } else { min_dtz }, state))
     }
 
     /// Rank the root moves with the DTZ tables.

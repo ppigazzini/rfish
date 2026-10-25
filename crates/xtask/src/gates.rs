@@ -1470,8 +1470,8 @@ fn markdown_link_targets(line: &str) -> Vec<&str> {
     out
 }
 
-/// The differential Syzygy gate: rfish's WDL verdict and DTZ distance must equal a pristine
-/// upstream build's, position by position.
+/// The differential Syzygy gate: rfish's WDL verdict and DTZ distance, and the state each
+/// probe left, must equal a pristine upstream build's, position by position.
 ///
 /// A tablebase answer is exact, so "close" is meaningless: an index computed one off reads a
 /// different position's entry and returns a confident wrong verdict. Only a differential
@@ -1566,17 +1566,17 @@ pub(crate) fn tb() -> Result<Outcome, String> {
     Ok(Outcome::check(failures.is_empty(), format!("{} tablebase mismatches", failures.len())))
 }
 
-/// The WDL verdict and DTZ distance an engine's `d` output reported, in order.
-fn tb_verdict(out: &str) -> Vec<i64> {
+/// The WDL and DTZ lines an engine's `d` output reported, in order, whole.
+///
+/// Whole, because the parenthesised STATE is part of the answer: the search reads only
+/// whether a probe failed, so a state that differs from upstream's -- a zeroing best move
+/// reported as a plain one -- moves no score, no PV and no node count, and `d` is the only
+/// place it shows. `../mcfish` `e35b5ab1` found its port reporting the wrong one there.
+fn tb_verdict(out: &str) -> Vec<String> {
     out.lines()
-        .filter(|l| {
-            l.trim_start().starts_with("Tablebases WDL:")
-                || l.trim_start().starts_with("Tablebases DTZ:")
-        })
-        .filter_map(|l| {
-            // Upstream appends a parenthesised rank; take the first number only.
-            l.split(':').nth(1)?.split_whitespace().next()?.parse().ok()
-        })
+        .map(str::trim)
+        .filter(|l| l.starts_with("Tablebases WDL:") || l.starts_with("Tablebases DTZ:"))
+        .map(str::to_string)
         .collect()
 }
 

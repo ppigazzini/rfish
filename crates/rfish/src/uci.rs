@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use rfish_engine::board::movegen::{move_to_uci, parse_uci_move, perft_divide};
 use rfish_engine::board::position::{Position, START_FEN};
-use rfish_engine::board::types::{Color, Ply, VALUE_ZERO};
+use rfish_engine::board::types::{CastlingRights, Color, Ply, VALUE_ZERO};
 use rfish_engine::eval::nnue;
 use rfish_engine::platform::numa::{self, NumaConfig, NumaIndex};
 use rfish_engine::platform::syzygy::TableRegistry;
@@ -242,16 +242,20 @@ impl Engine {
             "d" => {
                 let _ = writeln!(out, "{}", self.pos);
                 // The tablebase view of the position, in upstream's own format so a
-                // differential gate can diff the two engines line for line. Printed here
-                // because it is the only place a probe's answer is readable with no search
-                // around it.
-                if let Some(tb) = self.tablebases.as_deref() {
-                    if let Ok(wdl) = tb.probe_wdl(&self.pos) {
-                        let _ = writeln!(out, "Tablebases WDL: {}", wdl as i32);
-                    }
-                    if let Ok(dtz) = tb.probe_dtz(&self.pos) {
-                        let _ = writeln!(out, "Tablebases DTZ: {dtz}");
-                    }
+                // differential gate can diff the two engines line for line: the value padded
+                // to four, then the state the probe left, as upstream's integer. A failed probe
+                // prints its `0 (0)` rather than nothing. Printed here because it is the only
+                // place a probe's answer is readable with no search around it.
+                if let Some(tb) = self.tablebases.as_deref()
+                    && tb.max_cardinality() >= self.pos.piece_total()
+                    && !self.pos.can_castle(CastlingRights::ANY)
+                {
+                    let (wdl, s1) = tb
+                        .probe_wdl_state(&self.pos)
+                        .map_or_else(|e| (0, e), |(w, s)| (w as i32, s));
+                    let (dtz, s2) = tb.probe_dtz_state(&self.pos).unwrap_or_else(|e| (0, e));
+                    let _ = writeln!(out, "Tablebases WDL: {wdl:>4} ({})", s1.code());
+                    let _ = writeln!(out, "Tablebases DTZ: {dtz:>4} ({})", s2.code());
                 }
             }
             "eval" => self.cmd_eval(out),
