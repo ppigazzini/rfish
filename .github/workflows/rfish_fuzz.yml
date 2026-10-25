@@ -95,8 +95,9 @@ jobs:
           key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
       - run: cargo xtask net
 
-      # The 3-man set seeds the tablebase harness: it mutates tables that PARSE, because a
-      # random blob dies at the magic number and never reaches a decoder. `continue-on-error`
+      # The 3-man set and KPvKP seed the tablebase harness: it mutates tables that PARSE,
+      # because a random blob dies at the magic number and never reaches a decoder. KPvKP is
+      # the seed ../mcfish's lane found the symmetric-STM recursion with. `continue-on-error`
       # for the same reason ../mcfish gives -- a mirror outage must not fail a fuzz job. The
       # soak then SKIPS and says so, which is a visibly weaker run rather than a false green.
       # Restore and save are split, as ../mcfish's are, so that only a COMPLETE fetch is
