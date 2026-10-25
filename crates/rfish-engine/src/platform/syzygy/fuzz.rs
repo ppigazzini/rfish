@@ -46,15 +46,24 @@ impl Rng {
     }
 }
 
-/// The 3-man tables the fetcher installs, and a position of each material.
+/// The tables the fetcher installs that seed the harness, and a position of each material.
 ///
 /// The position must MATCH the table's material or the probe never reaches the decoder: it
 /// looks the material key up, misses, and returns before reading a byte.
-const SEEDS: [(&str, &str); 3] = [
+///
+/// `KPvKP` is the seed `../mcfish`'s lane found the symmetric-STM recursion with: the
+/// smallest symmetric pawnful table, and a DTZ file that REMAPS its values, so it reaches parse
+/// and probe branches no 3-man file does. Its position blocks both pawns, so neither side has
+/// a capture or a pawn move and the probe goes straight to the tables.
+const SEEDS: [(&str, &str); 4] = [
     ("KQvK", "8/8/8/4k3/8/8/8/K6Q w - - 0 1"),
     ("KRvK", "8/8/8/4k3/8/8/8/K6R w - - 0 1"),
     ("KPvK", "8/8/8/4k3/8/8/4P3/K7 w - - 0 1"),
+    ("KPvKP", "8/3k4/8/1K4p1/6P1/8/8/8 b - - 0 1"),
 ];
+
+/// Where `tb-fetch` installs the seeds, under the workspace root.
+const SEED_DIRS: [&str; 2] = ["resources/syzygy", "resources/syzygy4"];
 
 /// How far one round got.
 ///
@@ -82,6 +91,8 @@ const SEEDS: [(&str, &str); 3] = [
 struct Reach {
     /// The mutated bytes cleared every check `parse` makes, so the decoder is reachable.
     parsed: bool,
+    /// The mutated file was a DTZ file.
+    dtz: bool,
     /// A probe returned a verdict, so the decoder ran the whole way and produced one.
     answered: bool,
 }
@@ -115,6 +126,12 @@ fn one_round(rng: &mut Rng, dir: &std::path::Path, source: &std::path::Path) -> 
 
     let target = dir.join(format!("{stem}.{ext}"));
     std::fs::write(&target, &bytes).ok()?;
+    // The partner file, UNTOUCHED. Discovery registers a table through its `.rtbw` and
+    // attaches the `.rtbz` beside it, so a DTZ file written alone is never registered, never
+    // loaded and never probed -- which is what this harness did with every DTZ round until
+    // the partner was copied in. The round still mutates exactly one file.
+    let partner = if ext == "rtbw" { "rtbz" } else { "rtbw" };
+    let _ = std::fs::copy(source.with_extension(partner), dir.join(format!("{stem}.{partner}")));
 
     // Through the engine's own entry points, from discovery onwards.
     let registry = TableRegistry::discover(&dir.to_string_lossy());
@@ -129,9 +146,14 @@ fn one_round(rng: &mut Rng, dir: &std::path::Path, source: &std::path::Path) -> 
     // probe reports one `Fail` whether the parse refused the file or the decoder ran and
     // declined to answer, and those are the two rates that must not be added together. The
     // probes above have already forced the load, so this reads the cached verdict.
-    let parsed =
-        registry.tables.iter().any(|(wdl, _)| wdl.as_ref().is_some_and(|t| t.loaded().is_some()));
-    Some(Reach { parsed, answered })
+    // The MUTATED file's parse, not its untouched partner's: counting the partner would
+    // credit a refused DTZ file with the WDL file's success.
+    let dtz = ext == "rtbz";
+    let parsed = registry.tables.iter().any(|(wdl, dtz_table)| {
+        let mutated = if dtz { dtz_table } else { wdl };
+        mutated.as_ref().is_some_and(|t| t.loaded().is_some())
+    });
+    Some(Reach { parsed, dtz, answered })
 }
 
 /// What a whole sweep reached, in the three quantities [`Reach`] separates.
@@ -141,13 +163,17 @@ pub struct Sweep {
     pub rounds: u64,
     /// Of those, rounds whose bytes the parse accepted, so the decoder was reachable.
     pub parsed: u64,
+    /// Of those, rounds whose accepted bytes were a DTZ file.
+    pub dtz_parsed: u64,
+    /// Whether any seed was a DTZ file, so `dtz_parsed` had something to count.
+    pub dtz_seeded: bool,
     /// Of those, rounds where a probe returned a verdict.
     pub answered: u64,
 }
 
 /// Mutate and probe for `seconds`, reporting how far the rounds got.
 #[must_use]
-pub fn run_for(seed: u64, seconds: u64, source_dir: &std::path::Path) -> Sweep {
+pub fn run_for(seed: u64, seconds: u64, source_dirs: &[std::path::PathBuf]) -> Sweep {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
     let scratch = workspace_root().join("target/fuzz-tb");
     let _ = std::fs::create_dir_all(&scratch);
@@ -155,8 +181,9 @@ pub fn run_for(seed: u64, seconds: u64, source_dir: &std::path::Path) -> Sweep {
     let mut sources = Vec::new();
     for (stem, _) in SEEDS {
         for ext in ["rtbw", "rtbz"] {
-            let p = source_dir.join(format!("{stem}.{ext}"));
-            if p.is_file() {
+            if let Some(p) =
+                source_dirs.iter().map(|d| d.join(format!("{stem}.{ext}"))).find(|p| p.is_file())
+            {
                 sources.push(p);
             }
         }
@@ -166,7 +193,10 @@ pub fn run_for(seed: u64, seconds: u64, source_dir: &std::path::Path) -> Sweep {
     }
 
     let mut rng = Rng(seed | 1);
-    let mut sweep = Sweep::default();
+    let mut sweep = Sweep {
+        dtz_seeded: sources.iter().any(|p| p.extension().is_some_and(|e| e == "rtbz")),
+        ..Sweep::default()
+    };
     while std::time::Instant::now() < deadline {
         let source = &sources[(rng.next() as usize) % sources.len()];
         // Each round gets its own directory: discovery caches what it found, and a stale
@@ -176,6 +206,7 @@ pub fn run_for(seed: u64, seconds: u64, source_dir: &std::path::Path) -> Sweep {
         if let Some(reach) = one_round(&mut rng, &dir, source) {
             sweep.rounds += 1;
             sweep.parsed += u64::from(reach.parsed);
+            sweep.dtz_parsed += u64::from(reach.parsed && reach.dtz);
             sweep.answered += u64::from(reach.answered);
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -206,19 +237,22 @@ mod tests {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(1, |d| d.as_nanos() as u64)
             });
-        let dir = workspace_root().join("resources/syzygy");
-        if !dir.is_dir() {
-            println!(
-                "fuzz tb: SKIPPED, no tables at {} -- run `cargo xtask tb-fetch`",
-                dir.display()
-            );
+        let dirs: Vec<_> = SEED_DIRS.iter().map(|d| workspace_root().join(d)).collect();
+        if !dirs.iter().any(|d| d.is_dir()) {
+            println!("fuzz tb: SKIPPED, no tables under resources/ -- run `cargo xtask tb-fetch`");
             return;
         }
+        // Name a seed the run lacks, so a narrowed sweep says what it did not mutate.
+        for (stem, _) in SEEDS {
+            if !dirs.iter().any(|d| d.join(format!("{stem}.rtbw")).is_file()) {
+                println!("fuzz tb: no {stem} seed -- its parse and probe paths go UNEXERCISED");
+            }
+        }
         println!("fuzz tb: seed {seed}, {seconds}s -- replay with RFISH_FUZZ_SEED={seed}");
-        let s = run_for(seed, seconds, &dir);
+        let s = run_for(seed, seconds, &dirs);
         println!(
-            "fuzz tb: {} mutated tables probed, {} parsed, {} answered -- no panics",
-            s.rounds, s.parsed, s.answered
+            "fuzz tb: {} mutated tables probed, {} parsed ({} DTZ), {} answered -- no panics",
+            s.rounds, s.parsed, s.dtz_parsed, s.answered
         );
         // Three floors, not one. A sweep that only reaches the magic check proves the magic
         // check works; asserting a single count lets that stand in for a decoder the round
@@ -226,5 +260,11 @@ mod tests {
         assert!(s.rounds > 0, "the budget expired before a single table was probed");
         assert!(s.parsed > 0, "every mutated table was refused: the decoder was never entered");
         assert!(s.answered > 0, "no probe answered: the decoder ran but reached no verdict");
+        // The fourth floor, because the third cannot see a dead half: every round of a sweep
+        // that never registers a DTZ file still parses and answers through its WDL files.
+        assert!(
+            !s.dtz_seeded || s.dtz_parsed > 0,
+            "no mutated DTZ file parsed: the DTZ parse and probe were never entered"
+        );
     }
 }

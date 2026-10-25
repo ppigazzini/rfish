@@ -573,7 +573,7 @@ Separate jobs also mean a red UCI run still lets the other two spend their time,
 name says which harness failed without opening a log. `cargo xtask fuzz <seconds> all` is the
 local single-process form, and there the budget IS divided three ways.
 
-The tablebase job fetches the 3-man set with `cargo xtask tb-fetch`, cached, and
+The tablebase job fetches the 3-man set and KPvKP with `cargo xtask tb-fetch`, cached, and
 `continue-on-error` — a mirror outage must not fail a fuzz job. Without tables the soak SKIPS
 and prints that it did, which is a visibly weaker run rather than a false green.
 

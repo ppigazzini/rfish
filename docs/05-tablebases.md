@@ -386,8 +386,17 @@ pawnful `.rtbz` whose STM flag claims black answers `ChangeStm` for both sides, 
 Rust an abort, after a heap that grew with the square of the depth, because every level
 clones a `Position` whose history is one longer. `../mcfish`'s nightly lane found it on
 KPvKP (`9659811f`), and pristine upstream segfaults on the same file. `TbTable::parse` now
-refuses it; a real one has the flag clear on every file. This harness cannot reach it: its
-seeds are the 3-man set, and KPvKP is the smallest symmetric pawnful table.
+refuses it; a real one has the flag clear on every file.
+
+**This harness could not have found it, for two reasons, and the second was a dead half.**
+Its seeds were the 3-man set, and KPvKP is the smallest symmetric pawnful table; it is a
+seed now. But each round also wrote ONLY the mutated file, and discovery registers a table
+through its `.rtbw` — so a mutated `.rtbz` was never registered, loaded or probed, and the
+harness had never fuzzed a DTZ file at all. Every round still parsed and answered through
+its WDL files, so all three floors stayed green; the tell was the one this page warns about,
+`parsed` and `answered` exactly equal. A round now copies the untouched partner beside the
+mutated file, and a fourth floor requires a mutated DTZ file to have parsed: with the copy
+removed, the same seed parses 0 of them and the soak fails.
 
 ## The gates
 
