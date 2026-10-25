@@ -188,7 +188,7 @@ impl TimeManagement {
             move_overhead = move_overhead.saturating_mul(npmsec);
             limits.time[side] = Some(time as u64);
             limits.inc[side] = inc as u64;
-            limits.npmsec = npmsec as u64;
+            limits.npmsec = npmsec;
         }
 
         // Every constant below is calibrated against milliseconds, so scale back into them
