@@ -1404,8 +1404,9 @@ impl SearchWorker {
 
                 if self.root_moves.len() == 1 {
                     // With one legal move, cap the think at half a second: there is nothing
-                    // to decide and a viewer should not be left waiting.
-                    total_time = total_time.min(500.0);
+                    // to decide and a viewer should not be left waiting. Under `nodestime`
+                    // the budget is counted in nodes, so the half second is too.
+                    total_time = total_time.min(500.0 * self.limits.npmsec.max(1) as f64);
                 }
 
                 let elapsed = self.budget.elapsed(nodes).get() as f64;

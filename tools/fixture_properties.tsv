@@ -55,6 +55,7 @@ go-nodes-at-u64-max	crates/rfish/src/uci.rs	tools/cases/golimits.uci	go nodes 18
 go-movestogo-negative	crates/rfish-engine/src/search/timeman.rs	tools/cases/golimits.uci	go movestogo -5
 go-depth-beyond-the-search-ceiling	crates/rfish-engine/src/search/mod.rs	tools/cases/golimits.uci	go depth 3000000000
 go-clock-managed-by-nodestime	crates/rfish-engine/src/search/worker.rs	tools/cases/timeman.uci	go wtime 10000 btime 10000 winc 100 binc 100
+single-root-move-cap-under-nodestime	crates/rfish-engine/src/search/worker.rs	tools/cases/timeman.uci	position fen 7k/8/8/8/8/r7/1N6/K7 w - - 0 1\ngo wtime 120000 btime 120000 nodes 2000000
 option-nodestime	crates/rfish-engine/src/search/timeman.rs	tools/cases/timeman.uci	setoption name nodestime value 20
 searchmoves-restricts-the-root	crates/rfish-engine/src/search/mod.rs	tools/cases/searchmoves.uci	searchmoves e2e4 d2d4
 searchmoves-order-does-not-change-the-result	crates/rfish-engine/src/search/movepick.rs	tools/cases/searchmoves.uci	searchmoves d2d4 e2e4

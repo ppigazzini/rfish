@@ -60,7 +60,7 @@ pub struct Limits {
     ///
     /// Zero means the clock is a real clock. The time manager writes this from the option,
     /// so the search reads one field rather than being handed the whole option map.
-    pub npmsec: u64,
+    pub npmsec: i64,
 }
 
 impl Limits {
