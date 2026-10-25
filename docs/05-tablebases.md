@@ -69,6 +69,14 @@ payload is **big-endian** while everything around it is little-endian, and the s
 expansion must be **iterative** — the pairing tree runs thousands deep and a recursive walk
 overflows the thread stack.
 
+A third, which the shipped corpus cannot show: a DTZ file can **remap** its decoded values
+through a per-outcome table (`flag::MAPPED`), and **no 3-man file does**. `map_score` read
+one entry early from the port onwards, and `tb` stayed green on every probe because it
+never entered that branch. A 4-man sweep against the oracle found 73 wrong distances in
+2,800 probes, every one in a remapped table (KPvKP, KQvKR, KRvKP among them) and every WDL
+verdict right. `a_remapped_dtz_value_is_read_at_its_own_entry` pins the read with a crafted
+pair, because the 3-man set cannot.
+
 ## The probe is not a bare table read
 
 `probe_wdl` searches the captures first, and `probe_dtz` every clock-zeroing move. That is
