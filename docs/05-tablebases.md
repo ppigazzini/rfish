@@ -408,8 +408,13 @@ own output would pin whatever it currently does; only the comparison catches tha
 It also checks the property that makes an unconfigured engine safe: with no path set nothing
 is discovered, no probe fires, and the signature is unaffected.
 
-SKIPs without every set `tb-fetch` installs or without an upstream build. Each set brings
-its own corpus — `tb.fens` for the 3-man set, `tb4.fens` for KPvKP — probed through one
-`SyzygyPath` naming both directories, because a KPvKP capture lands in the 3-man set.
+Each set `tb-fetch` installs brings its own corpus — `tb.fens` for the 3-man set,
+`tb4.fens` for KPvKP — probed through one `SyzygyPath` naming both directories, because a
+KPvKP capture lands in the 3-man set. **A set that is not all there NARROWS the gate**, as
+`../mcfish`'s does: its corpus is dropped, and so is KPvKP's when the 3-man set is the one
+missing, and the gate names in red the probes it left UNEXERCISED and passes on the rest.
+CI fetches best effort, and a mirror outage must cost the lane what it cannot prove, not
+the lane. Without any set only the empty-path property is checked. A missing upstream
+build is still a SKIP: that is a tool, not data a mirror can drop.
 Every entry in the battery is LEGAL — an illegal position makes the oracle exit rather than
 answer, which reads to a gate as a broken engine rather than as a position to skip.

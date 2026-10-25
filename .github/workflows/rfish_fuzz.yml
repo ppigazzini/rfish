@@ -99,17 +99,32 @@ jobs:
       # random blob dies at the magic number and never reaches a decoder. `continue-on-error`
       # for the same reason ../mcfish gives -- a mirror outage must not fail a fuzz job. The
       # soak then SKIPS and says so, which is a visibly weaker run rather than a false green.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore and save are split, as ../mcfish's are, so that only a COMPLETE fetch is
+      # saved: a key that hits is never saved again, so caching what an outage left behind
+      # would pin the partial set until the fetcher next changed.
+      - name: Restore the Syzygy tables
+        id: tbcache
         if: matrix.tables
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             resources/syzygy
             resources/syzygy4
           key: syzygy-3man-kpvkp-${{ hashFiles('crates/xtask/src/net.rs') }}
-      - name: Fetch the 3-man tables to seed the parse harness
+      - name: Fetch the tables to seed the parse harness
+        id: tbfetch
         if: matrix.tables
         continue-on-error: true
+        timeout-minutes: 15
         run: cargo xtask tb-fetch
+      - name: Save the Syzygy tables
+        if: matrix.tables && steps.tbfetch.outcome == 'success' && steps.tbcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            resources/syzygy
+            resources/syzygy4
+          key: syzygy-3man-kpvkp-${{ hashFiles('crates/xtask/src/net.rs') }}
 
       # No seed pinned on the schedule: each night walks positions the last one did not,
       # which is the entire reason to run this repeatedly. The step PRINTS the seed it chose,

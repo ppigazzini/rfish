@@ -440,6 +440,7 @@ pub(crate) fn golden(update: bool) -> Result<Outcome, String> {
             std::fs::read_to_string(case).map_err(|e| format!("{}: {e}", case.display()))?;
         if let Some(why) = missing_case_resource(&script) {
             println!("  {stem}: SKIPPED, {why}");
+            ci_warning("golden case SKIPPED", &format!("{stem}: {why}"));
             skipped += 1;
             continue;
         }
@@ -503,6 +504,16 @@ pub(crate) fn golden(update: bool) -> Result<Outcome, String> {
     Ok(Outcome::check(failures.is_empty(), format!("golden mismatches: {}", failures.join(", "))))
 }
 
+/// Annotate a narrowed gate in the GitHub Actions UI, and do nothing anywhere else.
+///
+/// The table fetch is best effort, so a lane can stay green on what it could still prove;
+/// what it could NOT prove then belongs on the run page, not only inside a log nobody opens.
+fn ci_warning(title: &str, message: &str) {
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        println!("::warning title={title}::{message}");
+    }
+}
+
 /// Drop the output lines whose content depends on the clock or the machine.
 fn filter_volatile(out: &str) -> String {
     let mut kept = String::with_capacity(out.len());
@@ -556,7 +567,15 @@ fn missing_case_resource(script: &str) -> Option<String> {
         }
         let path = std::path::Path::new(value);
         let full = if path.is_absolute() { path.to_path_buf() } else { resources_dir().join(path) };
-        if !full.is_dir() {
+        // `tb-fetch` creates a set's directory before downloading into it, so after a failed
+        // fetch the directory EXISTS, empty or partial, and the case would run against tables
+        // it does not have. Ask a managed directory for its files, not for itself.
+        if let Some(set) = TB_SETS.iter().find(|s| s.path() == full) {
+            let missing = set.missing();
+            if !missing.is_empty() {
+                return Some(format!("{} lacks {}", full.display(), missing.join(", ")));
+            }
+        } else if !full.is_dir() {
             return Some(format!("no tablebases at {}", full.display()));
         }
     }
@@ -638,6 +657,7 @@ pub(crate) fn golden_audit(args: &[&str]) -> Result<Outcome, String> {
         let script =
             std::fs::read_to_string(case).map_err(|e| format!("{}: {e}", case.display()))?;
         if let Some(why) = missing_case_resource(&script) {
+            ci_warning("golden-audit case SKIPPED", &format!("{stem}: {why}"));
             skipped.push(format!("{stem} ({why})"));
             continue;
         }
@@ -1485,36 +1505,61 @@ fn markdown_link_targets(line: &str) -> Vec<&str> {
 /// Every set `tb-fetch` installs is probed, each over its own corpus, through one `SyzygyPath`
 /// naming all of them: the `KPvKP` probes walk captures down into the 3-man set.
 ///
-/// Needs every set and an upstream binary; either missing is a SKIP.
+/// **A set that is not all there NARROWS the gate rather than skipping it**, as `../mcfish`'s
+/// does. CI fetches best effort, so a mirror outage must leave the lane proving what it still
+/// can and saying in red what it no longer proves: that set's corpus is dropped, and so is
+/// every set after it, which probes into it. With no set at all only the empty-path property
+/// is left. A missing upstream binary is still a SKIP — a tool, not data a mirror can drop.
 pub(crate) fn tb() -> Result<Outcome, String> {
     let engine = build_engine(GATE_PROFILE)?;
-    for set in &TB_SETS {
-        let missing = set.missing();
-        if !missing.is_empty() {
-            return Ok(Outcome::Skipped(format!(
-                "{} lacks {}; run `cargo xtask tb-fetch`",
-                set.path().display(),
-                missing.join(", ")
-            )));
-        }
-    }
-    let sep = if cfg!(windows) { ";" } else { ":" };
-    let dirs: Vec<String> = TB_SETS.iter().map(|s| s.path().display().to_string()).collect();
-    let dirs = dirs.join(sep);
 
-    // Discovery first, and the property that makes a missing path safe: no tables, no
-    // effect on the search, so the bench signature cannot move.
-    let set = format!("setoption name SyzygyPath value {dirs}");
-    let found = drive(&engine, &[&set, "isready"])?;
-    let files: usize = TB_SETS.iter().map(|s| s.stems.len()).sum();
-    let men = TB_SETS.iter().map(TbSet::men).max().unwrap_or(0);
-    let want = format!("Found {files} WDL and {files} DTZ tablebase files (up to {men}-man).");
-    if !found.contains(&want) {
-        return Ok(Outcome::Fail(format!("discovery in {dirs} did not report `{want}`")));
-    }
+    // The property that makes a missing path safe, and the one half that needs no table: no
+    // tables, no effect on the search, so the bench signature cannot move.
     let empty = drive(&engine, &["setoption name SyzygyPath value <empty>", "isready"])?;
     if empty.contains("Found ") {
         return Ok(Outcome::Fail("an empty SyzygyPath still reported tablebases".to_string()));
+    }
+
+    let mut usable: Vec<&TbSet> = Vec::new();
+    for (i, set) in TB_SETS.iter().enumerate() {
+        let missing = set.missing();
+        if missing.is_empty() && usable.len() == i {
+            usable.push(set);
+            continue;
+        }
+        let why = if missing.is_empty() {
+            "probes into a set this run lacks".to_string()
+        } else {
+            format!("lacks {}", missing.join(", "))
+        };
+        eprintln!(
+            "\x1b[31m  tb: {} {why}: the probes in {} are UNEXERCISED by this run. \
+             Run `cargo xtask tb-fetch`.\x1b[0m",
+            set.path().display(),
+            set.corpus
+        );
+        ci_warning(
+            "tb NARROWED",
+            &format!("{} {why}: the probes in {} are UNEXERCISED", set.dir, set.corpus),
+        );
+    }
+    if usable.is_empty() {
+        println!("tb: NARROWED to the empty-path property; every probe UNEXERCISED");
+        return Ok(Outcome::Pass);
+    }
+    let narrowed = usable.len() < TB_SETS.len();
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let dirs: Vec<String> = usable.iter().map(|s| s.path().display().to_string()).collect();
+    let dirs = dirs.join(sep);
+
+    // Discovery, over exactly the sets this run can use.
+    let set = format!("setoption name SyzygyPath value {dirs}");
+    let found = drive(&engine, &[&set, "isready"])?;
+    let files: usize = usable.iter().map(|s| s.stems.len()).sum();
+    let men = usable.iter().map(|s| s.men()).max().unwrap_or(0);
+    let want = format!("Found {files} WDL and {files} DTZ tablebase files (up to {men}-man).");
+    if !found.contains(&want) {
+        return Ok(Outcome::Fail(format!("discovery in {dirs} did not report `{want}`")));
     }
 
     let Some(oracle) = find_oracle() else {
@@ -1528,7 +1573,7 @@ pub(crate) fn tb() -> Result<Outcome, String> {
     let oracle_set = set.clone();
 
     let mut text = String::new();
-    for corpus in TB_SETS.iter().map(|s| workspace_root().join(s.corpus)) {
+    for corpus in usable.iter().map(|s| workspace_root().join(s.corpus)) {
         let Ok(t) = std::fs::read_to_string(&corpus) else {
             return Ok(Outcome::Skipped(format!("{} does not exist", corpus.display())));
         };
@@ -1575,9 +1620,10 @@ pub(crate) fn tb() -> Result<Outcome, String> {
         return Ok(refusal);
     }
     println!(
-        "tb: {} of {checked} probes match upstream ({} positions x WDL and DTZ)",
+        "tb: {} of {checked} probes match upstream ({} positions x WDL and DTZ){}",
         checked - failures.len(),
-        checked / 2
+        checked / 2,
+        if narrowed { " -- NARROWED, see above" } else { "" }
     );
     Ok(Outcome::check(failures.is_empty(), format!("{} tablebase mismatches", failures.len())))
 }

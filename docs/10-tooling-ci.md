@@ -490,8 +490,20 @@ with a 200 and an HTML error page would otherwise be stored as a table and fail 
 inside the decoder, reported as a corrupt file rather than as a bad download.
 
 Without it the tablebase-dependent golden case skips in CI, and a case that can only skip
-there is a case nobody notices breaking. `tb` itself stays out of CI, because it needs a
-pristine upstream BUILD as well as the data — that half has not changed.
+there is a case nobody notices breaking. `tb` itself stays out of the push lanes, because
+it needs a pristine upstream BUILD as well as the data — that half has not changed.
+
+**The fetch is BEST EFFORT in every lane**, as `../mcfish` runs its own: a tablebase mirror
+is not this project's dependency to be held hostage by. `tb-fetch` installs every file it
+can and exits non-zero naming the rest, the step is `continue-on-error`, and the gates then
+narrow exactly as they do on a developer's machine: a golden case whose set is incomplete
+SKIPS and says so, and `tb` drops that set's corpus and names, in red, the probes it left
+UNEXERCISED, each also as a `::warning::` on the run page. A set's directory exists after
+a failed fetch, so both ask for its FILES. The cache is restored and saved in separate
+steps, so only a COMPLETE fetch is ever saved — a key that hits is never saved again, so a
+cached partial set would stay pinned until the fetcher changed — and every download is
+bounded in time, because a mirror that stalls would otherwise hang the step into the
+JOB's timeout, which `continue-on-error` cannot absorb.
 
 The push lanes also carry `tsan-race` and `valgrind`, which both sibling ports gate on and
 this one did not. **`forbid(unsafe_code)` is not an answer to either.** It rules out the

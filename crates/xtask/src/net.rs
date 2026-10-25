@@ -141,6 +141,11 @@ impl TbSet {
 /// **The magic number is checked, not just the HTTP status.** A mirror that answers a missing
 /// file with a 200 and an HTML error page would otherwise be stored as a table and fail much
 /// later inside the decoder, reported as a corrupt file rather than as a bad download.
+///
+/// **A file that fails is removed and the fetch carries on**, as `../mcfish`'s does, then
+/// fails at the end naming every file it could not install. CI runs it best effort, and each
+/// table gate narrows to the sets that ARE complete — so a mirror that drops `KPvKP` still
+/// leaves the 3-man half of every gate proving what it proves.
 pub(crate) fn fetch_tb() -> Result<Outcome, String> {
     if !have("curl") && !have("wget") {
         return Ok(Outcome::Skipped(
@@ -149,6 +154,7 @@ pub(crate) fn fetch_tb() -> Result<Outcome, String> {
     }
 
     let mut fetched = 0usize;
+    let mut failed = Vec::new();
     for set in &TB_SETS {
         let dir = set.path();
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -162,24 +168,48 @@ pub(crate) fn fetch_tb() -> Result<Outcome, String> {
                     continue;
                 }
                 let url = format!("{TB_BASE_URL}/{sub}/{stem}.{ext}");
-                if have("curl") {
+                // Bounded in time as well as in tries. A mirror that accepts the connection and
+                // never answers hung this step with no limit at all, and in CI a hang is not a
+                // failure `continue-on-error` can absorb: it runs into the JOB's timeout, which
+                // fails the lane the best-effort fetch exists to keep green.
+                let got = if have("curl") {
                     run(Command::new("curl")
-                        .args(["-fL", "--retry", "3", "-o"])
+                        .args(["-fL", "--retry", "3", "--connect-timeout", "30"])
+                        .args(["--max-time", "600", "-o"])
                         .arg(&dest)
-                        .arg(&url))?;
+                        .arg(&url))
                 } else {
-                    run(Command::new("wget").arg("-O").arg(&dest).arg(&url))?;
-                }
-                let head = std::fs::read(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
-                if head.len() < 4 || head[..4] != magic {
+                    run(Command::new("wget")
+                        .args(["--timeout=30", "--tries=3", "-O"])
+                        .arg(&dest)
+                        .arg(&url))
+                };
+                let head = std::fs::read(&dest).unwrap_or_default();
+                let why = match got {
+                    Err(e) => Some(e),
+                    Ok(()) if head.len() < 4 || head[..4] != magic => {
+                        Some(format!("not a Syzygy table: it does not start with the {ext} magic"))
+                    }
+                    Ok(()) => None,
+                };
+                if let Some(why) = why {
+                    // Never leave a partial or foreign file behind: the gates read a file's
+                    // PRESENCE as a table, and the next fetch skips any file that is there.
                     let _ = std::fs::remove_file(&dest);
-                    return Err(format!(
-                        "{stem}.{ext} is not a Syzygy table: it does not start with the {ext} magic"
-                    ));
+                    eprintln!("\x1b[31m  REJECT {stem}.{ext}: {why}\x1b[0m");
+                    failed.push(format!("{stem}.{ext}"));
+                    continue;
                 }
                 fetched += 1;
             }
         }
+    }
+    if !failed.is_empty() {
+        return Ok(Outcome::Fail(format!(
+            "{fetched} downloaded, {} not installed: {} -- the table gates narrow without them",
+            failed.len(),
+            failed.join(", ")
+        )));
     }
     let dirs: Vec<String> = TB_SETS.iter().map(|s| s.path().display().to_string()).collect();
     println!("tb-fetch: {fetched} downloaded, every set present in {}", dirs.join(" and "));
