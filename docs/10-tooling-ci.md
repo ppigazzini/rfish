@@ -479,8 +479,12 @@ extension. Every lane reads its toolchain from `rust-toolchain.toml` rather than
 channel, because that file overrides whatever the action installs: a hard-coded channel
 installs one toolchain and silently runs another, without the target's `std` in this lane.
 
-`cargo xtask tb-fetch` downloads the 3-man Syzygy set — ~26 KiB, ten files — and CI caches
-it keyed on the fetcher, which is how both sibling ports carry theirs. It verifies each
+`cargo xtask tb-fetch` downloads the 3-man Syzygy set — ~26 KiB, ten files — into
+`resources/syzygy/`, and KPvKP — ~300 KiB — into `resources/syzygy4/`, and CI caches both
+keyed on the fetcher, which is how both sibling ports carry their 3-man set. KPvKP is this
+port's addition and lives apart so that nothing reading the 3-man directory moves: it is
+the smallest table that REMAPS its DTZ values and the smallest symmetric pawnful one, and
+`tb` differences it through `tools/cases/tb4.fens`. It verifies each
 file's MAGIC NUMBER rather than the HTTP status alone: a mirror that answers a missing file
 with a 200 and an HTML error page would otherwise be stored as a table and fail much later
 inside the decoder, reported as a corrupt file rather than as a bad download.

@@ -1,0 +1,27 @@
+# KPvKP positions for the differential Syzygy gate, probed through `resources/syzygy4/`.
+#
+# `cargo xtask tb` drives rfish and a pristine upstream build over each of these, after
+# `tb.fens`, and compares the WDL verdict and the DTZ distance, each with the state its probe
+# left. Every entry is LEGAL, and was answered by the oracle before it was added.
+#
+# KPvKP presents two things no 3-man table does, which is why it is fetched at all:
+#
+#   - A REMAPPED DTZ file. Its values pass through a per-outcome map, a branch of
+#     `map_score` that no 3-man file enters, and rfish read it one entry early from the
+#     port until 3558ada. The four positions after the blocked pair are ones that read
+#     wrong before it, a win and a loss for each side to move.
+#   - SYMMETRIC material with pawns. Every position probes as white to move, so Black to
+#     move takes the mirrored path. The blocked pair covers both sides: neither has a
+#     capture or a pawn move, so the probe goes straight to the DTZ table.
+#
+# The last three are a draw and two positions whose best move zeroes the clock.
+
+8/3k4/8/1K4p1/6P1/8/8/8 b - - 0 1
+8/3k4/8/1K4p1/6P1/8/8/8 w - - 0 1
+4K3/8/3p4/3P4/8/6k1/8/8 w - - 0 1
+8/4p3/8/3P4/8/4k3/8/3K4 b - - 0 1
+8/8/8/7k/6p1/1P6/2K5/8 w - - 0 1
+8/2P5/8/8/1p4k1/8/K7/8 b - - 0 1
+8/8/5K2/2P5/7p/4k3/8/8 b - - 0 1
+8/5K2/8/8/8/P7/k3p3/8 b - - 0 1
+3k4/7P/8/8/8/p2K4/8/8 w - - 0 1
