@@ -309,6 +309,20 @@ impl TbTable {
             }
         }
 
+        // A symmetric table maps EVERY position to stm 0 -- white, the side it stores -- and
+        // the exemption that lets a pawnless one answer either side excludes pawns. So a
+        // symmetric pawnful DTZ file flagged as storing black to move answers `ChangeStm` for
+        // BOTH sides, and `probe_dtz`'s one-ply search recursed down the quiet moves until the
+        // stack was gone. Upstream reads the file the same way and segfaults
+        // (`tbprobe.cpp:748`, `:1761`). A real one carries the flag clear on every file.
+        if self.kind == TbType::Dtz
+            && self.key == self.key2
+            && self.has_pawns
+            && items[0].iter().any(|d| d.flags & flag::STM != 0)
+        {
+            return None;
+        }
+
         let map = off;
         if self.kind == TbType::Dtz {
             off = set_dtz_map(&mut items, &bytes, off, max_file)?;
@@ -481,6 +495,48 @@ mod tests {
         assert_eq!(t.lead_color, Color::Black);
         assert!(t.piece_lists(&pawnful_header(0x99, 4), 5, TbFile::MAX_PAWNFUL).is_some());
         assert!(t.piece_lists(&pawnful_header(0x11, 4), 5, TbFile::MAX_PAWNFUL).is_none());
+    }
+
+    /// A whole DTZ file of single-valued sub-tables: the real `head` (header byte, the four
+    /// files' piece lists and the alignment byte), then `flags` on every file.
+    fn single_valued_dtz(head: &[u8], flags: u8) -> Vec<u8> {
+        let mut b = TbType::Dtz.magic().to_vec();
+        b.extend_from_slice(head);
+        for _ in 0..4 {
+            b.extend_from_slice(&[flags | flag::SINGLE_VALUE, 1]);
+        }
+        b.resize(80, 0); // past the 64-byte-aligned payload offset
+        b
+    }
+
+    /// A symmetric pawnful DTZ table claiming to store black to move is refused at load.
+    ///
+    /// Every position of a symmetric table probes as stm 0, so such a file answers
+    /// `ChangeStm` for both sides and `probe_dtz` recursed until the stack overflowed. The
+    /// `../mcfish` nightly fuzz lane found it on `KPvKP`; pristine upstream segfaults on the
+    /// same file. Its twin with the flag clear, as `KPvKP.rtbz` has it on all four files,
+    /// must load, and so must an ASYMMETRIC one flagged black: storing either side is what
+    /// a real one-sided table does.
+    #[test]
+    fn a_symmetric_pawnful_dtz_table_storing_black_to_move_is_refused() {
+        // `KPvKP.rtbz`'s own bytes 4..30.
+        const KPVKP: [u8; 26] = [
+            0x42, 0x01, 0x03, 0x01, 0x09, 0x06, 0x0E, 0x03, 0x02, 0x01, 0x09, 0x06, 0x0E, 0x03,
+            0x01, 0x01, 0x09, 0x06, 0x0E, 0x03, 0x01, 0x01, 0x09, 0x06, 0x0E, 0x00,
+        ];
+        // `KPvK.rtbz`'s own bytes 4..22.
+        const KPVK: [u8; 18] = [
+            0x33, 0x00, 0x01, 0x06, 0x0E, 0x02, 0x01, 0x06, 0x0E, 0x02, 0x01, 0x06, 0x0E, 0x01,
+            0x01, 0x06, 0x0E, 0x00,
+        ];
+
+        let sym = TbTable::new(TbType::Dtz, "KPvKP", "x".into()).expect("built");
+        assert_eq!(sym.key, sym.key2);
+        assert!(sym.parse(single_valued_dtz(&KPVKP, 0)).is_some(), "white to move: a table");
+        assert!(sym.parse(single_valued_dtz(&KPVKP, flag::STM)).is_none());
+
+        let asym = TbTable::new(TbType::Dtz, "KPvK", "x".into()).expect("built");
+        assert!(asym.parse(single_valued_dtz(&KPVK, flag::STM)).is_some());
     }
 
     #[test]
