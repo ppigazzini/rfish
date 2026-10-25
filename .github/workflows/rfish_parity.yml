@@ -150,13 +150,34 @@ jobs:
       # Keyed on the fetcher so a source or set change re-downloads. Without them the
       # tablebase-dependent golden case SKIPS, and a case that can only skip in CI is a case
       # nobody notices breaking.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore and save are split, as ../mcfish's are, so that only a COMPLETE fetch is
+      # saved: a key that hits is never saved again, so caching what an outage left behind
+      # would pin the partial set until the fetcher next changed.
+      - name: Restore the Syzygy tables
+        id: tbcache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             resources/syzygy
             resources/syzygy4
           key: syzygy-3man-kpvkp-${{ hashFiles('crates/xtask/src/net.rs') }}
-      - run: cargo xtask tb-fetch
+      # BEST EFFORT, as ../mcfish's blocking lane fetches: a tablebase mirror is not this
+      # project's dependency to be held hostage by. A failed fetch shows on this step, and
+      # the gates narrow exactly as they do on a developer's machine -- the tbpv case
+      # SKIPS and says so -- so the lane stays green on the half it can still prove.
+      - name: Fetch the tablebases (best effort; the gates narrow without them)
+        id: tbfetch
+        continue-on-error: true
+        timeout-minutes: 15
+        run: cargo xtask tb-fetch
+      - name: Save the Syzygy tables
+        if: steps.tbfetch.outcome == 'success' && steps.tbcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            resources/syzygy
+            resources/syzygy4
+          key: syzygy-3man-kpvkp-${{ hashFiles('crates/xtask/src/net.rs') }}
       # perft counts are facts about chess; golden pins the UCI surface byte for byte;
       # signature is the anchor. Each exits 2 if it could not run, which fails the step --
       # a skipped gate must never read as a pass.
