@@ -2859,7 +2859,7 @@ impl SearchWorker {
         }
 
         // Only plane zero is ever read here: quiescence reaches `score_evasions` at most and
-        // never `QuietInit`. See `movepick::ContKey::UNREAD`.
+        // never `init_quiets`. See `movepick::ContKey::UNREAD`.
         let cont_keys: ContKeys = [
             self.stack[si.back(1).index()].continuation,
             ContKey::UNREAD,

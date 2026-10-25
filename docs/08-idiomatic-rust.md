@@ -618,7 +618,7 @@ A type that carries a state the callers cannot produce costs a branch at every u
   quiet move on the picker's hottest line — 17.2M instructions sit at that read. The branch
   could never be taken from there: the main search fills all six with `Some`, and the only
   constructors that pass `None` are quiescence and `ProbCut`, which reach `score_evasions` at
-  most and never `QuietInit`. Replacing them with a named `ContKey::UNREAD` index: **−11.3M**.
+  most and never `init_quiets`. Replacing them with a named `ContKey::UNREAD` index: **−11.3M**.
 - **`EvalScratch::grow_to`** ran twice per `do_move` and again per `transform`, and could not
   resize after the first descent to a given depth. Sizing the vector to `PLY_SLOTS` once:
   **−9.8M**.
