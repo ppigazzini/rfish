@@ -16,9 +16,18 @@ meaningless: an index computed one off reads a different position's entry and re
 confident wrong verdict. A golden pinning rfish's own output would pin whatever it
 currently does; only a differential comparison catches the off-by-one.
 
-Not done: the 5-man cursed-win and blessed-loss branches, which need a 5-man table set to
-exercise, and a block cache, without which a 7-man set would be gigabytes resident. Both
-are blocked on table data rather than on code.
+The 5-man cursed-win and blessed-loss branches need a DTZ past 100, which no smaller table
+holds. `cargo xtask tb-fetch 5` installs the same 5-man set `../mcfish` fetches — KNNvKP
+and the two children its DTZ walk recurses into — in `resources/syzygy5/`, and the
+`tbcursed` golden case pins both probes (DTZ 122 and −115, matching mcfish's own golden),
+a search on each, and mcfish's two node-limited searches with probes firing mid-search.
+`golden` holds rfish to it on every push; `golden-audit` holds it to the oracle weekly.
+The case SKIPS without the set. Porting those node legs found a search divergence nothing
+else could: rfish zeroed the clock countdown per `go` where upstream zeroes it per game,
+so a node-limited stop after a game's first search landed on a different node.
+
+Not done: a block cache, without which a 7-man set would be gigabytes resident. It is
+blocked on table data rather than on code.
 
 ## What the files hold
 

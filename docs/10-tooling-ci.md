@@ -484,7 +484,10 @@ installs one toolchain and silently runs another, without the target's `std` in 
 keyed on the fetcher, which is how both sibling ports carry their 3-man set. KPvKP is this
 port's addition and lives apart so that nothing reading the 3-man directory moves: it is
 the smallest table that REMAPS its DTZ values and the smallest symmetric pawnful one, and
-`tb` differences it through `tools/cases/tb4.fens`. It verifies each
+`tb` differences it through `tools/cases/tb4.fens`. `tb-fetch 5` adds the 5-man set
+`../mcfish`'s parity lane fetches — KNNvKP, KNNvK and KNvKP, 24 MB — into
+`resources/syzygy5/`, for the `tbcursed` golden case; the parity and upstream-check lanes
+fetch it, the fuzz lane does not. It verifies each
 file's MAGIC NUMBER rather than the HTTP status alone: a mirror that answers a missing file
 with a 200 and an HTML error page would otherwise be stored as a table and fail much later
 inside the decoder, reported as a corrupt file rather than as a bad download.

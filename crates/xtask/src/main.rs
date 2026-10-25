@@ -130,7 +130,7 @@ fn dispatch(step: &str, args: &[&str]) -> Result<Outcome, String> {
         "net-roundtrip" => gates::net_roundtrip(),
         "tb" => gates::tb(),
         "net" => net::fetch(args),
-        "tb-fetch" => net::fetch_tb(),
+        "tb-fetch" => net::fetch_tb(args),
         "pgo" => perf::pgo(args),
         "oracle" => perf::oracle(args),
         "perf" => perf::perf(args),
@@ -163,7 +163,7 @@ cargo xtask <step> — the rfish build driver
   Build and run
     build [--profile P] [--arch TIER]  build the engine binary
     net [NAME]                         fetch the NNUE network into resources/
-    tb-fetch                           fetch the 3-man set and KPvKP into resources/
+    tb-fetch [5]                       fetch the 3-man set and KPvKP; 5 adds the 5-man set
     bench [ARGS...]                    run the benchmark
 
   Gates — a behaviour-changing edit is not done until one of these says so

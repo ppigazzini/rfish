@@ -106,6 +106,25 @@ pub(crate) const TB_SETS: [TbSet; 2] = [
     TbSet { dir: "syzygy4", stems: &["KPvKP"], corpus: "tools/cases/tb4.fens" },
 ];
 
+/// The 5-man set `tb-fetch 5` adds: the same three tables, in the same directory, as
+/// `../mcfish`'s `tb-fetch 5`.
+///
+/// A cursed win or a blessed loss needs a DTZ past 100, which no smaller table holds, so these
+/// are the only tables that reach those branches of the prober. `KNNvKP` holds the positions;
+/// `KNNvK` and `KNvKP` are the children its DTZ walk recurses into, and without them a cursed win
+/// probes as a plain failure. 24 MB, so it is not fetched by default: the `tbcursed` golden
+/// case reads it, and SKIPS without it.
+pub(crate) const TB5_SET: TbSet = TbSet {
+    dir: "syzygy5",
+    stems: &["KNNvKP", "KNNvK", "KNvKP"],
+    corpus: "tools/cases/tbcursed.uci",
+};
+
+/// Every set `tb-fetch 5` can install, which is every directory a gate may ask for files.
+pub(crate) fn all_tb_sets() -> impl Iterator<Item = &'static TbSet> {
+    TB_SETS.iter().chain(std::iter::once(&TB5_SET))
+}
+
 impl TbSet {
     /// The set's directory.
     pub(crate) fn path(&self) -> PathBuf {
@@ -146,7 +165,13 @@ impl TbSet {
 /// fails at the end naming every file it could not install. CI runs it best effort, and each
 /// table gate narrows to the sets that ARE complete — so a mirror that drops `KPvKP` still
 /// leaves the 3-man half of every gate proving what it proves.
-pub(crate) fn fetch_tb() -> Result<Outcome, String> {
+pub(crate) fn fetch_tb(args: &[&str]) -> Result<Outcome, String> {
+    let with5 = match args {
+        [] => false,
+        ["5"] => true,
+        _ => return Err(format!("`tb-fetch` takes nothing, or `5`; got `{}`", args.join(" "))),
+    };
+    let sets: Vec<&TbSet> = if with5 { all_tb_sets().collect() } else { TB_SETS.iter().collect() };
     if !have("curl") && !have("wget") {
         return Ok(Outcome::Skipped(
             "neither curl nor wget is available to fetch the tablebases".to_string(),
@@ -155,7 +180,7 @@ pub(crate) fn fetch_tb() -> Result<Outcome, String> {
 
     let mut fetched = 0usize;
     let mut failed = Vec::new();
-    for set in &TB_SETS {
+    for set in &sets {
         let dir = set.path();
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         for stem in set.stems {
@@ -211,8 +236,8 @@ pub(crate) fn fetch_tb() -> Result<Outcome, String> {
             failed.join(", ")
         )));
     }
-    let dirs: Vec<String> = TB_SETS.iter().map(|s| s.path().display().to_string()).collect();
-    println!("tb-fetch: {fetched} downloaded, every set present in {}", dirs.join(" and "));
+    let dirs: Vec<String> = sets.iter().map(|s| s.path().display().to_string()).collect();
+    println!("tb-fetch: {fetched} downloaded, every set present in {}", dirs.join(", "));
     Ok(Outcome::Pass)
 }
 

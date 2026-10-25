@@ -1,0 +1,11 @@
+setoption name SyzygyPath value syzygy5:syzygy
+position fen 8/8/8/3k4/p7/8/2N5/N3K3 w - - 0 1
+d
+go depth 4
+position fen n3k3/2n5/8/3K4/P7/8/8/8 w - - 0 1
+d
+go depth 4
+position fen 8/2k5/8/8/3N4/8/2P5/2K5 b - - 0 1
+go nodes 123457
+position fen 8/8/8/3k4/8/2n5/3PK3/8 w - - 0 1
+go nodes 234567
