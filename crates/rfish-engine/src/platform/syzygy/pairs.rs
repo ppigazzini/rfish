@@ -97,6 +97,14 @@ const LEN_TAB_MAX_BITS: u32 = 12;
 /// answer, which is an index into `base64` and so below 64.
 const NO_FAST_LEN: u8 = 0xFF;
 
+/// The most symbols one sub-table may declare: a symbol is a twelve-bit index in the pair
+/// tree, so a count past this names symbols no tree entry can reach.
+///
+/// Upstream's `SymCount`, which sizes `btreeBuf`, `symlen` and `colour`. A larger count
+/// overran those buffers there; here the buffers follow the count, so a larger one is not
+/// unsafe but is still not a table, and upstream refuses it.
+const SYM_COUNT: usize = 4096;
+
 /// The `base64` index of the symbol at the head of `buf` — the walk the length table replaces.
 ///
 /// Bounded by the table: the padding makes `base64` a total order for a WELL-FORMED payload,
@@ -489,6 +497,9 @@ pub fn set_sizes(d: &mut PairsData, bytes: &[u8], mut off: usize) -> Option<usiz
     off += n * 2;
     let sym_count = usize::from(u16_le(bytes, off));
     off += 2;
+    if sym_count > SYM_COUNT {
+        return None;
+    }
     d.symlen = vec![0u8; sym_count];
     d.btree = off;
 
@@ -798,5 +809,26 @@ mod tests {
 
         let mut d = PairsData::default();
         assert_eq!(set_sizes(&mut d, &header_with_lowest_syms([600, 1000, 0]), 0), None);
+    }
+
+    /// A sub-table declaring more symbols than a twelve-bit index can name is refused, and
+    /// one declaring exactly that many is not. Upstream 7316ef4e8.
+    #[test]
+    fn a_symbol_count_past_twelve_bits_is_refused() {
+        let header = |count: usize| {
+            let mut b = header_with_lowest_syms([1500, 1000, 0]);
+            // Replace the one-leaf tree the helper ends with by `count` leaves.
+            b.truncate(b.len() - 6);
+            b.extend_from_slice(&u16::try_from(count).expect("a u16 count").to_le_bytes());
+            for _ in 0..count {
+                b.extend_from_slice(&[0x00, 0xF0, 0xFF]);
+            }
+            b.resize(b.len() + (count & 1), 0);
+            b
+        };
+        let mut d = PairsData::default();
+        assert!(set_sizes(&mut d, &header(SYM_COUNT), 0).is_some());
+        let mut d = PairsData::default();
+        assert_eq!(set_sizes(&mut d, &header(SYM_COUNT + 1), 0), None);
     }
 }
