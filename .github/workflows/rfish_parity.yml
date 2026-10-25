@@ -145,11 +145,14 @@ jobs:
           path: resources/*.nnue
           key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
       - run: cargo xtask net
-      # The 3-man Syzygy set, ~26 KiB, cached the way both sibling ports cache theirs, and
-      # KPvKP, ~300 KiB, which `tb` differences for the DTZ remap no 3-man file reaches.
-      # Keyed on the fetcher so a source or set change re-downloads. Without them the
-      # tablebase-dependent golden case SKIPS, and a case that can only skip in CI is a case
-      # nobody notices breaking.
+      # The 3-man Syzygy set, ~26 KiB, cached the way both sibling ports cache theirs; KPvKP,
+      # ~300 KiB, which `tb` differences for the DTZ remap no 3-man file reaches; and with
+      # `tb-fetch 5` the same 5-man set ../mcfish's parity lane fetches, 24 MB: KNNvKP and
+      # the two children its DTZ walk recurses into, the only tables that hold a DTZ past
+      # 100. The `tbcursed` golden case reads it -- the cursed-win and blessed-loss probes
+      # and mcfish's two node-limited TB searches. Keyed on the fetcher so a source or set
+      # change re-downloads. Without them the tablebase-dependent golden cases SKIP, and a
+      # case that can only skip in CI is a case nobody notices breaking.
       # Restore and save are split, as ../mcfish's are, so that only a COMPLETE fetch is
       # saved: a key that hits is never saved again, so caching what an outage left behind
       # would pin the partial set until the fetcher next changed.
@@ -160,7 +163,8 @@ jobs:
           path: |
             resources/syzygy
             resources/syzygy4
-          key: syzygy-3man-kpvkp-${{ hashFiles('crates/xtask/src/net.rs') }}
+            resources/syzygy5
+          key: syzygy-3man-kpvkp-5man-${{ hashFiles('crates/xtask/src/net.rs') }}
       # BEST EFFORT, as ../mcfish's blocking lane fetches: a tablebase mirror is not this
       # project's dependency to be held hostage by. A failed fetch shows on this step, and
       # the gates narrow exactly as they do on a developer's machine -- the tbpv case
@@ -169,7 +173,7 @@ jobs:
         id: tbfetch
         continue-on-error: true
         timeout-minutes: 15
-        run: cargo xtask tb-fetch
+        run: cargo xtask tb-fetch 5
       - name: Save the Syzygy tables
         if: steps.tbfetch.outcome == 'success' && steps.tbcache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -177,7 +181,8 @@ jobs:
           path: |
             resources/syzygy
             resources/syzygy4
-          key: syzygy-3man-kpvkp-${{ hashFiles('crates/xtask/src/net.rs') }}
+            resources/syzygy5
+          key: syzygy-3man-kpvkp-5man-${{ hashFiles('crates/xtask/src/net.rs') }}
       # perft counts are facts about chess; golden pins the UCI surface byte for byte;
       # signature is the anchor. Each exits 2 if it could not run, which fails the step --
       # a skipped gate must never read as a pass.

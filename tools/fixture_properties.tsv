@@ -117,3 +117,6 @@ nnue-differential-positions	crates/rfish-engine/src/eval/nnue/mod.rs	tools/cases
 syzygy-differential-positions	crates/rfish-engine/src/platform/syzygy/mod.rs	tools/cases/tb.fens	4k3/8/8/8/8/8/8/Q3K3 w
 syzygy-dtz-remap	crates/rfish-engine/src/platform/syzygy/probe.rs	tools/cases/tb4.fens	4K3/8/3p4/3P4/8/6k1/8/8 w
 syzygy-symmetric-pawn-mirror	crates/rfish-engine/src/platform/syzygy/probe.rs	tools/cases/tb4.fens	8/3k4/8/1K4p1/6P1/8/8/8 b
+syzygy-cursed-win	crates/rfish-engine/src/platform/syzygy/probe.rs	tools/cases/tbcursed.uci	8/8/8/3k4/p7/8/2N5/N3K3 w
+syzygy-blessed-loss	crates/rfish-engine/src/platform/syzygy/probe.rs	tools/cases/tbcursed.uci	n3k3/2n5/8/3K4/P7/8/8/8 w
+node-limited-stop-after-an-earlier-search	crates/rfish-engine/src/search/worker.rs	tools/cases/tbcursed.uci	go nodes 234567

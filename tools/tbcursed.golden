@@ -1,0 +1,124 @@
+rfish 0.1.0 by the Stockfish developers (see AUTHORS)
+info string Found 8 WDL and 8 DTZ tablebase files (up to 5-man).
+
+ +---+---+---+---+---+---+---+---+
+ |   |   |   |   |   |   |   |   | 8
+ +---+---+---+---+---+---+---+---+
+ |   |   |   |   |   |   |   |   | 7
+ +---+---+---+---+---+---+---+---+
+ |   |   |   |   |   |   |   |   | 6
+ +---+---+---+---+---+---+---+---+
+ |   |   |   | k |   |   |   |   | 5
+ +---+---+---+---+---+---+---+---+
+ | p |   |   |   |   |   |   |   | 4
+ +---+---+---+---+---+---+---+---+
+ |   |   |   |   |   |   |   |   | 3
+ +---+---+---+---+---+---+---+---+
+ |   |   | N |   |   |   |   |   | 2
+ +---+---+---+---+---+---+---+---+
+ | N |   |   |   | K |   |   |   | 1
+ +---+---+---+---+---+---+---+---+
+   a   b   c   d   e   f   g   h
+
+Fen: 8/8/8/3k4/p7/8/2N5/N3K3 w - - 0 1
+Key: 0DA997193DBAA086
+Checkers: 
+Tablebases WDL:    1 (1)
+Tablebases DTZ:  122 (1)
+info string Network replica 1: Local memory.
+info depth 1 seldepth 2 multipv 1 score cp 24 nodes 1 tbhits 10 pv c2a3
+info depth 2 seldepth 3 multipv 1 score cp 24 nodes 11 tbhits 10 pv c2a3 d5c5
+info depth 3 seldepth 5 multipv 1 score cp 24 nodes 91 tbhits 10 pv c2a3 d5d4 a1c2 d4e5
+info depth 4 seldepth 5 multipv 1 score cp 24 nodes 135 tbhits 10 pv c2a3 d5d4 a1c2 d4e5
+bestmove c2a3 ponder d5d4
+
+ +---+---+---+---+---+---+---+---+
+ | n |   |   |   | k |   |   |   | 8
+ +---+---+---+---+---+---+---+---+
+ |   |   | n |   |   |   |   |   | 7
+ +---+---+---+---+---+---+---+---+
+ |   |   |   |   |   |   |   |   | 6
+ +---+---+---+---+---+---+---+---+
+ |   |   |   | K |   |   |   |   | 5
+ +---+---+---+---+---+---+---+---+
+ | P |   |   |   |   |   |   |   | 4
+ +---+---+---+---+---+---+---+---+
+ |   |   |   |   |   |   |   |   | 3
+ +---+---+---+---+---+---+---+---+
+ |   |   |   |   |   |   |   |   | 2
+ +---+---+---+---+---+---+---+---+
+ |   |   |   |   |   |   |   |   | 1
+ +---+---+---+---+---+---+---+---+
+   a   b   c   d   e   f   g   h
+
+Fen: n3k3/2n5/8/3K4/P7/8/8/8 w - - 0 1
+Key: 7BFA3452C94BDDF5
+Checkers: c7 
+Tablebases WDL:   -1 (1)
+Tablebases DTZ: -115 (1)
+info string Network replica 1: Local memory.
+info depth 1 seldepth 2 multipv 1 score cp -26 nodes 1 tbhits 7 pv d5d6
+info depth 2 seldepth 4 multipv 1 score cp -26 nodes 12 tbhits 7 pv d5d6 c7a6
+info depth 3 seldepth 4 multipv 1 score cp -26 nodes 25 tbhits 7 pv d5d6
+info depth 4 seldepth 3 multipv 1 score cp -26 nodes 36 tbhits 7 pv d5d6
+info depth 4 seldepth 3 multipv 1 score cp -26 nodes 36 tbhits 7 pv d5d6 c7a6
+bestmove d5d6 ponder c7a6
+info string Network replica 1: Local memory.
+info depth 1 seldepth 2 multipv 1 score cp -643 nodes 7 tbhits 0 pv c7c8
+info depth 2 seldepth 3 multipv 1 score cp -531 nodes 16 tbhits 0 pv c7c8 c2c3
+info depth 3 seldepth 4 multipv 1 score cp -615 nodes 128 tbhits 0 pv c7d8 d4e6 d8d7
+info depth 4 seldepth 6 multipv 1 score cp -552 nodes 262 tbhits 0 pv c7d8 d4b3 d8c7 c2c3
+info depth 5 seldepth 6 multipv 1 score cp -535 nodes 363 tbhits 0 pv c7d8 d4b3 d8c8 c2c3 c8b8
+info depth 6 seldepth 8 multipv 1 score cp -567 nodes 579 tbhits 0 pv c7c8 c2c3 c8c7 d4b3
+info depth 7 seldepth 8 multipv 1 score cp -574 nodes 754 tbhits 0 pv c7d8 d4b3 d8c8 b3d2 c8b8
+info depth 8 seldepth 9 multipv 1 score cp -578 nodes 1101 tbhits 0 pv c7d7 d4b3 d7c8 c1b2 c8b7 c2c3
+info depth 9 seldepth 10 multipv 1 score cp -562 nodes 1543 tbhits 0 pv c7b7 d4b3 b7b6 c1b2
+info depth 10 seldepth 12 multipv 1 score cp -561 nodes 2202 tbhits 1 pv c7d6 d4b3 d6c6 c2c3 c6c7
+info depth 11 seldepth 13 multipv 1 score cp -569 nodes 3546 tbhits 1 pv c7d6 c1d2 d6d5 c2c3 d5c4
+info depth 12 seldepth 15 multipv 1 score cp -553 nodes 9138 tbhits 4 pv c7d7 c1d2 d7c8 d4f3 c8c7 f3e1 c7c6
+info depth 13 seldepth 20 multipv 1 score cp -552 nodes 21441 tbhits 29 pv c7d6 c1d2 d6c5 d2d3 c5b4 c2c3 b4c5 d4b3 c5b6 d3c2
+info depth 14 seldepth 18 multipv 1 score cp -571 nodes 29273 tbhits 66 pv c7d6 c2c3 d6c5 d4b3 c5b6 c1c2 b6c7 b3d2 c7c6
+info depth 15 seldepth 19 multipv 1 score cp -632 nodes 48137 tbhits 140 pv c7b6 d4b3 b6b5 c1d2 b5a4 d2d3 a4a3 c2c4 a3a4 d3c3 a4a3 c4c5 a3a2
+info depth 16 seldepth 23 multipv 1 score cp -633 nodes 59787 tbhits 211 pv c7b6 c2c3 b6c7 c1c2 c7b7 d4b3 b7c7 c2d3 c7c8 d3d4 c8b8 c3c4 b8c7
+info depth 17 seldepth 28 multipv 1 score cp -629 nodes 79457 tbhits 272 pv c7b6 c2c3 b6c7 c1c2 c7b6 c3c4 b6c5 c2c3 c5d6 d4b3 d6e5 c4c5 e5e4
+info depth 18 seldepth 32 multipv 1 score cp -623 nodes 112633 tbhits 374 pv c7b6 c1b2 b6c5 b2c3 c5d5 c3b4 d5d6 b4c4 d6e5 c4c5 e5e4 c5b4 e4d5 c2c4 d5e5 b4a5 e5e4
+info depth 19 seldepth 32 multipv 1 score cp -623 nodes 123460 tbhits 430 pv c7b6 c1b2 b6c5 b2c3 c5d5 c3b4 d5d6 b4c4 d6e5 c4c5 e5e4 c5b4 e4d5 c2c4 d5e5 b4a5 e5e4
+bestmove c7b6 ponder c1b2
+info string Network replica 1: Local memory.
+info depth 1 seldepth 2 multipv 1 score cp 0 nodes 7 tbhits 7 pv d2c3
+info depth 2 seldepth 3 multipv 1 score cp 0 nodes 151 tbhits 7 pv e2e3
+info depth 3 seldepth 5 multipv 1 score cp 0 nodes 517 tbhits 7 pv e2e3 d5c4
+info depth 4 seldepth 7 multipv 1 score cp 0 nodes 677 tbhits 7 pv e2e3 d5c4 d2d3 c4c5 e3f2
+info depth 5 seldepth 6 multipv 1 score cp 0 nodes 787 tbhits 7 pv e2e3 d5c6
+info depth 6 seldepth 8 multipv 1 score cp 0 nodes 1124 tbhits 7 pv e2e3 d5c4 d2d4 c3b1 e3e4
+info depth 7 seldepth 9 multipv 1 score cp 0 nodes 1339 tbhits 7 pv e2e3 c3b1 d2d4
+info depth 8 seldepth 9 multipv 1 score cp 0 nodes 1816 tbhits 7 pv e2e3 c3a2 d2d3 a2b4
+info depth 9 seldepth 11 multipv 1 score cp 0 nodes 3472 tbhits 7 pv e2d3 c3b1 d3e3 d5c4
+info depth 10 seldepth 11 multipv 1 score cp 0 nodes 4229 tbhits 7 pv e2d3 c3b5 d3e3 b5d6 e3d3
+info depth 11 seldepth 13 multipv 1 score cp 0 nodes 9238 tbhits 7 pv d2c3 d5d6
+info depth 12 seldepth 15 multipv 1 score cp 0 nodes 10115 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5
+info depth 13 seldepth 20 multipv 1 score cp 0 nodes 11479 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5b6 c3d4 b6c6 d4e4 c6d6
+info depth 14 seldepth 27 multipv 1 score cp 0 nodes 22400 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5
+info depth 15 seldepth 29 multipv 1 score cp 0 nodes 26492 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5d6
+info depth 16 seldepth 33 multipv 1 score cp 0 nodes 32652 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5d6 c3d4 d6c6 c4c5 c6b7 d4d5 b7c7 c5c6 c7c8 d5c4 c8c7
+info depth 17 seldepth 26 multipv 1 score cp 0 nodes 35964 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5d6 c3d4 d6c6 c4c5 c6b7 d4d5 b7c7 c5c6 c7c8 d5c4 c8c7 c4c5 c7c8 c5d6
+info depth 18 seldepth 42 multipv 1 score cp 0 nodes 65239 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5d6 c3d4 d6c6 c4c5 c6b7 d4d3 b7c6 d3c4 c6d7 c4d5 d7c7 c5c6 c7c8 d5c5 c8c7 c5b5
+info depth 19 seldepth 32 multipv 1 score cp 0 nodes 73793 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5d6 c3d4 d6c6 c4c5 c6b7 d4d3 b7c6 d3c4 c6d7 c4b4
+info depth 20 seldepth 39 multipv 1 score cp 0 nodes 152959 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+info depth 21 seldepth 21 multipv 1 score cp 0 nodes 155935 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5d6 c3d4 d6c6 d4e4 c6d6
+info depth 22 seldepth 21 multipv 1 score cp 0 nodes 157575 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+info depth 23 seldepth 21 multipv 1 score cp 0 nodes 160703 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+info depth 24 seldepth 21 multipv 1 score cp 0 nodes 163283 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5d6 c3d4 d6c6 d4e4 c6d6
+info depth 25 seldepth 11 multipv 1 score cp 0 nodes 164499 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+info depth 26 seldepth 16 multipv 1 score cp 0 nodes 170383 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5d6 c3d4 d6c6 d4c3
+info depth 27 seldepth 21 multipv 1 score cp 0 nodes 173500 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5d6 c3d4 d6c6 d4e4 c6d6
+info depth 28 seldepth 50 multipv 1 score cp 0 nodes 177414 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5c5 d3c3 c5d6 c3d4 d6c6 d4e4 c6d6 e4e3 d6c5 e3d3 c5d6 d3c2 d6c5 c2b3 c5d6 b3b4 d6c6 c4c5 c6c7 b4b5 c7b7 b5a4 b7c8 a4b4
+info depth 29 seldepth 21 multipv 1 score cp 0 nodes 179049 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+info depth 30 seldepth 21 multipv 1 score cp 0 nodes 185845 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+info depth 31 seldepth 19 multipv 1 score cp 0 nodes 189488 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5 c3c4 d5d6 d3c2 d6c6 c2d2 c6d6
+info depth 32 seldepth 19 multipv 1 score cp 0 nodes 194930 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+info depth 33 seldepth 19 multipv 1 score cp 0 nodes 204183 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+info depth 34 seldepth 13 multipv 1 score cp 0 nodes 220811 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+info depth 35 seldepth 33 multipv 1 score cp 0 nodes 230415 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+info depth 36 seldepth 33 multipv 1 score cp 0 nodes 234805 tbhits 7 pv d2c3 d5c4 e2d2 c4c5 d2d3 c5d5
+bestmove d2c3 ponder d5c4

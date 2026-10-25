@@ -65,10 +65,11 @@ state. Check the state against the tree before acting on it:
   the WDL and DTZ probes, and the root ranking feeds the search: `root_probe` orders the
   root moves and switches the in-search probe off once the tables have settled the game.
   `cargo xtask tb` compares WDL and DTZ against a pristine upstream build position by
-  position, and `syzygy_extend_pv` walks a won PV out to mate. Open, and both blocked on
-  table data rather than on code: the 5-man cursed-win branches (they need a 5-man set to
-  exercise; the repo ships 3-man) and a block cache for 7-man tables (which would be
-  gigabytes resident without one).
+  position, and `syzygy_extend_pv` walks a won PV out to mate. The 5-man cursed-win and
+  blessed-loss branches are pinned by the `tbcursed` golden case over the 5-man set
+  `cargo xtask tb-fetch 5` installs, which the parity lane fetches. Open, and blocked on
+  table data rather than on code: a block cache for 7-man tables (which would be gigabytes
+  resident without one).
 - **Lazy-SMP** — **wired, with the best-move vote.** `Threads` builds a worker set, a `go`
   runs N workers over one root through `std::thread::scope`, and the move played is the one
   the pool agrees on.

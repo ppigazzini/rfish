@@ -6,7 +6,7 @@
 
 use std::process::Command;
 
-use crate::net::{TB_SETS, TbSet};
+use crate::net::{TB_SETS, TbSet, all_tb_sets};
 use crate::runner::{
     GATE_PROFILE, Outcome, build_engine, cargo, compared_something, drive, drive_at, engine_path,
     node_total,
@@ -551,35 +551,42 @@ fn filter_volatile(out: &str) -> String {
 /// The resource a case needs and this checkout does not have, if any.
 ///
 /// A case that sets `SyzygyPath` is meaningless without the tables: the engine reports
-/// finding none and every line after it describes a different run. CI deliberately does not
-/// fetch them -- `nnue-check` and `tb` are left out of the workflow for the same reason -- so
-/// the case is SKIPPED and named, never silently passed and never failed for a file the
-/// checkout was never going to have.
+/// finding none and every line after it describes a different run. CI fetches them best
+/// effort and a developer may not have fetched the 5-man set at all, so the case is SKIPPED
+/// and named, never silently passed and never failed for a file the checkout does not have.
 fn missing_case_resource(script: &str) -> Option<String> {
     const KEY: &str = "setoption name SyzygyPath value ";
     for line in script.lines() {
         let Some(value) = line.trim().strip_prefix(KEY) else {
             continue;
         };
-        let value = value.trim();
-        if value.is_empty() {
-            continue;
-        }
-        let path = std::path::Path::new(value);
-        let full = if path.is_absolute() { path.to_path_buf() } else { resources_dir().join(path) };
-        // `tb-fetch` creates a set's directory before downloading into it, so after a failed
-        // fetch the directory EXISTS, empty or partial, and the case would run against tables
-        // it does not have. Ask a managed directory for its files, not for itself.
-        if let Some(set) = TB_SETS.iter().find(|s| s.path() == full) {
-            let missing = set.missing();
-            if !missing.is_empty() {
-                return Some(format!("{} lacks {}", full.display(), missing.join(", ")));
+        // Every directory the path names: the `tbcursed` case needs the 5-man set AND the
+        // 3-man one its DTZ walk recurses into, and either missing changes what it probes.
+        for part in value.trim().split(SYZYGY_PATH_SEP).filter(|p| !p.is_empty()) {
+            let full = syzygy_dir(part);
+            // `tb-fetch` creates a set's directory before downloading into it, so after a
+            // failed fetch the directory EXISTS, empty or partial, and the case would run
+            // against tables it does not have. Ask a managed directory for its files.
+            if let Some(set) = all_tb_sets().find(|s| s.path() == full) {
+                let missing = set.missing();
+                if !missing.is_empty() {
+                    return Some(format!("{} lacks {}", full.display(), missing.join(", ")));
+                }
+            } else if !full.is_dir() {
+                return Some(format!("no tablebases at {}", full.display()));
             }
-        } else if !full.is_dir() {
-            return Some(format!("no tablebases at {}", full.display()));
         }
     }
     None
+}
+
+/// What separates the directories of a `SyzygyPath`, as both engines split it.
+const SYZYGY_PATH_SEP: char = if cfg!(windows) { ';' } else { ':' };
+
+/// One `SyzygyPath` directory, resolved against `resources/` when it is relative.
+fn syzygy_dir(part: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(part);
+    if path.is_absolute() { path.to_path_buf() } else { resources_dir().join(path) }
 }
 
 /// Every golden is what UPSTREAM produces for the same input, not merely what rfish does.
@@ -912,19 +919,25 @@ pub(crate) fn drive_oracle(
     Ok(out.replace('\r', ""))
 }
 
-/// Make a relative `SyzygyPath` absolute, against this repository's `resources/`.
+/// Make each relative directory of a `SyzygyPath` absolute, against this repository's
+/// `resources/`, because the oracle runs from its own directory.
 ///
-/// Left alone when the case names an absolute path or sets something else.
+/// An absolute directory is kept as it is; a line that sets something else is left alone.
 fn rewrite_syzygy_path(line: &str) -> String {
     const KEY: &str = "setoption name SyzygyPath value ";
     let Some(value) = line.strip_prefix(KEY) else {
         return line.to_string();
     };
     let value = value.trim();
-    if value.is_empty() || std::path::Path::new(value).is_absolute() {
+    if value.is_empty() {
         return line.to_string();
     }
-    format!("{KEY}{}", resources_dir().join(value).display())
+    let dirs: Vec<String> = value
+        .split(SYZYGY_PATH_SEP)
+        .filter(|p| !p.is_empty())
+        .map(|p| syzygy_dir(p).display().to_string())
+        .collect();
+    format!("{KEY}{}", dirs.join(&SYZYGY_PATH_SEP.to_string()))
 }
 
 /// Quote a path for the shell that merges the oracle's two output streams.

@@ -127,15 +127,18 @@ jobs:
           path: |
             resources/syzygy
             resources/syzygy4
-          key: syzygy-3man-kpvkp-${{ hashFiles('crates/xtask/src/net.rs') }}
+            resources/syzygy5
+          key: syzygy-3man-kpvkp-5man-${{ hashFiles('crates/xtask/src/net.rs') }}
       - run: cargo xtask net
       # Best effort, for the parity lane's reason: without a set, `tb` drops that set's
-      # corpus and says in red which probes went UNEXERCISED, and golden-audit skips tbpv.
+      # corpus and says in red which probes went UNEXERCISED, and golden-audit skips the
+      # case that needs it. `5` adds the 5-man set, which golden-audit adjudicates the
+      # `tbcursed` golden against the oracle with.
       - name: Fetch the tablebases (best effort; the gates narrow without them)
         id: tbfetch
         continue-on-error: true
         timeout-minutes: 15
-        run: cargo xtask tb-fetch
+        run: cargo xtask tb-fetch 5
       - name: Save the Syzygy tables
         if: steps.tbfetch.outcome == 'success' && steps.tbcache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -143,7 +146,8 @@ jobs:
           path: |
             resources/syzygy
             resources/syzygy4
-          key: syzygy-3man-kpvkp-${{ hashFiles('crates/xtask/src/net.rs') }}
+            resources/syzygy5
+          key: syzygy-3man-kpvkp-5man-${{ hashFiles('crates/xtask/src/net.rs') }}
 
       # The oracle must be built AT THE PIN, in ../Stockfish/src, because that is where every
       # differential gate looks for it -- and `find_oracle` checks the SHA upstream stamps
