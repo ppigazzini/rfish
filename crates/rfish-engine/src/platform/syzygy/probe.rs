@@ -299,12 +299,14 @@ fn map_score(entry: &TbTable, loaded: &Loaded, file: TbFile, value: i32, wdl: Wd
     let mut value = value;
 
     if flags & flag::MAPPED != 0 {
+        // `slot` already steps past the run's count, so entry `value` is at `slot + value`.
+        // No 3-man file sets MAPPED, so `tb` cannot see this line; 4-man KPvKP does.
         let slot = d.map_idx[WDL_MAP[(wdl as i32 + 2) as usize]] as usize;
         value = if flags & flag::WIDE != 0 {
-            let off = entry_map(loaded) + 2 * (slot + value as usize - 1);
+            let off = entry_map(loaded) + 2 * (slot + value as usize);
             i32::from(u16::from_le_bytes([loaded.bytes[off], loaded.bytes[off + 1]]))
         } else {
-            i32::from(loaded.bytes[entry_map(loaded) + slot + value as usize - 1])
+            i32::from(loaded.bytes[entry_map(loaded) + slot + value as usize])
         };
     }
 

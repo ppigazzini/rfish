@@ -671,6 +671,58 @@ mod tests {
         }
     }
 
+    /// A remapped DTZ value is read at its own entry of the map, not at the one before it.
+    ///
+    /// No 3-man file sets `flag::MAPPED`, so neither `tb` nor the tests above reach the
+    /// remap, and it read one entry early from the port onwards: a 4-man sweep against the
+    /// oracle found 73 wrong distances in 2,800 probes, every one in a remapped table, and
+    /// `8/3k4/8/1K4p1/6P1/8/8/8 b` read 5 where upstream reads 7. This pair needs no corpus:
+    /// `KPvKP`'s own header bytes, a WDL file won everywhere, and a DTZ file whose sub-tables
+    /// all store the single value 1 through maps of `[3, 6]` — so entry 1 is 6, which is 13
+    /// plies, and the entry before it would be 7.
+    #[test]
+    fn a_remapped_dtz_value_is_read_at_its_own_entry() {
+        // `KPvKP.rtbw`'s and `KPvKP.rtbz`'s own bytes 4..30.
+        const WDL_HEAD: [u8; 26] = [
+            0x42, 0x33, 0x22, 0x11, 0x99, 0x66, 0xEE, 0x33, 0x11, 0x11, 0x99, 0x66, 0xEE, 0x22,
+            0x11, 0x11, 0x99, 0xEE, 0x66, 0x33, 0x22, 0x11, 0x99, 0xEE, 0x66, 0x00,
+        ];
+        const DTZ_HEAD: [u8; 26] = [
+            0x42, 0x01, 0x03, 0x01, 0x09, 0x06, 0x0E, 0x03, 0x02, 0x01, 0x09, 0x06, 0x0E, 0x03,
+            0x01, 0x01, 0x09, 0x06, 0x0E, 0x03, 0x01, 0x01, 0x09, 0x06, 0x0E, 0x00,
+        ];
+        let mut wdl = TbType::Wdl.magic().to_vec();
+        wdl.extend_from_slice(&WDL_HEAD);
+        for _ in 0..4 {
+            wdl.extend_from_slice(&[pairs::flag::SINGLE_VALUE, 4]); // won
+        }
+        wdl.resize(80, 0);
+        let mut dtz = TbType::Dtz.magic().to_vec();
+        dtz.extend_from_slice(&DTZ_HEAD);
+        for _ in 0..4 {
+            dtz.extend_from_slice(&[pairs::flag::SINGLE_VALUE | pairs::flag::MAPPED, 1]);
+        }
+        for _ in 0..4 * 4 {
+            dtz.extend_from_slice(&[2, 3, 6]); // one map per outcome per file
+        }
+        dtz.resize(128, 0);
+
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("workspace root")
+            .join("target/tb-remapped-dtz");
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+        std::fs::write(scratch.join("KPvKP.rtbw"), &wdl).expect("write");
+        std::fs::write(scratch.join("KPvKP.rtbz"), &dtz).expect("write");
+        let r = TableRegistry::discover(&scratch.to_string_lossy());
+
+        // Both pawns blocked, so no zeroing move stands between the probe and the table.
+        let pos = Position::from_fen("8/3k4/8/1K4p1/6P1/8/8/8 w - - 0 1", false).expect("valid");
+        assert_eq!(r.probe_wdl(&pos), Ok(Wdl::Win));
+        assert_eq!(r.probe_dtz(&pos), Ok(13));
+    }
+
     /// A won position must have a positive distance, a drawn one zero.
     #[test]
     fn dtz_signs_agree_with_the_verdict() {
