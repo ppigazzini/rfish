@@ -315,7 +315,6 @@ pub struct SearchWorker {
     calls_cnt: i32,
     /// How many threads share the root, for the pooled instability term.
     thread_count: usize,
-    optimism: [Value; 2],
     /// The stability factor the previous move settled on, carried into this one.
     previous_time_reduction: f64,
     /// The previous move's root score, for the falling-eval term.
@@ -402,7 +401,6 @@ impl SearchWorker {
             published_nodes: 0,
             published_tb_hits: 0,
             thread_count: 1,
-            optimism: [VALUE_ZERO; 2],
             previous_time_reduction: 0.85,
             best_previous_score: VALUE_INFINITE,
             best_previous_average_score: VALUE_INFINITE,
@@ -505,9 +503,8 @@ impl SearchWorker {
     /// The static evaluation of the worker's current position.
     #[inline]
     fn evaluate(&mut self, ply: Ply) -> Value {
-        let optimism = self.optimism[self.pos.side_to_move().index()];
         let ply = ply.max(Ply::ROOT);
-        eval::evaluate(&self.pos, self.network.as_deref(), ply, &mut self.scratch, optimism)
+        eval::evaluate(&self.pos, self.network.as_deref(), ply, &mut self.scratch)
     }
 
     // -- the stack ---------------------------------------------------------
@@ -956,7 +953,6 @@ impl SearchWorker {
         self.completed_depth = 0;
         self.nmp_min_ply = Ply::ROOT;
         self.best_move_changes = 0.0;
-        self.optimism = [VALUE_ZERO; 2];
 
         // Build the root move list, honouring `searchmoves` when the caller gave one.
         //
@@ -1205,12 +1201,6 @@ impl SearchWorker {
                 let previous = self.root_moves[pv_idx].previous_score;
                 self.seek_mate =
                     previous != -VALUE_INFINITE && previous.abs() >= seek_mate_threshold;
-
-                // The evaluation is nudged toward the side that is already doing well, so
-                // a won position is evaluated by a network that expects to win it.
-                let us = self.pos.side_to_move();
-                self.optimism[us.index()] = 456 * avg / (avg.abs().get() + 85);
-                self.optimism[(!us).index()] = -self.optimism[us.index()];
 
                 let mut failed_high_cnt = 0i32;
                 // The recovery decays on the FIRST slot only, so a `MultiPV` run pays and

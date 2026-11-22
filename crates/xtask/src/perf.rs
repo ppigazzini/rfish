@@ -646,7 +646,7 @@ fn patch_material_eval(path: &Path) -> Result<(), String> {
     let end = src[body..].find("\n}\n").map(|i| body + i).ok_or("Eval::evaluate does not end")?;
 
     // The weights, the perspective and the ABSENCES are all load-bearing: the engine's
-    // `material_only` has no optimism term, no rule50 damping and no clamp, and a side that
+    // `material_only` has no rule50 damping and no clamp, and a side that
     // keeps one of them searches a different tree.
     let replacement = "    assert(!pos.checkers());\n\n\
         \x20   // MEASUREMENT HARNESS installed by `cargo xtask oracle --spine`: material only,\n\
@@ -654,8 +654,7 @@ fn patch_material_eval(path: &Path) -> Result<(), String> {
         \x20   // the search spine and not the network.\n\
         \x20   (void) network;\n\
         \x20   (void) accumulators;\n\
-        \x20   (void) caches;\n\
-        \x20   (void) optimism;\n\n\
+        \x20   (void) caches;\n\n\
         \x20   Color us = pos.side_to_move(), them = ~us;\n\
         \x20   int   v  = 100 * (pos.count<PAWN>(us) - pos.count<PAWN>(them))\n\
         \x20          + 320 * (pos.count<KNIGHT>(us) - pos.count<KNIGHT>(them))\n\

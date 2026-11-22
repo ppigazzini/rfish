@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use rfish_engine::board::movegen::{move_to_uci, parse_uci_move, perft_divide};
 use rfish_engine::board::position::{Position, START_FEN};
-use rfish_engine::board::types::{CastlingRights, Color, Ply, VALUE_ZERO};
+use rfish_engine::board::types::{CastlingRights, Color, Ply};
 use rfish_engine::eval::nnue;
 use rfish_engine::platform::numa::{self, NumaConfig, NumaIndex};
 use rfish_engine::platform::syzygy::TableRegistry;
@@ -1087,9 +1087,9 @@ impl Engine {
         let _ = writeln!(out, "{rule}\n");
 
         // One forward pass serves both lines: the final evaluation is the same raw output put
-        // through the blend with no optimism, as upstream's trace does.
+        // through the blend, as upstream's trace does.
         let v = net.evaluate(&self.pos, Ply::ROOT, &mut scratch);
-        let full = rfish_engine::eval::scale_evaluation(v, VALUE_ZERO, &self.pos);
+        let full = rfish_engine::eval::scale_evaluation(v, &self.pos);
         let _ =
             writeln!(out, "NNUE evaluation          {:+} (side to move, internal units)", v.get());
         let white = if self.pos.side_to_move() == Color::White { v } else { -v };

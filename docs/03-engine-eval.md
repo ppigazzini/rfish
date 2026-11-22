@@ -8,7 +8,7 @@ Golden: `Stockfish/src/evaluate.cpp`, `Stockfish/src/nnue/`.
 
 `cargo xtask nnue-check` drives rfish and a pristine upstream build over the same positions
 and compares the raw network output — the number upstream's `eval` prints as "internal
-units", with no optimism blend and no fifty-move damping on top. Every position in
+units", with no material blend and no fifty-move damping on top. Every position in
 `tools/cases/eval.fens` matches **exactly**, including 60 reached by random legal play,
 which is what makes it a check on the feature indexing rather than on a list the port was
 written against.
@@ -132,7 +132,7 @@ let se_norm   = (se * 1024) / (se.abs() + 1024);
 let nnue_norm = (nnue * 1024) / (nnue.abs() + 1024);
 let alignment = (se_norm * nnue_norm) / 512;
 
-let base_eval = nnue + (nnue + optimism) * alignment / 65536;
+let base_eval = nnue + nnue * alignment / 65536;
 
 let material = 521 * pawns + non_pawn_material_total;
 let v = i64::from(base_eval) * i64::from(90649 + material) / 90649;
@@ -150,11 +150,6 @@ Each line is doing something specific, and none of them is a scale factor:
 - **The sign of `nnue` decides which positions are favoured.** Winning, a positive alignment
   raises the score and a negative one lowers it, so the search steers toward the simple win;
   losing, the same product pulls the other way and the complicated position is preferred.
-- **Optimism is the search's disposition, not the position's.** It arrives per colour from
-  the worker and enters only through the alignment, so it weighs nothing in a position where
-  either the network or the material says nothing. It is one of the things that make Lazy-SMP
-  threads explore differently from each other, so it belongs to
-  [04-multithreading.md](04-multithreading.md) as much as to this page.
 - **The material scale is a multiplier in `i64`, truncated once.** It is upstream's form and
   its rounding: every term above is `int` arithmetic that truncates toward zero at its own
   division, and reordering any of them — or folding the scale into `base_eval`'s terms — moves
@@ -1576,7 +1571,7 @@ The differential evaluation gate, and the one that says the NNUE port is a PORT 
 an approximation. It drives rfish and a pristine upstream build over the same positions and
 compares the RAW network output — the number upstream's `eval` prints as "internal units".
 
-Comparing final evaluations would not do: the optimism blend and the fifty-move damping sit
+Comparing final evaluations would not do: the material blend and the fifty-move damping sit
 on top and would mask a forward-pass error.
 
 It needs two things a fresh clone does not have — the 90 MiB net (`cargo xtask net`) and an

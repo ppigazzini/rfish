@@ -1659,7 +1659,7 @@ fn tb_verdict(out: &str) -> Vec<String> {
 ///
 /// This is the gate that says the evaluation is a PORT rather than an approximation. It
 /// drives both engines over the same positions and compares the number upstream's `eval`
-/// prints as "internal units" — the network alone, with no optimism blend and no fifty-move
+/// prints as "internal units" — the network alone, with no material blend and no fifty-move
 /// damping on top, so a mismatch localises to the forward pass rather than to the terms
 /// around it.
 ///

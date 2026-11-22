@@ -26,12 +26,7 @@ use crate::board::types::{
 
 /// The static evaluation of `pos`, from the side to move's point of view.
 ///
-/// `optimism` is the search's per-colour optimism term, and it is not a decoration: the
-/// blend in [`scale_evaluation`] weighs it by how far the network and the material count
-/// AGREE, so a position whose score rests on compensation leans on the search's own
-/// expectation.
-///
-/// With no network resident this falls back to [`classical`], which ignores both.
+/// With no network resident this falls back to [`classical`].
 #[cfg(not(feature = "eval-material"))]
 #[must_use]
 pub fn evaluate(
@@ -39,10 +34,9 @@ pub fn evaluate(
     network: Option<&nnue::Network>,
     ply: Ply,
     scratch: &mut nnue::Scratch,
-    optimism: Value,
 ) -> Value {
     match network {
-        Some(net) => scale_evaluation(net.evaluate(pos, ply, scratch), optimism, pos),
+        Some(net) => scale_evaluation(net.evaluate(pos, ply, scratch), pos),
         None => damp_and_clamp(classical::evaluate(pos), pos),
     }
 }
@@ -55,16 +49,15 @@ pub fn evaluate(
     network: Option<&nnue::Network>,
     ply: Ply,
     scratch: &mut nnue::Scratch,
-    optimism: Value,
 ) -> Value {
     let _ = ply;
-    // The network, the scratch buffers and the optimism term are all deliberately unused:
-    // taking them out of the per-node cost is the entire point of this build.
-    let _ = (network, scratch, optimism);
+    // The network and the scratch buffers are deliberately unused: taking them out of the
+    // per-node cost is the entire point of this build.
+    let _ = (network, scratch);
     material_only(pos)
 }
 
-/// Score the position by material alone, ignoring optimism, the clock and every network.
+/// Score the position by material alone, ignoring the clock and every network.
 ///
 /// MEASUREMENT HARNESS, compiled only under the `eval-material` feature and off in every
 /// shipped build. It isolates the search spine from the evaluation, so a differential
@@ -99,16 +92,16 @@ fn simple_eval(pos: &Position) -> i32 {
         - pos.non_pawn_material(!us).get()
 }
 
-/// Upstream's blend of the network's score with the search's optimism, the material on the
-/// board and the fifty-move clock.
+/// Upstream's blend of the network's score with the material on the board and the
+/// fifty-move clock.
 ///
 /// `nnue` is the raw network output, which is what `eval` prints as internal units. Every
 /// constant is upstream's and every one was fitted against this network; changing one is a
 /// strength change, not a refactor. The arithmetic is `i32` where upstream's is `int` and
 /// `i64` where upstream widens, so every division truncates at the same place.
 #[must_use]
-pub fn scale_evaluation(nnue: Value, optimism: Value, pos: &Position) -> Value {
-    let (nnue, optimism) = (nnue.get(), optimism.get());
+pub fn scale_evaluation(nnue: Value, pos: &Position) -> Value {
+    let nnue = nnue.get();
     let se = simple_eval(pos);
 
     // Squash both into [-1024, 1024] so their product measures agreement: positive when the
@@ -119,7 +112,7 @@ pub fn scale_evaluation(nnue: Value, optimism: Value, pos: &Position) -> Value {
     let correl = (se_norm * nnue_norm) / 512;
 
     // Boost a straightforward position when winning, and a complicated one when losing.
-    let v = nnue + (nnue + optimism) * correl / 65536;
+    let v = nnue + nnue * correl / 65536;
 
     // Scale by the material on the board. Upstream spells this `v += m * v / 90649`, which
     // is the same quotient -- `m` is never negative -- and costs more here.
@@ -179,12 +172,11 @@ pub const fn draw_value() -> Value {
 mod tests {
     use super::*;
     use crate::board::position::START_FEN;
-    use crate::board::types::VALUE_ZERO;
 
     /// Evaluate with no network, which is the fallback path.
     fn eval_classical(pos: &Position) -> Value {
         let mut scratch = nnue::Scratch::default();
-        evaluate(pos, None, Ply::ROOT, &mut scratch, VALUE_ZERO)
+        evaluate(pos, None, Ply::ROOT, &mut scratch)
     }
 
     #[test]
