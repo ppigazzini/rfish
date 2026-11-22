@@ -3456,7 +3456,7 @@ impl SearchWorker {
                 !(self.root_moves[i].inexact_lower && self.root_moves[i].inexact_upper),
                 "a root score is inexact from at most one side"
             );
-            let bound = if self.root_moves[i].inexact_lower {
+            let inexact = if self.root_moves[i].inexact_lower {
                 Some(true)
             } else if self.root_moves[i].inexact_upper {
                 Some(false)
@@ -3471,13 +3471,18 @@ impl SearchWorker {
                 score = self.root_moves[i].tb_score;
             }
 
+            // A tablebase score and a score carried over from the previous iteration are
+            // exact whatever the flags say: the flags describe the CURRENT iteration's
+            // search of the move, which produced neither number.
+            let bound = if is_tb_score || use_previous { None } else { inexact };
+
             // A proven win whose PV stops in mid-air tells the operator nothing about how it
             // is won. Walk it out while the tables can still vouch for every move -- but not
             // for a line carried over from the previous iteration, which was extended then.
             if is_decisive(score)
                 && score.abs() < VALUE_MATE_IN_MAX_PLY
                 && !use_previous
-                && (bound.is_none() || is_tb_score)
+                && (inexact.is_none() || is_tb_score)
             {
                 self.pv_index = i;
                 self.syzygy_extend_pv(&mut score, lines);
