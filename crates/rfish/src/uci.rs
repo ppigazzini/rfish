@@ -764,6 +764,16 @@ impl Engine {
             }
             i += 1;
         }
+        // A NEGATIVE clock or movetime is read as one millisecond, as upstream reads it: a
+        // GUI that should have flagged a time loss sends one instead, and the time-advantage
+        // terms of the budget misread it. Zero is left alone -- for the side to move it means
+        // no time management at all. The increments are left alone too, as upstream's are.
+        let [white, black] = &mut l.time;
+        for t in [white, black, &mut l.move_time] {
+            if t.is_some_and(|v| (v as i64) < 0) {
+                *t = Some(1);
+            }
+        }
         // A limit of ZERO means ABSENT, because upstream's fields are plain integers and
         // every test of them is a C++ truthiness check: `if (limits.depth)`,
         // `if (limits.nodes)`, `if (limits.movetime)`. `go nodes 0` therefore searches
@@ -1408,10 +1418,23 @@ mod tests {
             assert_eq!(l.inc[side], Limits::MAX_CLOCK_MS as u64);
         }
 
-        // The SIGN survives: a negative clock is a real state -- a GUI whose engine has
-        // overstepped sends one -- and folding it to zero would take the unmanaged path.
-        let neg = engine.parse_limits(&["wtime", "-4000000000000000000"]).expect("parses");
-        assert_eq!(neg.time[0], Some((-Limits::MAX_CLOCK_MS) as u64));
+        // A negative clock or movetime is read as one millisecond, never as zero: zero would
+        // take the unmanaged path and search on. A negative increment keeps its sign.
+        let neg = engine
+            .parse_limits(&[
+                "wtime",
+                "-4000000000000000000",
+                "btime",
+                "-1",
+                "movetime",
+                "-5",
+                "winc",
+                "-7",
+            ])
+            .expect("parses");
+        assert_eq!(neg.time, [Some(1), Some(1)]);
+        assert_eq!(neg.move_time, Some(1));
+        assert_eq!(neg.inc[0] as i64, -7);
 
         // A clock inside the range is untouched, so no gated number moves.
         let ok = engine.parse_limits(&["wtime", "60000", "winc", "1000"]).expect("parses");

@@ -139,14 +139,13 @@ impl TimeManagement {
 
         let side = us.index();
         // ZERO is the only clock that skips the rest, exactly as upstream's
-        // `if (limits.time[us] == 0) return;`. A NEGATIVE clock is a real state -- a GUI whose
-        // engine has overstepped sends one -- and upstream budgets from it, which produces a
-        // tiny allowance and a move played almost at once. Treating it as "no clock" instead
-        // took the unmanaged path and searched on: `go wtime -100 btime 100` went a full ply
+        // `if (limits.time[us] == 0) return;`. A NEGATIVE clock never arrives from UCI --
+        // `parse_limits` reads it as one millisecond, as upstream's does -- but this function
+        // still budgets from one rather than treating it as "no clock", which took the
+        // unmanaged path and searched on: `go wtime -100 btime 100` once went a full ply
         // deeper here than upstream, every time.
         //
-        // The value is signed on the way in for the same reason: `TimePoint` is `int64`, and
-        // the sign is the whole content of this case.
+        // The value is signed on the way in for the same reason: `TimePoint` is `int64`.
         let Some(mut time) = limits.time[side].map(|t| t as i64).filter(|&t| t != 0) else {
             // WRITTEN, not left. This path is reached with a clock for the OTHER side --
             // `go depth 3 btime 1000` while White is to move -- and `uses_time_management`
