@@ -1,21 +1,21 @@
 rfish 0.1.0 by the Stockfish developers (see AUTHORS)
 info string Network replica 1: Local memory.
-info depth 1 seldepth 6 multipv 1 score cp 58 wdl 159 839 2 nodes 168 tbhits 0 pv g8f6
-info depth 1 seldepth 3 multipv 2 score cp 12 wdl 29 960 11 nodes 168 tbhits 0 pv g8h6
-info depth 1 seldepth 4 multipv 3 score cp 4 wdl 21 963 16 nodes 168 tbhits 0 pv d8e7
-info depth 2 seldepth 3 multipv 1 score cp 84 wdl 346 653 1 nodes 413 tbhits 0 pv g8f6
-info depth 2 seldepth 2 multipv 2 score cp 13 wdl 31 958 11 nodes 413 tbhits 0 pv g8h6
-info depth 2 seldepth 2 multipv 3 score cp 5 wdl 22 963 15 nodes 413 tbhits 0 pv d8e7
-info depth 3 seldepth 2 multipv 1 score cp 84 wdl 346 653 1 nodes 652 tbhits 0 pv g8f6
-info depth 3 seldepth 2 multipv 2 score cp 13 wdl 31 958 11 nodes 652 tbhits 0 pv g8h6
-info depth 3 seldepth 2 multipv 3 score cp 5 wdl 22 963 15 nodes 652 tbhits 0 pv d8e7
-info depth 4 seldepth 7 multipv 1 score cp 41 wdl 87 909 4 nodes 1834 tbhits 0 pv g8f6 c2c3 d7d5 c4d5 f6d5 e4d5
-info depth 4 seldepth 5 multipv 2 score cp -10 wdl 12 961 27 nodes 1834 tbhits 0 pv d8f6 b1c3
-info depth 4 seldepth 5 multipv 3 score cp -14 wdl 11 958 31 nodes 1834 tbhits 0 pv f7f5 e4f5
-info depth 5 seldepth 7 multipv 1 score cp 15 wdl 33 957 10 nodes 2856 tbhits 0 pv f7f5
-info depth 5 seldepth 7 multipv 2 score cp 15 wdl 33 957 10 nodes 2856 tbhits 0 pv g8f6 g1e2 d7d5 c4d5 f6d5
-info depth 5 seldepth 6 multipv 3 score cp 11 wdl 28 960 12 nodes 2856 tbhits 0 pv d8f6 d2d3 c6d4 f3d1
-info depth 6 seldepth 11 multipv 1 score cp 36 wdl 72 923 5 nodes 4449 tbhits 0 pv g8f6 g1e2 d7d5 e4d5
-info depth 6 seldepth 7 multipv 2 score cp 13 wdl 31 958 11 nodes 4449 tbhits 0 pv d8f6 c2c3
-info depth 6 seldepth 4 multipv 3 score cp -30 wdl 6 937 57 nodes 4449 tbhits 0 pv f7f5 g1e2
-bestmove g8f6 ponder g1e2
+info depth 1 seldepth 6 multipv 1 score cp 42 wdl 90 906 4 nodes 168 tbhits 0 pv g8f6
+info depth 1 seldepth 3 multipv 2 score cp 5 wdl 23 962 15 nodes 168 tbhits 0 pv g8h6
+info depth 1 seldepth 4 multipv 3 score cp 0 wdl 18 964 18 nodes 168 tbhits 0 pv d8f6
+info depth 2 seldepth 3 multipv 1 score cp 114 wdl 636 364 0 nodes 415 tbhits 0 pv g8f6
+info depth 2 seldepth 2 multipv 2 score cp 9 wdl 26 961 13 nodes 415 tbhits 0 pv g8h6
+info depth 2 seldepth 3 multipv 3 score cp 4 wdl 21 963 16 nodes 415 tbhits 0 pv d8f6
+info depth 3 seldepth 2 multipv 1 score cp 114 wdl 636 364 0 nodes 655 tbhits 0 pv g8f6
+info depth 3 seldepth 2 multipv 2 score cp 9 wdl 26 961 13 nodes 655 tbhits 0 pv g8h6
+info depth 3 seldepth 3 multipv 3 score cp 4 wdl 21 963 16 nodes 655 tbhits 0 pv d8f6
+info depth 4 seldepth 5 multipv 1 score cp 33 wdl 65 930 5 nodes 2264 tbhits 0 pv g8f6 c2c3 d7d5 e4d5
+info depth 4 seldepth 6 multipv 2 score cp -13 wdl 11 959 30 nodes 2264 tbhits 0 pv d8f6 d2d3 f6g6
+info depth 4 seldepth 6 multipv 3 score cp -74 wdl 1 739 260 nodes 2264 tbhits 0 pv f7f5 f3f5
+info depth 5 seldepth 9 multipv 1 score cp -41 wdl 4 908 88 nodes 3974 tbhits 0 pv d8f6 d2d3 f6g6 g1e2
+info depth 5 seldepth 8 multipv 2 score cp -80 wdl 1 690 309 nodes 3974 tbhits 0 pv f7f5 e4f5 g8f6 b1c3 d7d5 c3d5
+info depth 5 seldepth 7 multipv 3 score cp -133 wdl 0 212 788 nodes 3974 tbhits 0 pv g8f6 b1c3 d7d5 c3d5 f6d5 c4d5
+info depth 6 seldepth 7 multipv 1 score cp 35 wdl 71 924 5 nodes 4666 tbhits 0 pv d8f6 b1c3 c6b4
+info depth 6 seldepth 6 multipv 2 score cp -15 wdl 10 957 33 nodes 4666 tbhits 0 pv f7f5 e4f5
+info depth 6 seldepth 3 multipv 3 score cp -133 wdl 0 212 788 nodes 4666 tbhits 0 pv g8f6 b1c3
+bestmove d8f6 ponder b1c3

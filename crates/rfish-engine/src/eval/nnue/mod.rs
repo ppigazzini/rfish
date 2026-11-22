@@ -55,7 +55,7 @@ use transformer::{EvalScratch, FeatureTransformer};
 /// Read from here, never recited into prose: it changes on every net-swapping upstream
 /// sync, and a doc that names the old one sends a reader looking for a file that no longer
 /// exists.
-pub const DEFAULT_NET: &str = "nn-68752b755c93.nnue";
+pub const DEFAULT_NET: &str = "nn-bddd9d57eb87.nnue";
 
 /// The concatenated activation buffer the two hidden layers share.
 const CONCAT: usize = L2 * 2 + L3 * 2;
