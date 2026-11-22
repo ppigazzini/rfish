@@ -1196,13 +1196,12 @@ impl SearchWorker {
 
                 // Asked of the score this move brings into the window, and held for every
                 // re-search of it: a score that crosses the bar mid-search does not change how
-                // the rest of the tree is searched. A later `MultiPV` line reads its PREVIOUS
-                // score, because a fail low leaves its current one at -VALUE_INFINITE, which
-                // would otherwise read as a mate to hunt.
-                let rm = &self.root_moves[pv_idx];
-                let seek_mate_score = if pv_idx == 0 { rm.score } else { rm.previous_score };
-                self.seek_mate = seek_mate_score != -VALUE_INFINITE
-                    && seek_mate_score.abs() >= seek_mate_threshold;
+                // the rest of the tree is searched. The PREVIOUS score, because a fail low
+                // leaves a later `MultiPV` line's current one at -VALUE_INFINITE, which would
+                // otherwise read as a mate to hunt; for the first line the two are equal here.
+                let previous = self.root_moves[pv_idx].previous_score;
+                self.seek_mate =
+                    previous != -VALUE_INFINITE && previous.abs() >= seek_mate_threshold;
 
                 // The evaluation is nudged toward the side that is already doing well, so
                 // a won position is evaluated by a network that expects to win it.
