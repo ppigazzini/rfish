@@ -1473,7 +1473,13 @@ impl SearchWorker {
             if chosen != self.root_moves[0].mv
                 && let Some(i) = self.root_moves.iter().position(|rm| rm.mv == chosen)
             {
+                let best_score = self.root_moves[0].score;
                 self.root_moves.swap(0, i);
+                // A losing line the handicap promoted past a better one was cut off by that
+                // better one's window: its mate distance is a bound, not an announcement.
+                if is_loss(self.root_moves[0].score) && self.root_moves[0].score < best_score {
+                    self.root_moves[0].inexact_lower = true;
+                }
                 uci_pv_sent = false;
             }
         }
