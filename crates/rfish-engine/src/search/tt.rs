@@ -210,7 +210,11 @@ impl TranspositionTable {
 
         let matches = tag_matches(c.keys.load(Ordering::Relaxed), key);
         if matches != 0 {
-            let slot = (matches.trailing_zeros() / KEY_BITS) as usize;
+            // The match bit is a tag's MOST significant -- bit 20, 41 or 62 -- and those
+            // three shifted right by four are 1, 2 and 3: a shift and a decrement where a
+            // division by 21 was a multiply and a shift.
+            const { assert!(KEY_BITS == 21, "the slot index below assumes 21-bit tags") };
+            let slot = ((matches.trailing_zeros() >> 4) - 1) as usize;
             let e = c.entry[slot].load(Ordering::Relaxed);
             let (depth8, gen_bound) = (e as u8, (e >> 8) as u8);
             // A key match is not yet a hit: the entry must also be OCCUPIED. An entry
@@ -272,7 +276,10 @@ impl TranspositionTable {
         let c = &self.clusters[probe.cluster];
         let shift = KEY_BITS * probe.slot as u32;
         let keys = c.keys.load(Ordering::Relaxed);
-        let same_key = (keys >> shift) & KEY_MASK == probe.key;
+        // The bits in which the stored tag differs from the new one: zero for the same
+        // position, and XORed back in, exactly what turns the old tag into the new.
+        let key_diff = ((keys >> shift) ^ probe.key) & KEY_MASK;
+        let same_key = key_diff == 0;
         let e = c.entry[probe.slot].load(Ordering::Relaxed);
         let (old_depth8, old_gen) = (e as u8, (e >> 8) as u8);
         let cur_gen = self.generation8();
@@ -299,7 +306,7 @@ impl TranspositionTable {
                 | (packed_move << 16)
                 | (u64::from(value.get() as i16 as u16) << 32)
                 | (u64::from(eval.get() as i16 as u16) << 48);
-            c.keys.store((keys & !(KEY_MASK << shift)) | (probe.key << shift), Ordering::Relaxed);
+            c.keys.store(keys ^ (key_diff << shift), Ordering::Relaxed);
             c.entry[probe.slot].store(packed, Ordering::Relaxed);
             return;
         }
