@@ -20,7 +20,7 @@ rfish 0.1.0 by the Stockfish developers (see AUTHORS)
    a   b   c   d   e   f   g   h
 
 Fen: 8/8/8/2pP4/8/8/8/K6k w - c6 0 2
-Key: 3CEC19D4A472CD32
+Key: 79D833A948E59A64
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -43,7 +43,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: 8/8/8/K1pP3q/8/8/8/7k w - - 0 2
-Key: D4E34A747446369F
+Key: A9C694E8E88C6D3E
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -66,7 +66,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: 2b5/2p5/8/2pP4/8/8/8/K6k w - - 0 2
-Key: 7D2FDA260217D0FA
+Key: FA5FB44C042FA1F4
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -89,7 +89,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: 8/8/8/2p5/8/8/8/K6k w - - 0 2
-Key: DA40A9FB9704613E
+Key: B48153F72E08C27C
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -112,7 +112,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: 7K/8/8/8/k1Pp3R/8/8/8 b - - 0 2
-Key: 79A6FCBF2FCC1976
+Key: B2A7B837CC6C8575
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -135,7 +135,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: 8/8/8/K1pP1P1q/8/8/8/7k w - c6 0 2
-Key: A224CFDD63A9963C
+Key: 44499FBAC7532C78
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -158,5 +158,5 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: 7b/8/8/2pP4/1K6/8/8/7k w - c6 0 2
-Key: C47D0D387BE89F81
+Key: 88FA1A70F7D13F02
 Checkers: c5 

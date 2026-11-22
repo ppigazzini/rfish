@@ -134,8 +134,8 @@ pub const MOVE_HISTORY_SIZE: usize = 1 << 16;
 pub const LOW_PLY_HISTORY_SIZE: usize = 5;
 /// Rows in the pawn-structure history.
 pub const PAWN_HISTORY_SIZE: usize = 8192;
-/// Rows in the unified correction history.
-pub const CORRECTION_HISTORY_SIZE: usize = 1 << 16;
+/// Rows in the unified correction history: two per 16-bit key, one per side to move.
+pub const CORRECTION_HISTORY_SIZE: usize = 2 << 16;
 
 /// Clamp of the butterfly and low-ply tables.
 pub const MAIN_HISTORY_LIMIT: i32 = 7183;
@@ -700,7 +700,8 @@ impl PawnHistory {
     #[inline(always)]
     #[must_use]
     pub fn row(pawn_key: PawnKey) -> PawnRow {
-        PawnRow((pawn_key.get() as usize) & (PAWN_HISTORY_SIZE - 1))
+        // Past bit 0, which is the side to move's: the pawn history is not split by side.
+        PawnRow(((pawn_key.get() >> 1) as usize) & (PAWN_HISTORY_SIZE - 1))
     }
 
     #[inline(always)]
@@ -735,7 +736,7 @@ impl PawnHistory {
     }
 }
 
-/// The four correction counters one key selects, for one side to move.
+/// The four correction counters one key and one side to move select.
 ///
 /// Upstream stores them as one bundle in a single table rather than as four tables, so a
 /// pawn key and a minor-piece key that happen to collide land on the SAME bundle and
@@ -755,24 +756,29 @@ impl CorrectionBundle {
     }
 }
 
-/// The unified correction history: one table, four counters per (key, colour).
+/// The unified correction history: one table, four counters per row.
+///
+/// The side to move is bit 0 of the row, as it is bit 0 of every key upstream reads since
+/// 20584a026: no drawn key sets that bit, so `key ^ side` is the key with the side in it,
+/// and the two sides land in adjacent rows of ONE table rather than in a colour dimension.
 #[derive(Debug)]
 pub struct CorrectionHistory {
-    table: Box<[[CorrectionBundle; COLOR_NB]; CORRECTION_HISTORY_SIZE]>,
+    table: Box<[CorrectionBundle; CORRECTION_HISTORY_SIZE]>,
 }
 
 impl Default for CorrectionHistory {
     fn default() -> CorrectionHistory {
-        CorrectionHistory { table: boxed([CorrectionBundle::filled(-5); COLOR_NB]) }
+        CorrectionHistory { table: boxed(CorrectionBundle::filled(-5)) }
     }
 }
 
 impl CorrectionHistory {
-    /// The row a key word selects. Private: a bare word must not reach this table, because
-    /// which COUNTER of the row is right depends on which key the word came from.
+    /// The row a key word and the side to move select. Private: a bare word must not reach
+    /// this table, because which COUNTER of the row is right depends on which key the word
+    /// came from.
     #[inline(always)]
-    fn row(key: Key) -> usize {
-        (key as usize) & (CORRECTION_HISTORY_SIZE - 1)
+    fn row(key: Key, c: Color) -> usize {
+        ((key ^ c.index() as Key) as usize) & (CORRECTION_HISTORY_SIZE - 1)
     }
 
     /// The pawn-structure counter, at the row the pawn key selects.
@@ -784,14 +790,14 @@ impl CorrectionHistory {
     #[inline(always)]
     #[must_use]
     pub fn pawn(&self, k: PawnKey, c: Color) -> i32 {
-        i32::from(self.table[Self::row(k.get())][c.index()].pawn)
+        i32::from(self.table[Self::row(k.get(), c)].pawn)
     }
 
     /// The minor-piece counter, at the row the minor key selects.
     #[inline(always)]
     #[must_use]
     pub fn minor(&self, k: MinorKey, c: Color) -> i32 {
-        i32::from(self.table[Self::row(k.get())][c.index()].minor)
+        i32::from(self.table[Self::row(k.get(), c)].minor)
     }
 
     /// One side's non-pawn counter, at the row that side's key selects.
@@ -801,7 +807,7 @@ impl CorrectionHistory {
     #[inline(always)]
     #[must_use]
     pub fn non_pawn(&self, k: NonPawnKey, c: Color) -> i32 {
-        let bundle = &self.table[Self::row(k.get())][c.index()];
+        let bundle = &self.table[Self::row(k.get(), c)];
         i32::from(match k.side() {
             Color::White => bundle.non_pawn_white,
             Color::Black => bundle.non_pawn_black,
@@ -811,19 +817,19 @@ impl CorrectionHistory {
     /// The pawn counter, to update.
     #[inline(always)]
     pub fn pawn_mut(&mut self, k: PawnKey, c: Color) -> &mut i16 {
-        &mut self.table[Self::row(k.get())][c.index()].pawn
+        &mut self.table[Self::row(k.get(), c)].pawn
     }
 
     /// The minor-piece counter, to update.
     #[inline(always)]
     pub fn minor_mut(&mut self, k: MinorKey, c: Color) -> &mut i16 {
-        &mut self.table[Self::row(k.get())][c.index()].minor
+        &mut self.table[Self::row(k.get(), c)].minor
     }
 
     /// One side's non-pawn counter, to update.
     #[inline(always)]
     pub fn non_pawn_mut(&mut self, k: NonPawnKey, c: Color) -> &mut i16 {
-        let bundle = &mut self.table[Self::row(k.get())][c.index()];
+        let bundle = &mut self.table[Self::row(k.get(), c)];
         match k.side() {
             Color::White => &mut bundle.non_pawn_white,
             Color::Black => &mut bundle.non_pawn_black,
@@ -831,7 +837,7 @@ impl CorrectionHistory {
     }
 
     pub fn fill(&mut self, v: i16) {
-        self.table.iter_mut().flatten().for_each(|b| *b = CorrectionBundle::filled(v));
+        self.table.iter_mut().for_each(|b| *b = CorrectionBundle::filled(v));
     }
 }
 

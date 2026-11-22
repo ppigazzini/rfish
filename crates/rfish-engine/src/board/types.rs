@@ -1428,11 +1428,13 @@ impl PosKey {
             return TtKey(self.0);
         }
         let seed = ((rule50 - 14) / 8) as Key;
+        // Shifted clear of bit 0, which is the side to move's.
         TtKey(
             self.0
-                ^ seed
+                ^ (seed
                     .wrapping_mul(6_364_136_223_846_793_005)
-                    .wrapping_add(1_442_695_040_888_963_407),
+                    .wrapping_add(1_442_695_040_888_963_407)
+                    << 1),
         )
     }
 }

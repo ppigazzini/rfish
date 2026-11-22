@@ -20,7 +20,7 @@ rfish 0.1.0 by the Stockfish developers (see AUTHORS)
    a   b   c   d   e   f   g   h
 
 Fen: 4k3/8/8/8/8/8/8/4K3 w - - 0 1
-Key: 279216B9424835AA
+Key: 4F242D7284906B54
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -43,7 +43,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: r3k2r/8/8/8/8/8/8/4K2R w Kkq - 0 1
-Key: 6F071F43258EE591
+Key: DE0E3E864B1DCB22
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -66,7 +66,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: r3k2r/8/8/8/4K3/8/8/R6R w kq - 0 1
-Key: 930AF4BC990621BD
+Key: 2615E979320C437A
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -89,7 +89,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1
-Key: 1537AF11E35745ED
+Key: 2A6F5E23C6AE8BDA
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -112,7 +112,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: 1nbbnrkr/p1p1qppp/3p4/1p2p3/3PP3/2N5/PPP1QPPP/1NBBR1KR w HEh - 4 9
-Key: 8B9EBB0F3C71BC99
+Key: 173D761E78E37932
 Checkers: 
 info string Network replica 1: Local memory.
 d4e5: 1014
@@ -173,7 +173,7 @@ Nodes searched: 34578
    a   b   c   d   e   f   g   h
 
 Fen: krr5/8/8/8/8/8/8/KRR5 w - - 0 1
-Key: 0C935CC1B95C6EB5
+Key: 1926B98372B8DD6A
 Checkers: 
 info string CRITICAL ERROR: Command `position fen r3k2r/8/8/8/8/8/8/R3K2R w KQZq - 0 1` failed. Reason: Invalid FEN. Expected castling rights. Got: Z
 

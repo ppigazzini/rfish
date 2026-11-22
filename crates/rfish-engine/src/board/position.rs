@@ -62,8 +62,9 @@ pub struct StateInfo {
     /// Hashes the MATERIAL only — every piece of each kind, counted, with no square
     /// information. Syzygy looks its tables up by this.
     pub material_key: MaterialKey,
-    /// Pawns ONLY, seeded with [`zobrist::no_pawns`] so an empty pawn structure still has
-    /// a distinct key.
+    /// Pawns ONLY, from zero: upstream dropped its no-pawns seed in 20584a026, so a board
+    /// with no pawns has pawn key zero, and the side to move reaches the correction row
+    /// through `CorrectionHistory`'s row function instead.
     pub pawn_key: PawnKey,
     /// Knights and bishops only, kings EXCLUDED.
     pub minor_piece_key: MinorKey,
@@ -1029,7 +1030,7 @@ impl Position {
     /// incrementally, and [`Position::assert_state_consistent`] checks the two agree.
     fn set_state(&mut self) {
         let mut key = PosKey::ZERO;
-        let mut pawn_key = PawnKey::new(zobrist::no_pawns());
+        let mut pawn_key = PawnKey::new(0);
         let mut minor_key: Key = 0;
         let mut non_pawn_key = [0 as Key; COLOR_NB];
         let mut material_key = MaterialKey::new(0);

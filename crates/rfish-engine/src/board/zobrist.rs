@@ -7,10 +7,14 @@
 //! downstream and silently invalidates the whole anchor set.
 //!
 //! The tables are `const`-evaluated: they exist before `main` runs, cannot be read half
-//! built, and cost nothing at startup. Upstream fills the same tables in
-//! `Position::init()` and has to order its static initialisers around that.
+//! built, and cost nothing at startup, as upstream's `generate_keys` is since 54a85ce8f.
 //!
-//! Golden: `Stockfish/src/position.cpp: Position::init`.
+//! **Bit 0 of every key is the side to move** (upstream 20584a026). Each drawn key is shifted
+//! left one place so its low bit is zero, and the side key is 1: an XOR with it flips exactly
+//! that bit. The pawn, minor-piece and non-pawn keys carry the side the same way when read --
+//! see `CorrectionHistory` -- which is what lets one table serve both colours.
+//!
+//! Golden: `Stockfish/src/position.cpp: generate_keys`.
 
 use super::types::{CastlingRights, FILE_NB, File, Key, PIECE_NB, Piece, SQUARE_NB, Square};
 
@@ -52,18 +56,14 @@ struct Tables {
     psq: [[Key; SQUARE_NB]; PIECE_NB],
     en_passant: [Key; FILE_NB],
     castling: [Key; 16],
-    side: Key,
-    no_pawns: Key,
 }
 
+/// The side-to-move key: bit 0, which no drawn key sets.
+const SIDE: Key = 1;
+
 const fn build() -> Tables {
-    let mut t = Tables {
-        psq: [[0; SQUARE_NB]; PIECE_NB],
-        en_passant: [0; FILE_NB],
-        castling: [0; 16],
-        side: 0,
-        no_pawns: 0,
-    };
+    let mut t =
+        Tables { psq: [[0; SQUARE_NB]; PIECE_NB], en_passant: [0; FILE_NB], castling: [0; 16] };
     let mut s = 1_070_372u64;
 
     // 1. psq for the 12 real pieces, a1..h8.
@@ -74,7 +74,7 @@ const fn build() -> Tables {
         while sq < SQUARE_NB {
             let (ns, k) = next_key(s);
             s = ns;
-            t.psq[pc][sq] = k;
+            t.psq[pc][sq] = k << 1;
             sq += 1;
         }
         i += 1;
@@ -95,7 +95,7 @@ const fn build() -> Tables {
     while f < FILE_NB {
         let (ns, k) = next_key(s);
         s = ns;
-        t.en_passant[f] = k;
+        t.en_passant[f] = k << 1;
         f += 1;
     }
 
@@ -104,19 +104,9 @@ const fn build() -> Tables {
     while cr < 16 {
         let (ns, k) = next_key(s);
         s = ns;
-        t.castling[cr] = k;
+        t.castling[cr] = k << 1;
         cr += 1;
     }
-
-    // 5. Side to move.
-    let (ns, k) = next_key(s);
-    s = ns;
-    t.side = k;
-
-    // 6. The pawn-key seed, so a position with no pawns still has a distinct pawn key
-    //    rather than the zero every empty XOR fold produces.
-    let (_, k) = next_key(s);
-    t.no_pawns = k;
 
     t
 }
@@ -144,18 +134,11 @@ pub fn castling(cr: CastlingRights) -> Key {
     TABLES.castling[cr.index()]
 }
 
-/// The key `XORed` in when it is Black to move.
+/// The key `XORed` in when it is Black to move: bit 0, and nothing else.
 #[inline(always)]
 #[must_use]
 pub fn side() -> Key {
-    TABLES.side
-}
-
-/// The seed for the pawn key.
-#[inline(always)]
-#[must_use]
-pub fn no_pawns() -> Key {
-    TABLES.no_pawns
+    SIDE
 }
 
 #[cfg(test)]
@@ -170,14 +153,22 @@ mod tests {
     /// different node count.
     #[test]
     fn first_and_last_draws_match_upstream() {
-        // Draw 1: psq[W_PAWN][a1].
+        // Draw 1: psq[W_PAWN][a1], shifted clear of the side-to-move bit.
         let (_, first) = next_key(1_070_372);
-        assert_eq!(psq(Piece::W_PAWN, Square::A1), first);
+        assert_eq!(psq(Piece::W_PAWN, Square::A1), first << 1);
         assert_ne!(first, 0);
         // The generator is deterministic, so re-running the build reproduces it exactly.
         let again = build();
-        assert_eq!(again.side, side());
-        assert_eq!(again.no_pawns, no_pawns());
+        assert_eq!(again.castling, TABLES.castling);
+    }
+
+    /// Upstream's `static_assert`: bit 0 is the side to move's alone, so no piece, castling
+    /// or en-passant key may set it, and the side key sets nothing else.
+    #[test]
+    fn only_the_side_key_touches_bit_zero() {
+        assert_eq!(side(), 1);
+        let drawn = TABLES.psq.iter().flatten().chain(&TABLES.en_passant).chain(&TABLES.castling);
+        assert!(drawn.into_iter().all(|k| k & 1 == 0), "a drawn key sets the side-to-move bit");
     }
 
     #[test]
@@ -214,7 +205,6 @@ mod tests {
         keys.extend((0..8).map(|f| en_passant(File::new(f))));
         keys.extend((0..16).map(|i| castling(CastlingRights::from_raw(i as u8))));
         keys.push(side());
-        keys.push(no_pawns());
 
         let before = keys.len();
         keys.sort_unstable();

@@ -20,7 +20,7 @@ rfish 0.1.0 by the Stockfish developers (see AUTHORS)
    a   b   c   d   e   f   g   h
 
 Fen: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
-Key: 8F8F01D4562F59FB
+Key: 1F1E03A8AC5EB3F6
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -43,7 +43,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
-Key: 8F8F01D4562F59FB
+Key: 1F1E03A8AC5EB3F6
 Checkers: 
 
  +---+---+---+---+---+---+---+---+
@@ -66,7 +66,7 @@ Checkers:
    a   b   c   d   e   f   g   h
 
 Fen: rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2
-Key: 11DCFBB74711D25D
+Key: 23B9F76E8E23A4BA
 Checkers: 
 info string CRITICAL ERROR: Command `position startpos fen 8/8/8/8/8/8/8/K6k w - - 0 1` failed. Reason: Illegal move: 8/8/8/8/8/8/8/K6k
 

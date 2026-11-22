@@ -20,7 +20,7 @@ rfish 0.1.0 by the Stockfish developers (see AUTHORS)
    a   b   c   d   e   f   g   h
 
 Fen: bqnb1rkr/pp3ppp/3ppn2/2p5/5P2/P2P4/NPP1P1PP/BQ1BNRKR w HFhf - 2 9
-Key: 07EA21D9A952A6B4
+Key: 0FD443B352A54D68
 Checkers: 
 info string Network replica 1: Local memory.
 b2b3: 25
@@ -68,5 +68,5 @@ Nodes searched: 528
    a   b   c   d   e   f   g   h
 
 Fen: nqbnrkrb/pppppppp/8/8/8/8/PPPPPPPP/NQBNRKRB w GEge - 0 1
-Key: A903849C3CC4940B
+Key: 5207093879892816
 Checkers: 
