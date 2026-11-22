@@ -2188,10 +2188,7 @@ impl SearchWorker {
                         + 164;
 
                     if !in_check && lmr_depth < 12 && futility_value <= alpha {
-                        if best_value <= futility_value
-                            && !is_decisive(best_value)
-                            && !is_win(futility_value)
-                        {
+                        if best_value <= futility_value && !is_win(futility_value) {
                             best_value = futility_value;
                         }
                         continue;
