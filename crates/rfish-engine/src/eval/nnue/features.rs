@@ -9,7 +9,7 @@
 //!
 //! | set | dimensions | what it encodes |
 //! |---|---|---|
-//! | [`K32Q2`](k32q2_index) | 45056 | own king square × opponent queen × (piece, square) |
+//! | [`K32H3`](k32h3_index) | 67584 | heavy-material block × own king square × (piece, square) |
 //! | [`FullThreats`](threat_index) | 59808 | (attacker, from) attacking (attacked, to) |
 //! | [`PP_3Wide`](pawn_pair_index) | 4560 | pairs of pawns within one file of each other |
 //!
@@ -17,7 +17,7 @@
 //! starting at the threat set's dimension count — so [`PP_INDEX_BASE`] equals
 //! [`THREAT_DIMENSIONS`] by construction, and a test asserts it.
 //!
-//! Golden: `Stockfish/src/nnue/features/k32q2.cpp`, `full_threats.cpp`,
+//! Golden: `Stockfish/src/nnue/features/k32h3.cpp`, `full_threats.cpp`,
 //! `pp_3wide.cpp`.
 
 use std::simd::Simd;
@@ -33,7 +33,7 @@ use crate::board::types::{
 };
 
 // ---------------------------------------------------------------------------
-// K32Q2
+// K32H3
 // ---------------------------------------------------------------------------
 
 /// Distinct (piece, square) slots: ten coloured piece kinds plus a colourless king.
@@ -99,8 +99,16 @@ impl TpIndex {
     }
 }
 
-/// Feature count for the king-piece set: 32 king buckets, each in two opponent-queen states.
-pub const K32Q2_DIMENSIONS: usize = SQUARE_NB * PS_NB;
+/// The king-piece set's blocks, in order of increasing heavy material: no rook or queen on
+/// the board, some rook or queen but no queen of the opponent's, the opponent's queen.
+pub const K32H3_BLOCKS: usize = 3;
+
+/// Features per block: 32 king buckets of [`PS_NB`] (piece, square) slots.
+pub const K32H3_BLOCK_DIMENSIONS: usize = SQUARE_NB / 2 * PS_NB;
+
+/// Feature count for the king-piece set: three contiguous blocks, block-major, so a block's
+/// rows start at `block * K32H3_BLOCK_DIMENSIONS`, upstream's `psq_weights(block)`.
+pub const K32H3_DIMENSIONS: usize = K32H3_BLOCKS * K32H3_BLOCK_DIMENSIONS;
 
 /// The per-piece base offset, from each perspective.
 ///
@@ -162,11 +170,12 @@ const PIECE_SQUARE_INDEX: [[u16; PIECE_NB]; 2] = {
 /// Which of the 32 king buckets a king square selects, pre-multiplied by the bucket's width.
 ///
 /// The board is mirrored so the king is always on the e-h files, which halves the table;
-/// the bucket then encodes the king's square within that half. A bucket is two [`PS_NB`]
-/// blocks wide, the second taken when the opponent has a queen.
+/// the bucket then encodes the king's square within that half. A bucket is one [`PS_NB`]
+/// run wide: the heavy-material state is the BLOCK the bucket sits in, not a second run
+/// inside it, as K32Q2's queen state was.
 const KING_BUCKETS: [u32; SQUARE_NB] = {
     const fn b(v: u32) -> u32 {
-        v * 2 * PS_NB as u32
+        v * PS_NB as u32
     }
     [
         b(28),
@@ -238,7 +247,10 @@ const KING_BUCKETS: [u32; SQUARE_NB] = {
 
 /// The horizontal mirror to apply for a king on this square: 7 (mirror) on the a-d files,
 /// 0 (identity) on the e-h files, so the king always ends on the e-h half.
-const K32Q2_ORIENT: [u8; SQUARE_NB] = {
+///
+/// Upstream's `OrientTBL`, and since `SFNNv19` it is the ONE orientation all three feature sets
+/// read: the threat and pawn-pair sets used to mirror the opposite way round.
+const ORIENT: [u8; SQUARE_NB] = {
     let mut t = [0u8; SQUARE_NB];
     let mut s = 0;
     while s < SQUARE_NB {
@@ -248,70 +260,68 @@ const K32Q2_ORIENT: [u8; SQUARE_NB] = {
     t
 };
 
-/// Everything but the square, per opponent-queen state, perspective and king square: the
-/// piece's base, the king bucket, the queen block and the mirror, folded into one entry.
+/// Everything but the square and the block, per perspective and king square: the piece's
+/// base, the king bucket and the mirror, folded into one entry.
 ///
-/// Upstream's `make_index` table. The fold is exact because the piece base, the bucket and
-/// the queen block are all multiples of 64 and the mirrored square is below 64, so adding
-/// them never carries into the square's bits and `s ^ entry` is the old
-/// `(s ^ orient) + base + bucket + queen`. Rows are indexed by [`k32q2_row`].
-const K32Q2_OFFSETS: [[u16; PIECE_NB]; 2 * COLOR_NB * SQUARE_NB] = {
-    let mut t = [[0u16; PIECE_NB]; 2 * COLOR_NB * SQUARE_NB];
-    let mut q = 0;
-    while q < 2 {
-        let mut c = 0;
-        while c < COLOR_NB {
-            let flip = 56 * c;
-            let mut ksq = 0;
-            while ksq < SQUARE_NB {
-                let orient = (K32Q2_ORIENT[ksq] as usize ^ flip) as u16;
-                let bucket = KING_BUCKETS[ksq ^ flip] as u16;
-                let queen = (q * PS_NB) as u16;
-                let mut pc = 0;
-                while pc < PIECE_NB {
-                    t[(q * COLOR_NB + c) * SQUARE_NB + ksq][pc] =
-                        PIECE_SQUARE_INDEX[c][pc] + bucket + queen + orient;
-                    pc += 1;
-                }
-                ksq += 1;
+/// Upstream's `make_index` table. The fold is exact because the piece base and the bucket are
+/// multiples of 64 and the mirrored square is below 64, so adding them never carries into the
+/// square's bits and `s ^ entry` is `(s ^ orient) + base + bucket`. The entry is an index
+/// WITHIN a block; [`k32h3_index`] adds the block's base. Rows are indexed by [`k32h3_row`].
+const K32H3_OFFSETS: [[u16; PIECE_NB]; COLOR_NB * SQUARE_NB] = {
+    let mut t = [[0u16; PIECE_NB]; COLOR_NB * SQUARE_NB];
+    let mut c = 0;
+    while c < COLOR_NB {
+        let flip = 56 * c;
+        let mut ksq = 0;
+        while ksq < SQUARE_NB {
+            let orient = (ORIENT[ksq] as usize ^ flip) as u16;
+            let bucket = KING_BUCKETS[ksq ^ flip] as u16;
+            let mut pc = 0;
+            while pc < PIECE_NB {
+                t[c * SQUARE_NB + ksq][pc] = PIECE_SQUARE_INDEX[c][pc] + bucket + orient;
+                pc += 1;
             }
-            c += 1;
+            ksq += 1;
         }
-        q += 1;
+        c += 1;
     }
     t
 };
 
-/// The [`K32Q2_OFFSETS`] row a perspective reads: its king square, and whether its OPPONENT
-/// has a queen.
+/// The [`K32H3_OFFSETS`] row a perspective reads: its king square.
 #[inline(always)]
-fn k32q2_row(perspective: Color, ksq: Square, opp_queen: bool) -> &'static [u16; PIECE_NB] {
-    &K32Q2_OFFSETS
-        [(usize::from(opp_queen) * COLOR_NB + perspective.index()) * SQUARE_NB + ksq.index()]
+fn k32h3_row(perspective: Color, ksq: Square) -> &'static [u16; PIECE_NB] {
+    &K32H3_OFFSETS[perspective.index() * SQUARE_NB + ksq.index()]
 }
 
-/// Whether `perspective`'s opponent has a queen on the board: the K32Q2 set's second axis.
+/// The first row of `block` in the king-piece weight table.
+#[inline(always)]
+fn block_base(block: u8) -> u32 {
+    u32::from(block) * K32H3_BLOCK_DIMENSIONS as u32
+}
+
+/// The K32H3 block `perspective` reads on this board: 2 while its opponent has a queen, else
+/// 1 while any rook or queen is on the board, else 0.
 ///
 /// Every king-piece index a perspective sees is keyed off it as much as off the king square,
 /// so a capture or a promotion that changes it re-indexes the whole set.
 #[inline]
 #[must_use]
-pub fn opp_queen(pos: &Position, perspective: Color) -> bool {
-    pos.pieces_of(!perspective, PieceType::Queen).any()
+pub fn psq_block(pos: &Position, perspective: Color) -> u8 {
+    if pos.pieces_of(!perspective, PieceType::Queen).any() {
+        2
+    } else {
+        u8::from((pos.pieces(PieceType::Rook) | pos.pieces(PieceType::Queen)).any())
+    }
 }
 
-/// The feature index for `pc` on `s`, seen by `perspective` whose king is on `ksq`.
+/// The feature index for `pc` on `s`, seen by `perspective` whose king is on `ksq`, in the
+/// king-piece table's `block`.
 #[inline]
 #[must_use]
-pub fn k32q2_index(
-    perspective: Color,
-    s: Square,
-    pc: Piece,
-    ksq: Square,
-    opp_queen: bool,
-) -> KaIndex {
-    let row = k32q2_row(perspective, ksq, opp_queen);
-    KaIndex(u32::from(s.raw()) ^ u32::from(row[pc.index()]))
+pub fn k32h3_index(perspective: Color, s: Square, pc: Piece, ksq: Square, block: u8) -> KaIndex {
+    let row = k32h3_row(perspective, ksq);
+    KaIndex(block_base(block) + (u32::from(s.raw()) ^ u32::from(row[pc.index()])))
 }
 
 /// The king-piece features that differ between two board states, as adds and subtracts.
@@ -323,17 +333,17 @@ pub fn k32q2_index(
 /// the whole accumulator rests on, one level lower down, and it replaces recomputing the
 /// active set and sorting it.
 ///
-/// Both states must share `ksq` AND `opp_queen`. When either differs every feature is
+/// Both states must share `ksq` AND `block`. When either differs every feature is
 /// re-indexed and this cannot express it — the caller rebuilds from a base that has the right
 /// bucket, which is what the refresh cache is for.
 ///
 /// ../mcfish 4dcdec6b and ../zfish 63078a65 each arrived at the same board diff.
-pub fn k32q2_delta(
+pub fn k32h3_delta(
     was: &[Piece; SQUARE_NB],
     now: &[Piece; SQUARE_NB],
     perspective: Color,
     ksq: Square,
-    opp_queen: bool,
+    block: u8,
     adds: &mut Vec<KaIndex>,
     subs: &mut Vec<KaIndex>,
 ) {
@@ -343,10 +353,12 @@ pub fn k32q2_delta(
     // once, as a bitmask, and the walk is then `trailing_zeros` over its two to four bits.
     // The copy `map` pays to build the vectors is what a `[Piece; 64]` costs without a
     // transmute, and it is cheaper than the scan it replaces.
-    // Hoist the one row the bucket and the perspective select; it is invariant across the
-    // whole delta.
-    let row = k32q2_row(perspective, ksq, opp_queen);
-    let index = |sq: Square, pc: Piece| KaIndex(u32::from(sq.raw()) ^ u32::from(row[pc.index()]));
+    // Hoist the one row the king square and the perspective select, and the block's base;
+    // both are invariant across the whole delta.
+    let row = k32h3_row(perspective, ksq);
+    let base = block_base(block);
+    let index =
+        |sq: Square, pc: Piece| KaIndex(base + (u32::from(sq.raw()) ^ u32::from(row[pc.index()])));
 
     let was_v = Simd::<u8, SQUARE_NB>::from_array(was.map(Piece::raw));
     let now_v = Simd::<u8, SQUARE_NB>::from_array(now.map(Piece::raw));
@@ -367,11 +379,11 @@ pub fn k32q2_delta(
 }
 
 /// Every active king-piece feature, for one perspective.
-pub fn k32q2_active(pos: &Position, perspective: Color, out: &mut Vec<KaIndex>) {
+pub fn k32h3_active(pos: &Position, perspective: Color, out: &mut Vec<KaIndex>) {
     let ksq = pos.king_square(perspective);
-    let q = opp_queen(pos, perspective);
+    let block = psq_block(pos, perspective);
     for sq in pos.occupied() {
-        out.push(k32q2_index(perspective, sq, pos.piece_on(sq), ksq, q));
+        out.push(k32h3_index(perspective, sq, pos.piece_on(sq), ksq, block));
     }
 }
 
@@ -382,28 +394,17 @@ pub fn k32q2_active(pos: &Position, perspective: Color, out: &mut Vec<KaIndex>) 
 /// Feature count for the threat set.
 pub const THREAT_DIMENSIONS: u32 = 59808;
 
-/// The mirror for the threat and pawn-pair sets: the OPPOSITE of the king-piece set's.
-const THREAT_ORIENT: [u8; SQUARE_NB] = {
-    let mut t = [0u8; SQUARE_NB];
-    let mut s = 0;
-    while s < SQUARE_NB {
-        t[s] = if s % 8 < 4 { 0 } else { 7 };
-        s += 1;
-    }
-    t
-};
-
 /// Which mirror half a king square puts the threat and pawn-pair numbering in.
 ///
 /// The orientation those two sets are indexed through is a function of the king's FILE HALF
-/// alone — `0` on a-d, `7` on e-h — and of nothing else about the square. So a king move
+/// alone — `7` on a-d, `0` on e-h — and of nothing else about the square. So a king move
 /// that stays in one half leaves every threat and pawn-pair index exactly where it was,
 /// which is the condition under which a parent's accumulator can carry its threat rows
 /// across a king move. [`FeatureTransformer::hybrid`] is the only caller and that is what it
 /// tests.
 #[must_use]
 pub fn threat_mirror(ksq: Square) -> u8 {
-    THREAT_ORIENT[ksq.index()]
+    ORIENT[ksq.index()]
 }
 
 /// How many (attacker colour, attacked kind) target classes each attacker has.
@@ -586,7 +587,7 @@ pub fn threat_index(
     attacked: Piece,
     ksq: Square,
 ) -> TpIndex {
-    let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
+    let orientation = ORIENT[ksq.index()] ^ (56 * perspective as u8);
     // Swapping the colour bit turns "White's threat" into "our threat" for either side.
     let swap = 8 * perspective as u8;
     TpIndex::threat(threat_index_oriented(
@@ -647,7 +648,7 @@ pub fn threat_active(pos: &Position, wanted: [bool; COLOR_NB], out: &mut [Vec<Tp
     // and its king square, so resolve both perspectives' before the scan rather than inside
     // it.
     let t = &*THREATS;
-    let orientation = [THREAT_ORIENT[ksq[0].index()], THREAT_ORIENT[ksq[1].index()] ^ 0b11_1000];
+    let orientation = [ORIENT[ksq[0].index()], ORIENT[ksq[1].index()] ^ 0b11_1000];
     let swap = [0u8, 8u8];
 
     macro_rules! emit {
@@ -791,7 +792,7 @@ pub fn pawn_pair_index(
     paired_color: Color,
     ksq: Square,
 ) -> TpIndex {
-    let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
+    let orientation = ORIENT[ksq.index()] ^ (56 * perspective as u8);
     // The base is added by `TpIndex::pawn_pair`, not here: one place, once.
     TpIndex::pawn_pair(
         pp_index_oriented(orientation, perspective as usize, color, from, to, paired_color)
@@ -854,7 +855,7 @@ fn pawn_pairs_of(
     ksq: Square,
     out: &mut Vec<TpIndex>,
 ) {
-    let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
+    let orientation = ORIENT[ksq.index()] ^ (56 * perspective as u8);
     let pb = perspective as usize;
 
     // Walking `bb` while popping is what deduplicates same-colour pairs: only pawns after
@@ -909,7 +910,7 @@ pub fn threat_delta(
     subs: &mut Vec<TpIndex>,
 ) {
     let t = &*THREATS;
-    let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
+    let orientation = ORIENT[ksq.index()] ^ (56 * perspective as u8);
     let swap = 8 * perspective as u8;
     for dt in dts {
         let index = threat_index_oriented(
@@ -975,7 +976,7 @@ fn pawn_pairs_touching(
     ksq: Square,
     out: &mut Vec<TpIndex>,
 ) {
-    let orientation = THREAT_ORIENT[ksq.index()] ^ (56 * perspective as u8);
+    let orientation = ORIENT[ksq.index()] ^ (56 * perspective as u8);
     let perspective_bit = perspective as usize;
     let pawns = white | black;
     let unchanged = pawns & !changed;
@@ -1100,7 +1101,8 @@ mod tests {
         // Each falls out of the tables rather than being asserted into them: the threat
         // count is the sum over pieces of targets x attack slots, and it must land exactly
         // on upstream's 59808 or every index after the first block is wrong.
-        assert_eq!(K32Q2_DIMENSIONS, 45056);
+        assert_eq!(K32H3_BLOCK_DIMENSIONS, 22528);
+        assert_eq!(K32H3_DIMENSIONS, 67584);
         assert_eq!(THREAT_DIMENSIONS, 59808);
         assert_eq!(PP_DIMENSIONS, 4560);
         // The pawn-pair block starts where the threat block ends -- they share an array.
@@ -1111,14 +1113,14 @@ mod tests {
     }
 
     #[test]
-    fn every_k32q2_index_is_in_range_for_every_reachable_placement() {
+    fn every_k32h3_index_is_in_its_own_block_for_every_reachable_placement() {
         for ksq in Square::all() {
             for sq in Square::all() {
                 for pc in [Piece::W_PAWN, Piece::B_QUEEN, Piece::W_KING, Piece::B_KING] {
                     for p in Color::ALL {
-                        for q in [false, true] {
-                            let i = k32q2_index(p, sq, pc, ksq, q);
-                            assert!(i.get() < K32Q2_DIMENSIONS as u32, "{i:?} out of range");
+                        for block in 0..K32H3_BLOCKS as u8 {
+                            let i = k32h3_index(p, sq, pc, ksq, block).get() as usize;
+                            assert_eq!(i / K32H3_BLOCK_DIMENSIONS, usize::from(block), "{i}");
                         }
                     }
                 }
@@ -1129,38 +1131,51 @@ mod tests {
     /// The folded table must reproduce the four-term sum it replaced for every input, or a
     /// carry out of the square's bits reads a different weight column.
     #[test]
-    fn the_folded_offsets_equal_the_four_term_sum() {
-        for q in [false, true] {
-            for p in Color::ALL {
-                let flip = 56 * p as u8;
-                for ksq in Square::all() {
-                    for sq in Square::all() {
-                        for pc in 0..PIECE_NB {
-                            let sum = u32::from(sq.raw() ^ K32Q2_ORIENT[ksq.index()] ^ flip)
-                                + u32::from(PIECE_SQUARE_INDEX[p.index()][pc])
-                                + KING_BUCKETS[(ksq.raw() ^ flip) as usize]
-                                + if q { PS_NB as u32 } else { 0 };
-                            let row = k32q2_row(p, ksq, q);
-                            assert_eq!(u32::from(sq.raw()) ^ u32::from(row[pc]), sum);
-                        }
+    fn the_folded_offsets_equal_the_three_term_sum() {
+        for p in Color::ALL {
+            let flip = 56 * p as u8;
+            for ksq in Square::all() {
+                for sq in Square::all() {
+                    for pc in 0..PIECE_NB {
+                        let sum = u32::from(sq.raw() ^ ORIENT[ksq.index()] ^ flip)
+                            + u32::from(PIECE_SQUARE_INDEX[p.index()][pc])
+                            + KING_BUCKETS[(ksq.raw() ^ flip) as usize];
+                        let row = k32h3_row(p, ksq);
+                        assert_eq!(u32::from(sq.raw()) ^ u32::from(row[pc]), sum);
                     }
                 }
             }
         }
     }
 
-    /// The mirror must put the king on the e-h files for the king-piece set, and on the
-    /// a-d files for the threat set. Getting the two the same way round reads a consistent
-    /// but wrong column of weights.
+    /// The mirror puts the king on the e-h files, for all three sets since `SFNNv19`: a king on
+    /// a1 is mirrored, one on h1 is not.
     #[test]
-    fn the_two_orientations_are_opposites() {
+    fn the_orientation_puts_the_king_on_the_e_to_h_files() {
         for s in Square::all() {
-            assert_ne!(K32Q2_ORIENT[s.index()], THREAT_ORIENT[s.index()]);
-            assert!(K32Q2_ORIENT[s.index()] == 0 || K32Q2_ORIENT[s.index()] == 7);
+            assert_eq!(ORIENT[s.index()], if s.index() % 8 < 4 { 7 } else { 0 });
+            assert!((s.raw() ^ ORIENT[s.index()]) % 8 >= 4, "{s:?}");
         }
-        // A king on a1 (a-file) is mirrored by the king-piece set and not by the threats.
-        assert_eq!(K32Q2_ORIENT[Square::A1.index()], 7);
-        assert_eq!(THREAT_ORIENT[Square::A1.index()], 0);
+        assert_eq!(threat_mirror(Square::A1), 7);
+        assert_eq!(threat_mirror(Square::H1), 0);
+    }
+
+    /// The block is the opponent's queen first, then any heavy piece, then none.
+    #[test]
+    fn the_block_reads_the_opponents_queen_then_any_heavy_piece() {
+        let block = |fen: &str| {
+            let pos = Position::from_fen(fen, false).expect("valid fen");
+            [psq_block(&pos, Color::White), psq_block(&pos, Color::Black)]
+        };
+        assert_eq!(block(START_FEN), [2, 2]);
+        // Only White has a queen: Black's opponent has one, White's does not -- but a
+        // queen is a heavy piece, so White still reads block 1.
+        assert_eq!(block("4k3/8/8/8/8/8/8/3QK3 w - - 0 1"), [1, 2]);
+        // A rook alone is block 1 for both, whoever owns it.
+        assert_eq!(block("4k3/8/8/8/8/8/8/3RK3 w - - 0 1"), [1, 1]);
+        assert_eq!(block("3rk3/8/8/8/8/8/8/4K3 w - - 0 1"), [1, 1]);
+        // Minor pieces and pawns only.
+        assert_eq!(block("3bk3/pp6/8/8/8/8/6PP/3NK3 w - - 0 1"), [0, 0]);
     }
 
     #[test]
@@ -1228,9 +1243,9 @@ mod tests {
     #[test]
     fn the_start_position_has_the_expected_feature_counts() {
         let pos = Position::from_fen(START_FEN, false).expect("valid");
-        let mut k32q2 = Vec::new();
-        k32q2_active(&pos, Color::White, &mut k32q2);
-        assert_eq!(k32q2.len(), 32, "one feature per piece on the board");
+        let mut k32h3 = Vec::new();
+        k32h3_active(&pos, Color::White, &mut k32h3);
+        assert_eq!(k32h3.len(), 32, "one feature per piece on the board");
 
         let mut pp_both = [Vec::new(), Vec::new()];
         pawn_pair_active(&pos, [true, true], &mut pp_both);

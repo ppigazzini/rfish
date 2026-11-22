@@ -48,20 +48,22 @@ reads a different column of weights.
 
 | set | dims | encodes |
 |---|---|---|
-| `K32Q2` | 45056 | own king square × opponent has a queen × (piece, square) |
+| `K32H3` | 67584 | heavy-material block × own king square × (piece, square) |
 | `FullThreats` | 59808 | (attacker, from) attacking (attacked, to) |
 | `PP_3Wide` | 4560 | pairs of pawns within one file of each other |
 
 Three details that are easy to get subtly wrong, and that a wrong answer would not announce:
 
-- **The king-piece bucket has TWO axes.** `K32Q2` keys every index off the perspective's
-  own king square and off whether its OPPONENT has a queen, so a capture of the last queen
-  or a promotion to the first re-indexes the whole set exactly as a king move does. The ply
-  stack stamps both, the roll-forward refuses a chain that crosses either, and both caches
-  below hold one slot per (queen state, king square).
-- **The two orientations are opposites.** `K32Q2` mirrors so the king lands on the
-  **e-h** files; `FullThreats` and `PP_3Wide` mirror so it lands on the **a-d** files. A
-  test asserts they disagree on every square.
+- **The king-piece bucket has TWO axes.** `K32H3` keys every index off the perspective's
+  own king square and off its BLOCK — 2 while its opponent has a queen, else 1 while any
+  rook or queen is on the board, else 0 — so the opponent's last queen leaving, a first one
+  arriving or the last heavy piece going re-indexes the whole set exactly as a king move
+  does. The blocks are contiguous in the weight table, so an index is the block's base plus
+  an index within it, upstream's `psq_weights(block)`. The ply stack stamps both axes, the
+  roll-forward refuses a chain that crosses either, and both caches below hold one slot per
+  (block, king square).
+- **All three sets share one orientation**, since SFNNv19: each mirrors so the king lands on
+  the **e-h** files. Before it, `FullThreats` and `PP_3Wide` mirrored the opposite way.
 - **Threat indices are ranked within the EMPTY-BOARD attack set**, not the occupancy-aware
   one. Which attacks *exist* depends on occupancy; where each sits in the numbering does not.
 - **Same-kind threats are recorded once.** Two pieces of one kind attacking each other are
@@ -916,11 +918,11 @@ HALF — that numbering is a function of the king's file alone — so the child 
 swapping one half out and leaving the other in place:
 
 ```text
-  a      = biases + K32Q2(this position, new king)      the new king square's cache
-  parent = biases + K32Q2(ancestor, old king) + threats(ancestor)
-  b      = biases + K32Q2(ancestor, old king)           the old king square's cache
+  a      = biases + K32H3(this position, new king)      the new king square's cache
+  parent = biases + K32H3(ancestor, old king) + threats(ancestor)
+  b      = biases + K32H3(ancestor, old king)           the old king square's cache
 
-  a + parent - b = biases + K32Q2(this position, new king) + threats(ancestor)
+  a + parent - b = biases + K32H3(this position, new king) + threats(ancestor)
 ```
 
 The biases cancel to exactly one copy, which is the property that makes the three-way sum an
@@ -928,17 +930,18 @@ accumulator rather than a difference; the chain's own threat records then turn
 `threats(ancestor)` into `threats(this position)`. This is upstream's
 `update_accumulator_hybrid` and ../mcfish's `nnue_acc_apply_hybrid_delta`.
 
-Both cache reads share the opponent-queen state, and a king that takes the last queen is
-refused here and refreshes, which is upstream's guard. The derivation would hold across the
+Both cache reads share the K32H3 block, and a king move that changes it — a king taking the
+last queen — is refused here and refreshes, which is upstream's guard. The derivation would hold across the
 change — `a` and `b` read their own slots — and that route was built: it served a pawn taking
 the queen and a promotion as well, and it measured DEARER than the refresh it replaced.
-Refusing it was **−0.1367%** at avx2 and **−0.4775%** at sse41 on `bench 16 1 8`, bit-exact.
+Refusing it was **−0.1367%** at avx2 and **−0.4775%** at sse41 on `bench 16 1 8`, bit-exact,
+measured under K32Q2's queen state.
 
 **It needs a second cache, and that is the part that is a redesign rather than an edit.** The
 king-piece terms have to exist WITHOUT threat rows mixed in, and the refresh cache cannot
 supply them: its entries are whole accumulators and the two halves cannot be separated once
-summed. `EvalScratch::ka_cache` is upstream's `AccumulatorCaches::Cache` — 128 slots per
-perspective, one per (queen state, king square), holding the biases plus the K32Q2 rows,
+summed. `EvalScratch::ka_cache` is upstream's `AccumulatorCaches::Cache` — 192 slots per
+perspective, one per (block, king square), holding the biases plus the K32H3 rows,
 updated by board diff exactly as the refresh cache is.
 
 **What it buys is not the fold — it is that the hybrid builds NO FEATURE SET.** A refresh has

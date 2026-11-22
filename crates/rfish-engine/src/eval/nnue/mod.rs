@@ -43,7 +43,7 @@ use common::{
     HIDDEN_ONE_VAL, L1, L2, L3, LAYER_STACKS, NetReader, NetWriter, OUTPUT_SCALE, VERSION,
     WEIGHT_SCALE_BITS,
 };
-use features::{K32Q2_DIMENSIONS, THREAT_AND_PP_DIMENSIONS};
+use features::{K32H3_DIMENSIONS, THREAT_AND_PP_DIMENSIONS};
 use layers::{AffineLayer, clipped_relu, sqr_clipped_relu};
 use transformer::{EvalScratch, FeatureTransformer};
 
@@ -52,7 +52,7 @@ use transformer::{EvalScratch, FeatureTransformer};
 /// Read from here, never recited into prose: it changes on every net-swapping upstream
 /// sync, and a doc that names the old one sends a reader looking for a file that no longer
 /// exists.
-pub const DEFAULT_NET: &str = "nn-c9e480e92425.nnue";
+pub const DEFAULT_NET: &str = "nn-d1ee674a62ca.nnue";
 
 /// The concatenated activation buffer the two hidden layers share.
 const CONCAT: usize = L2 * 2 + L3 * 2;
@@ -254,7 +254,7 @@ impl Network {
         format!(
             "{}MiB, ({}, {}, {}, {}, 1)",
             bytes / (1024 * 1024),
-            K32Q2_DIMENSIONS + THREAT_AND_PP_DIMENSIONS,
+            K32H3_DIMENSIONS + THREAT_AND_PP_DIMENSIONS,
             L1,
             L2,
             L3
@@ -330,9 +330,9 @@ mod hash {
     use super::common::{L1, L2, L3};
 
     /// The hash each feature set carries, from upstream.
-    const THREAT_HASH: u32 = 0x2e6b_9d04;
-    const PAIR_HASH: u32 = 0x86f2_b1dd;
-    const PSQ_HASH: u32 = 0x32b5_e284;
+    const THREAT_HASH: u32 = 0x2c41_eaea;
+    const PAIR_HASH: u32 = 0x5c80_fa69;
+    const PSQ_HASH: u32 = 0xab00_5cef;
 
     /// Fold a list of component hashes, rotating one bit between each.
     const fn combine(hashes: [u32; 3]) -> u32 {
@@ -425,7 +425,7 @@ mod tests {
         // Derived from the layer shapes; if a shape moves these move with it, which is the
         // whole point. The values are recorded so a refactor that silently changes the
         // derivation is caught here rather than by a net that will not load.
-        assert_eq!(hash::FEATURE_TRANSFORMER, 0x86FE_FD2F);
+        assert_eq!(hash::FEATURE_TRANSFORMER, 0xA306_0B95);
         assert_eq!(hash::NETWORK, hash::FEATURE_TRANSFORMER ^ hash::ARCHITECTURE);
         assert_ne!(hash::ARCHITECTURE, 0);
     }
