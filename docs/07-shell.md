@@ -212,7 +212,10 @@ Two things follow from it, and both had to move together:
   one cannot see a `stop` until the search it would stop has already ended. `go infinite`
   followed by `stop` hung forever, and that is the shape every analysis GUI uses. Stdin is
   drained by its own thread; `stop` and `ponderhit` act there, against the shared atomics
-  they were built for, and everything else queues and dispatches in order.
+  they were built for, and everything else queues and dispatches in order. `setoption` and
+  `export_net` raise the stop there too before they queue: since upstream a14e8ec4d they end
+  a running search, bounded or not, and apply once it has ended, as upstream's `apply_idle`
+  does. Every other command still waits a bounded search out.
 
   **A `quit` interrupts the search only when the search cannot end by itself.** Upstream
   aborts unconditionally, and this is a deliberate divergence: `go depth 13` followed by
@@ -322,7 +325,11 @@ contract:
 3. `ponderhit` converts a pondering search and it still ends with exactly one `bestmove`;
 4. `quit` during a running search exits. **The timeout is the assertion**: before `go` ran off
    the UCI thread this would have hung, and a hang in CI reads as an infrastructure flake
-   rather than as the engine ignoring `quit`.
+   rather than as the engine ignoring `quit`;
+5. the same `quit`, read before the main loop has dispatched the `go` in front of it, still
+   exits;
+6. a `setoption` inside a running BOUNDED search ends it with one legal `bestmove` and then
+   answers `isready`, within 30s of a 200M-node bound that would otherwise run for minutes.
 
 The legal move list comes from the engine's own `go perft 1` rather than being written down
 here, so the gate carries no expectation of its own — and reading anything but 20 root moves

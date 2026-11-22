@@ -480,12 +480,45 @@ pub(crate) fn async_check() -> Result<Outcome, String> {
         }
     }
 
+    // 6. A `setoption` inside a running BOUNDED search ends it, as upstream's `apply_idle` does
+    //    since a14e8ec4d: one legal bestmove, then the option applies and `isready` answers.
+    //    The bound is far past the deadline -- 200M nodes is minutes here -- so a search that
+    //    ignored the setoption and ran its bound out would miss the 30s and fail. A depth
+    //    bound would not do: `go depth 30` from the start position ends in seconds.
+    let out = drive_async(
+        &engine,
+        &cwd,
+        &["position startpos", "go nodes 200000000"],
+        2,
+        &["setoption name Hash value 16", "isready"],
+        30,
+    )?;
+    let moves: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("bestmove ")).collect();
+    match moves.as_slice() {
+        [one] if out.lines().any(|l| l == "readyok") => {
+            let played = one.split_whitespace().next().unwrap_or_default();
+            if legal.iter().any(|m| m == played) {
+                println!(
+                    "  \x1b[32mok\x1b[0m a setoption ended a running bounded search with one legal bestmove ({played})"
+                );
+            } else {
+                problems.push(format!("setoption: bestmove {played:?} is not legal"));
+            }
+        }
+        [_] => problems.push("setoption: no readyok within 30s of the setoption".to_string()),
+        other => problems.push(format!(
+            "setoption: expected exactly one bestmove within 30s, got {} -- did the search run \
+             its 200M-node bound out instead of stopping?",
+            other.len()
+        )),
+    }
+
     for p in &problems {
         eprintln!("  \x1b[31m{p}\x1b[0m");
     }
     println!(
-        "async-check: {} of 5 invariants hold on the interrupted-search path",
-        5 - problems.len()
+        "async-check: {} of 6 invariants hold on the interrupted-search path",
+        6 - problems.len()
     );
     Ok(Outcome::check(problems.is_empty(), format!("{} invariant(s) broken", problems.len())))
 }

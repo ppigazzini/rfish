@@ -1333,7 +1333,14 @@ pub(crate) fn run(input: impl BufRead + Send + 'static, output: impl Write) -> b
                 || trimmed == "bench"
                 || trimmed.starts_with("go ")
                 || trimmed.starts_with("bench ");
+            // Upstream's `apply_idle` (a14e8ec4d): a command that mutates what a search reads
+            // STOPS a running search, bounded or not, and applies once it has ended. Raised
+            // here for the same reason `stop` is: the search is running where the command
+            // would be dispatched, so the dispatch cannot reach it.
+            let mutates =
+                matches!(trimmed.split_ascii_whitespace().next(), Some("setoption" | "export_net"));
             match trimmed {
+                _ if mutates => shared.request_stop(),
                 "stop" => shared.request_stop(),
                 "ponderhit" => shared.ponder_hit(),
                 // Latched rather than tested: at this instant the `go` in front of it may not
