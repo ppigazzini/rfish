@@ -93,6 +93,11 @@ pub struct StateInfo {
     pub check_squares: [Bitboard; PIECE_TYPE_NB],
     /// The piece the move captured, or [`Piece::NONE`].
     pub captured_piece: Piece,
+    /// The move that made this state: [`Move::NONE`] after a null move or a FEN.
+    ///
+    /// The repetition walks read it to rebuild an earlier board, which is how a key match is
+    /// verified against the piece placement without packing the board on every make.
+    pub last_move: Move,
     /// Distance in plies back to the previous occurrence of this position: positive for
     /// the first repetition, NEGATIVE when that earlier occurrence was itself a
     /// repetition, 0 when never repeated. The sign is the whole encoding.
@@ -118,6 +123,7 @@ impl StateInfo {
             pinners: [Bitboard::EMPTY; COLOR_NB],
             check_squares: [Bitboard::EMPTY; PIECE_TYPE_NB],
             captured_piece: Piece::NONE,
+            last_move: Move::NONE,
             repetition: 0,
         }
     }
@@ -223,6 +229,20 @@ impl fmt::Display for FenError {
 /// `WHITE` or `BLACK`, as upstream spells a colour inside an error message.
 fn upper(c: Color) -> &'static str {
     if c == Color::White { "WHITE" } else { "BLACK" }
+}
+
+/// Two boards hold the same piece on every square.
+///
+/// Compared as eight words. `[Piece; 64] == [Piece; 64]` compiles to a 64-step element loop
+/// -- a newtype does not get the bytewise compare a `[u8]` does -- and that loop was 246,144
+/// of the 355,474 instructions 641 calls to `reached_by_relocation` cost in a profiled
+/// `bench 16 1 8`.
+#[inline(always)]
+fn same_board(a: &[Piece; SQUARE_NB], b: &[Piece; SQUARE_NB]) -> bool {
+    let words = |x: &[Piece; SQUARE_NB]| -> [u64; SQUARE_NB / 8] {
+        core::array::from_fn(|w| u64::from_le_bytes(core::array::from_fn(|k| x[w * 8 + k].raw())))
+    };
+    words(a) == words(b)
 }
 
 /// A chess position, plus the state chain reaching it.
@@ -1273,7 +1293,9 @@ impl Position {
                 // The move must be unobstructed. `between_bb` excludes both ends here by
                 // XORing the destination back out, so an occupied destination is fine — the
                 // move would be a capture, which is still a move to that square.
-                if ((between_bb(s1, s2) ^ Bitboard::from_square(s2)) & self.occupied()).is_empty() {
+                if ((between_bb(s1, s2) ^ Bitboard::from_square(s2)) & self.occupied()).is_empty()
+                    && self.reached_by_relocation(i as usize, s1, s2)
+                {
                     if ply.get() > i {
                         return true;
                     }
@@ -1466,11 +1488,13 @@ impl Position {
         // Archive the parent, then carry the child forward IN PLACE. Every field of the
         // RECOMPUTED group is written before this returns: `key` and `checkers` below,
         // `captured_piece` on both arms, `blockers`, `pinners` and `check_squares` by
-        // `set_check_info`, and `repetition` by `set_repetition`; a field added to that
+        // `set_check_info`, `last_move` straight after the push, and `repetition` by
+        // `set_repetition`; a field added to that
         // group must be written here too, because nothing clears it any more. Building a
         // child state locally and swapping it in instead copies the whole record twice per
         // do/undo pair rather than once.
         self.prev.push(self.st.clone());
+        self.st.last_move = m;
         let mut key = self.st.key ^ zobrist::side();
         self.st.rule50 += 1;
         self.st.plies_from_null += 1;
@@ -1620,6 +1644,59 @@ impl Position {
         self.do_move_checked(m, gives_check);
     }
 
+    /// The board as it stood `plies` states ago, rebuilt by undoing the moves in between.
+    ///
+    /// Upstream keeps the board packed in every state (`piecePlacement`) and compares that;
+    /// rfish rebuilds it only when a walk has ALREADY matched the key, so the make pays one
+    /// `Move` store instead of a 32-byte pack. The two answer the same question exactly:
+    /// the packing is a bijection of the board.
+    ///
+    /// Valid only inside the reversible window, `plies <= min(rule50, plies_from_null)`,
+    /// which is the only place the walks look. Every move in it is a relocation or a
+    /// castling -- a capture or a pawn move resets `rule50`, a null move `plies_from_null` --
+    /// so undoing one moves a piece back and leaves its destination empty.
+    #[cold]
+    #[inline(never)]
+    fn board_back(&self, plies: usize) -> [Piece; SQUARE_NB] {
+        let mut b = self.board;
+        let top = self.prev.len();
+        for k in (top + 1 - plies..=top).rev() {
+            let m = if k == top { self.st.last_move } else { self.prev[k].last_move };
+            debug_assert!(m.is_ok(), "the reversible window holds no null move");
+            let (from, to) = (m.from(), m.to());
+            if m.move_type() == MoveType::Castling {
+                // Clear both destinations before refilling the origins: in Chess960 they
+                // can overlap.
+                let king_side = to > from;
+                let king_to = Square::make(if king_side { File::G } else { File::C }, from.rank());
+                let rook_to = Square::make(if king_side { File::F } else { File::D }, from.rank());
+                let (king, rook) = (b[king_to.index()], b[rook_to.index()]);
+                b[king_to.index()] = Piece::NONE;
+                b[rook_to.index()] = Piece::NONE;
+                b[from.index()] = king;
+                b[to.index()] = rook;
+            } else {
+                debug_assert_ne!(b[to.index()].piece_type(), PieceType::Pawn);
+                b[from.index()] = b[to.index()];
+                b[to.index()] = Piece::NONE;
+            }
+        }
+        b
+    }
+
+    /// True when moving the piece between `s1` and `s2` turns this board into the one
+    /// `plies` states ago -- upstream's nibble swap and placement compare in
+    /// `upcoming_repetition`.
+    #[cold]
+    #[inline(never)]
+    fn reached_by_relocation(&self, plies: usize, s1: Square, s2: Square) -> bool {
+        // Swapped in the rebuilt copy rather than in a copy of the live board: a swap is its
+        // own inverse, so the test is the same and one 64-byte copy is saved.
+        let mut then = self.board_back(plies);
+        then.swap(s1.index(), s2.index());
+        same_board(&then, &self.board)
+    }
+
     /// Fill in the current state's repetition distance.
     ///
     /// Positive for a first repetition, NEGATIVE when the earlier occurrence was itself a
@@ -1639,12 +1716,36 @@ impl Position {
             let idx = st_index.checked_sub(i as usize);
             let Some(idx) = idx else { break };
             if self.prev[idx].key == key {
-                repetition = if self.prev[idx].repetition != 0 { -i } else { i };
+                // A key match is where the placement check begins, and it is settled out of
+                // line: the walk inside the make stays a key compare, which is all it was
+                // before 54a85ce8f.
+                repetition = self.verified_repetition(i);
                 break;
             }
             i += 2;
         }
         self.st.repetition = repetition;
+    }
+
+    /// The repetition distance, walking on from `first` -- a ply distance whose key already
+    /// matched -- and requiring the key AND the placement, as upstream's 54a85ce8f does: a
+    /// key match alone scored a false threefold whenever two different boards collided. A
+    /// match the boards refute is passed over and the walk carries on, exactly as upstream's.
+    #[cold]
+    #[inline(never)]
+    fn verified_repetition(&self, first: i32) -> i32 {
+        let st_index = self.prev.len();
+        let key = self.st.key;
+        let end = self.st.rule50.min(self.st.plies_from_null);
+        let mut i = first;
+        while i <= end {
+            let Some(idx) = st_index.checked_sub(i as usize) else { break };
+            if self.prev[idx].key == key && same_board(&self.board_back(i as usize), &self.board) {
+                return if self.prev[idx].repetition != 0 { -i } else { i };
+            }
+            i += 2;
+        }
+        0
     }
 
     /// Undo the last move.
@@ -1714,6 +1815,7 @@ impl Position {
         // can repeat with the same side to move — so the repetition walk is cut here.
         self.st.plies_from_null = 0;
         self.st.captured_piece = Piece::NONE;
+        self.st.last_move = Move::NONE;
         self.st.checkers = Bitboard::EMPTY;
 
         self.side_to_move = !self.side_to_move;
@@ -2365,6 +2467,41 @@ mod tests {
     }
 
     const QUEEN_VALUE_MINUS_ONE: Value = Value::new(2537);
+
+    #[test]
+    fn the_rebuilt_board_is_the_board_that_stood_there() {
+        // Relocations and castlings, both colours, standard and Chess960: every board the
+        // reversible window can hold, snapshotted as it is reached and rebuilt from the end.
+        for (fen, chess960, moves) in [
+            (
+                "r3k2r/pppq1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPQ1PPP/R3K2R w KQkq - 0 1",
+                false,
+                &["e1g1", "e8c8", "f3g5", "d7e7", "c3d5", "e7d7", "f1e1", "d8e8"][..],
+            ),
+            (
+                "1r2k1r1/pppppppp/8/8/8/8/PPPPPPPP/1R2K1R1 w GBgb - 0 1",
+                true,
+                &["e1b1", "e8g8", "c1b1", "g8h8", "b1c1", "h8g8"][..],
+            ),
+        ] {
+            let mut pos = Position::blank();
+            pos.set(fen, chess960).expect("valid fen");
+            let mut seen = vec![*pos.board()];
+            for uci in moves {
+                let m = crate::board::movegen::parse_uci_move(&pos, uci)
+                    .unwrap_or_else(|| panic!("{uci} in {fen}"));
+                pos.do_move(m);
+                seen.push(*pos.board());
+            }
+            for back in 0..=moves.len() {
+                assert_eq!(
+                    pos.board_back(back),
+                    seen[moves.len() - back],
+                    "{back} plies back from the end of {fen}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn repetition_is_detected_and_signed() {
