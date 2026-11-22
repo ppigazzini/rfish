@@ -1914,6 +1914,9 @@ impl SearchWorker {
                 // `test`, `cmovns` ahead of the `sar $0x8` -- and the shift is the sar alone.
                 let mut r =
                     7 + depth / 3 + ((self.stack[si.index()].static_eval - beta) >> 8).max(0);
+                // Odd-numbered threads reduce one ply less, so half of a Lazy-SMP pool
+                // verifies a null-move cutoff more carefully.
+                r -= (self.id & 1) as i32;
                 // Halved while hunting a mate, so the null move cannot hide a forced line.
                 if self.seek_mate {
                     r -= r / 2;
