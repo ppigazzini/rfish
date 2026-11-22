@@ -1067,6 +1067,10 @@ impl SearchWorker {
     fn iterative_deepening(&mut self, tt: &TranspositionTable, sink: &mut dyn InfoSink) -> bool {
         let main_thread = self.id == 0;
         let mut uci_pv_sent = false;
+        // The main worker's own nodes when the FIRST line of the iteration finished: what the
+        // best move's effort is a share of. Every later MultiPV line is searched after it and
+        // is no part of that move's effort.
+        let mut total_effort: u64 = 0;
 
         for e in &mut self.stack {
             *e = StackEntry::default();
@@ -1118,7 +1122,9 @@ impl SearchWorker {
         let mut time_reduction = 1.0f64;
         let mut tot_best_move_changes = 0.0f64;
         let mut iter_idx = 0usize;
-        let mut best_value = -VALUE_INFINITE;
+        // Unset until the first search writes it, as upstream's is since e345d9655: once the
+        // time manager reads the first line's score (afc3e378c), nothing reads it earlier.
+        let mut best_value;
 
         // The low-ply table is refilled every search rather than cleared: a positive
         // starting value makes an untried move near the root sort above one that has
@@ -1290,6 +1296,10 @@ impl SearchWorker {
                     uci_pv_sent = pv_idx + 1 == self.multi_pv;
                 }
 
+                if main_thread && pv_idx == 0 {
+                    total_effort = self.nodes;
+                }
+
                 if self.shared.stopped() {
                     break;
                 }
@@ -1371,13 +1381,15 @@ impl SearchWorker {
                 && !self.shared.stop_on_ponderhit()
             {
                 let nodes = self.pool_nodes();
-                let nodes_effort = self.root_moves[0].effort * 100_000 / nodes.max(1);
+                let nodes_effort = self.root_moves[0].effort * 100_000 / total_effort.max(1);
 
                 // A score that is falling relative to the last move, or to recent
                 // iterations, is a reason to keep looking rather than to bank the answer.
+                // The FIRST line's score: under MultiPV the last line searched is not it.
+                let best = self.root_moves[0].score;
                 let falling_eval = (11.48
-                    + 2.30 * f64::from(self.best_previous_average_score - best_value)
-                    + 1.1 * f64::from(self.iter_value[iter_idx] - best_value))
+                    + 2.30 * f64::from(self.best_previous_average_score - best)
+                    + 1.1 * f64::from(self.iter_value[iter_idx] - best))
                     / 100.0;
                 let falling_eval = falling_eval.clamp(0.576, 1.728);
 
@@ -1435,7 +1447,7 @@ impl SearchWorker {
                 }
             }
 
-            self.iter_value[iter_idx] = best_value;
+            self.iter_value[iter_idx] = self.root_moves[0].score;
             iter_idx = (iter_idx + 1) & 3;
         }
 
