@@ -19,12 +19,12 @@
 //! A cluster is 32 bytes holding three entries, because the number of clusters a `Hash`
 //! setting buys is `mb * 1024 * 1024 / 32`, and that number decides which positions
 //! collide. A larger cluster would change the collision pattern and therefore the node
-//! count, so the packing below fits three 10-byte entries into four `u64` words with no
-//! field straddling a word:
+//! count. Upstream's cluster is a word of three 21-bit key tags followed by three 8-byte
+//! entries, and each of those is one `u64` here, so no field straddles a word:
 //!
 //! ```text
-//! word[0..3]  entry i: key16 | move16 | value16 | eval16
-//! word[3]     byte 2i = depth8, byte 2i+1 = gen_bound8, bytes 6..8 unused
+//! keys        bits 21i..21i+21 = entry i's key tag, bit 63 unused
+//! entry[i]    depth8 | gen_bound8 | move16 | value16 | eval16
 //! ```
 //!
 //! Golden: `Stockfish/src/tt.h`, `Stockfish/src/tt.cpp`.
@@ -56,14 +56,23 @@ const BOUND_SHIFT: u8 = GENERATION_BITS;
 /// Where the PV flag sits in `gen_bound8`.
 const PV_SHIFT: u8 = BOUND_SHIFT + 2;
 
-/// One cluster: three entries, packed into four atomic words.
+/// Bits of the key each entry is verified by.
+const KEY_BITS: u32 = 21;
+/// The mask isolating one key tag.
+const KEY_MASK: u64 = (1 << KEY_BITS) - 1;
+/// The lowest bit of each of the three tags in [`Cluster::keys`].
+const KEY_LSB: u64 = 1 | (1 << KEY_BITS) | (1 << (2 * KEY_BITS));
+/// The highest bit of each of the three tags.
+const KEY_MSB: u64 = KEY_LSB << (KEY_BITS - 1);
+
+/// One cluster: three key tags in one word, and three entries.
 #[derive(Debug, Default)]
 #[repr(align(32))]
 struct Cluster {
-    /// `key16 | move16 | value16 | eval16` for entry `i`.
-    main: [AtomicU64; CLUSTER_SIZE],
-    /// `depth8` and `gen_bound8` for all three entries, two bytes each.
-    meta: AtomicU64,
+    /// The low [`KEY_BITS`] bits of entry `i`'s key at bit `KEY_BITS * i`.
+    keys: AtomicU64,
+    /// `depth8 | gen_bound8 | move16 | value16 | eval16` for entry `i`.
+    entry: [AtomicU64; CLUSTER_SIZE],
 }
 
 /// A decoded entry, as the search reads it.
@@ -92,7 +101,7 @@ pub struct TTProbe {
     pub data: TTData,
     cluster: usize,
     slot: usize,
-    key16: u16,
+    key: u64,
 }
 
 /// The transposition table.
@@ -149,10 +158,10 @@ impl TranspositionTable {
     /// Forget everything. Called on `ucinewgame`.
     pub fn clear(&self) {
         for c in &self.clusters {
-            for w in &c.main {
-                w.store(0, Ordering::Relaxed);
+            c.keys.store(0, Ordering::Relaxed);
+            for e in &c.entry {
+                e.store(0, Ordering::Relaxed);
             }
-            c.meta.store(0, Ordering::Relaxed);
         }
         self.generation.store(0, Ordering::Relaxed);
     }
@@ -196,41 +205,40 @@ impl TranspositionTable {
     #[inline(always)]
     pub fn probe(&self, key: TtKey) -> TTProbe {
         let cluster = self.cluster_of(key);
-        let key16 = key.get() as u16;
+        let key = key.get() & KEY_MASK;
         let c = &self.clusters[cluster];
-        let meta = c.meta.load(Ordering::Relaxed);
 
-        for slot in 0..CLUSTER_SIZE {
-            let main = c.main[slot].load(Ordering::Relaxed);
-            if (main as u16) == key16 {
-                let (depth8, gen_bound) = unpack_meta(meta, slot);
-                // A key match is not yet a hit: the entry must also be OCCUPIED. An entry
-                // whose depth was penalised down to zero keeps its key but has been
-                // retired, and reading it as a hit would resurrect a score the search
-                // deliberately discarded.
-                //
-                // The generation is NOT refreshed here. Upstream's probe only reads, and
-                // refreshing on read would keep a stale entry alive across generations and
-                // change which entries the replacement sweep evicts.
-                return TTProbe {
-                    hit: depth8 != 0,
-                    data: decode(main, depth8, gen_bound),
-                    cluster,
-                    slot,
-                    key16,
-                };
-            }
+        let matches = tag_matches(c.keys.load(Ordering::Relaxed), key);
+        if matches != 0 {
+            let slot = (matches.trailing_zeros() / KEY_BITS) as usize;
+            let e = c.entry[slot].load(Ordering::Relaxed);
+            let (depth8, gen_bound) = (e as u8, (e >> 8) as u8);
+            // A key match is not yet a hit: the entry must also be OCCUPIED. An entry
+            // whose depth was penalised down to zero keeps its key but has been
+            // retired, and reading it as a hit would resurrect a score the search
+            // deliberately discarded.
+            //
+            // The generation is NOT refreshed here. Upstream's probe only reads, and
+            // refreshing on read would keep a stale entry alive across generations and
+            // change which entries the replacement sweep evicts.
+            return TTProbe {
+                hit: depth8 != 0,
+                data: decode(e, depth8, gen_bound),
+                cluster,
+                slot,
+                key,
+            };
         }
 
         // Miss: pick the replacement victim now, by upstream's rule -- prefer the entry
         // whose depth, discounted eight-fold by how many generations old it is, is lowest.
         let cur_gen = self.generation8();
         let mut victim = 0usize;
-        let (d0, g0) = unpack_meta(meta, 0);
-        let mut worst = i32::from(d0) - 8 * i32::from(relative_age(g0, cur_gen));
+        let e0 = c.entry[0].load(Ordering::Relaxed);
+        let mut worst = i32::from(e0 as u8) - 8 * i32::from(relative_age((e0 >> 8) as u8, cur_gen));
         for slot in 1..CLUSTER_SIZE {
-            let (depth8, gen_bound) = unpack_meta(meta, slot);
-            let score = i32::from(depth8) - 8 * i32::from(relative_age(gen_bound, cur_gen));
+            let e = c.entry[slot].load(Ordering::Relaxed);
+            let score = i32::from(e as u8) - 8 * i32::from(relative_age((e >> 8) as u8, cur_gen));
             // Strictly greater, so a tie keeps the earlier slot -- upstream compares the
             // incumbent against the candidate in that direction.
             if worst > score {
@@ -239,7 +247,7 @@ impl TranspositionTable {
             }
         }
 
-        TTProbe { hit: false, data: empty_data(), cluster, slot: victim, key16 }
+        TTProbe { hit: false, data: empty_data(), cluster, slot: victim, key }
     }
 
     /// Write an entry back into the slot `probe` selected.
@@ -262,10 +270,11 @@ impl TranspositionTable {
         is_pv: bool,
     ) {
         let c = &self.clusters[probe.cluster];
-        let main = c.main[probe.slot].load(Ordering::Relaxed);
-        let meta = c.meta.load(Ordering::Relaxed);
-        let (old_depth8, old_gen) = unpack_meta(meta, probe.slot);
-        let same_key = (main as u16) == probe.key16;
+        let shift = KEY_BITS * probe.slot as u32;
+        let keys = c.keys.load(Ordering::Relaxed);
+        let same_key = (keys >> shift) & KEY_MASK == probe.key;
+        let e = c.entry[probe.slot].load(Ordering::Relaxed);
+        let (old_depth8, old_gen) = (e as u8, (e >> 8) as u8);
         let cur_gen = self.generation8();
 
         // Keep the previous move when this search found none for the SAME position: a move
@@ -274,9 +283,8 @@ impl TranspositionTable {
         // replacement test and independently of it -- an entry that survives the test
         // still takes the new move.
         let packed_move =
-            if !mv.is_none() || !same_key { u64::from(mv.raw()) } else { (main >> 16) & 0xFFFF };
-        let main = (main & !(0xFFFFu64 << 16)) | (packed_move << 16);
-        c.main[probe.slot].store(main, Ordering::Relaxed);
+            if !mv.is_none() || !same_key { u64::from(mv.raw()) } else { (e >> 16) & 0xFFFF };
+        let e = (e & !(0xFFFFu64 << 16)) | (packed_move << 16);
 
         if bound == Bound::Exact
             || !same_key
@@ -286,12 +294,13 @@ impl TranspositionTable {
             let depth8 = (depth - DEPTH_NONE).clamp(0, 255) as u8;
             let gen_bound =
                 cur_gen | ((bound as u8) << BOUND_SHIFT) | (u8::from(is_pv) << PV_SHIFT);
-            let packed = u64::from(probe.key16)
+            let packed = u64::from(depth8)
+                | (u64::from(gen_bound) << 8)
                 | (packed_move << 16)
                 | (u64::from(value.get() as i16 as u16) << 32)
                 | (u64::from(eval.get() as i16 as u16) << 48);
-            c.main[probe.slot].store(packed, Ordering::Relaxed);
-            c.meta.store(pack_meta(meta, probe.slot, depth8, gen_bound), Ordering::Relaxed);
+            c.keys.store((keys & !(KEY_MASK << shift)) | (probe.key << shift), Ordering::Relaxed);
+            c.entry[probe.slot].store(packed, Ordering::Relaxed);
             return;
         }
 
@@ -299,19 +308,21 @@ impl TranspositionTable {
         // of depth each time it blocks a write, so it eventually stops winning the
         // replacement test. Without it, elementary mates can be missed: the entry that
         // proves the mate at the wrong distance never yields its slot.
+        let mut e = e;
         if i32::from(old_depth8) + DEPTH_NONE >= 5
             && Bound::from_raw((old_gen >> BOUND_SHIFT) & 3) != Bound::Exact
         {
-            let v16 = Value::new(i32::from((main >> 32) as u16 as i16));
+            let v16 = Value::new(i32::from((e >> 32) as u16 as i16));
             if v16.abs() < crate::board::types::VALUE_INFINITE
                 && crate::board::types::is_decisive(v16)
             {
                 // Saturating at zero: a racy read could otherwise underflow into the
                 // "occupied" encoding of a far deeper entry.
                 let aged = (i32::from(old_depth8) - 1).max(0) as u8;
-                c.meta.store(pack_meta(meta, probe.slot, aged, old_gen), Ordering::Relaxed);
+                e = (e & !0xFF) | u64::from(aged);
             }
         }
+        c.entry[probe.slot].store(e, Ordering::Relaxed);
     }
 
     /// Reduce the stored depth of the slot `probe` selected.
@@ -320,11 +331,10 @@ impl TranspositionTable {
     /// the current window: the entry is not wrong, but it is not answering questions
     /// either, and letting it keep a deep slot crowds out entries that would.
     pub fn penalize(&self, probe: TTProbe, penalty: i32) {
-        let c = &self.clusters[probe.cluster];
-        let meta = c.meta.load(Ordering::Relaxed);
-        let (depth8, gen_bound) = unpack_meta(meta, probe.slot);
-        let reduced = (i32::from(depth8) - penalty).max(0) as u8;
-        c.meta.store(pack_meta(meta, probe.slot, reduced, gen_bound), Ordering::Relaxed);
+        let e = &self.clusters[probe.cluster].entry[probe.slot];
+        let v = e.load(Ordering::Relaxed);
+        let reduced = (i32::from(v as u8) - penalty).max(0) as u8;
+        e.store((v & !0xFF) | u64::from(reduced), Ordering::Relaxed);
     }
 
     /// Per-mille of the table holding entries no older than `max_age` generations, as
@@ -343,9 +353,9 @@ impl TranspositionTable {
         let cur_gen = self.generation8();
         let mut used = 0u32;
         for c in &self.clusters[..n] {
-            let meta = c.meta.load(Ordering::Relaxed);
-            for slot in 0..CLUSTER_SIZE {
-                let (depth8, gen_bound) = unpack_meta(meta, slot);
+            for e in &c.entry {
+                let e = e.load(Ordering::Relaxed);
+                let (depth8, gen_bound) = (e as u8, (e >> 8) as u8);
                 if depth8 != 0 && relative_age(gen_bound, cur_gen) <= max_age {
                     used += 1;
                 }
@@ -353,6 +363,19 @@ impl TranspositionTable {
         }
         used / CLUSTER_SIZE as u32
     }
+}
+
+/// All three tags of `keys` compared with `key` at once: the lowest set bit of the result
+/// is the top bit of the first slot whose tag equals `key`, and zero means none does.
+///
+/// A tag equal to `key` is a zero block in the XOR, and subtracting one from every block
+/// borrows out of exactly the zero ones. A block ABOVE the first zero one may take that
+/// borrow and read as a false match, but never one below it, so the lowest set bit is the
+/// first slot a scan would stop at -- this is that scan, not a different rule.
+#[inline(always)]
+fn tag_matches(keys: u64, key: u64) -> u64 {
+    let xors = keys ^ (KEY_LSB * key);
+    xors.wrapping_sub(KEY_LSB) & !xors & KEY_MSB
 }
 
 /// How many generations old an entry is, counted like a clock: `0 - 1 == 31`.
@@ -365,26 +388,11 @@ fn relative_age(gen_bound: u8, current: u8) -> u8 {
     current.wrapping_sub(gen_bound) & GENERATION_MASK
 }
 
-/// The two metadata bytes for `slot`.
-#[inline(always)]
-fn unpack_meta(meta: u64, slot: usize) -> (u8, u8) {
-    let shift = slot * 16;
-    ((meta >> shift) as u8, (meta >> (shift + 8)) as u8)
-}
-
-/// `meta` with `slot`'s two metadata bytes replaced.
-#[inline(always)]
-fn pack_meta(meta: u64, slot: usize, depth8: u8, gen_bound: u8) -> u64 {
-    let shift = slot * 16;
-    let cleared = meta & !(0xFFFFu64 << shift);
-    cleared | (u64::from(depth8) << shift) | (u64::from(gen_bound) << (shift + 8))
-}
-
-fn decode(main: u64, depth8: u8, gen_bound: u8) -> TTData {
+fn decode(e: u64, depth8: u8, gen_bound: u8) -> TTData {
     TTData {
-        mv: Move::from_raw((main >> 16) as u16),
-        value: Value::new(i32::from((main >> 32) as u16 as i16)),
-        eval: Value::new(i32::from((main >> 48) as u16 as i16)),
+        mv: Move::from_raw((e >> 16) as u16),
+        value: Value::new(i32::from((e >> 32) as u16 as i16)),
+        eval: Value::new(i32::from((e >> 48) as u16 as i16)),
         depth: DEPTH_NONE + i32::from(depth8),
         bound: Bound::from_raw((gen_bound >> BOUND_SHIFT) & 3),
         is_pv: gen_bound & (1 << PV_SHIFT) != 0,
@@ -494,8 +502,8 @@ mod tests {
     #[test]
     fn three_entries_share_a_cluster_without_disturbing_each_other() {
         let tt = TranspositionTable::new(1);
-        // Keys differing only in the low 16 bits land in the same cluster but different
-        // slots, which is exactly what the packed metadata word has to keep separate.
+        // Keys differing only in the low 21 bits land in the same cluster but different
+        // slots, which is exactly what the packed key word has to keep separate.
         let base = 0xDEAD_BEEF_0000_0000u64;
         for i in 0..3u64 {
             let p = tt.probe(tt_key(base | i));
@@ -515,6 +523,45 @@ mod tests {
             assert_eq!(q.data.mv.raw(), 100 + i as u16);
             assert_eq!(q.data.depth, i as i32);
         }
+    }
+
+    #[test]
+    fn the_tag_match_is_the_first_slot_a_scan_would_find() {
+        // Tags drawn from four values so equal tags -- and so false matches above a true
+        // one -- are common, including the all-zero tag an empty slot carries.
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let pool = [0, 1, KEY_MASK, 0x1234 & KEY_MASK];
+        for _ in 0..20_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let tags = [0, 1, 2].map(|i| pool[((x >> (2 * i)) & 3) as usize]);
+            let keys = tags[0] | (tags[1] << KEY_BITS) | (tags[2] << (2 * KEY_BITS));
+            let key = pool[((x >> 6) & 3) as usize];
+            let scan = tags.iter().position(|&t| t == key);
+            let m = tag_matches(keys, key);
+            let swar = (m != 0).then(|| (m.trailing_zeros() / KEY_BITS) as usize);
+            assert_eq!(swar, scan, "tags {tags:x?}, key {key:x}");
+        }
+    }
+
+    #[test]
+    fn keys_differing_only_in_bits_16_to_20_are_told_apart() {
+        // The 16-bit tag read these two as the same position; the 21-bit one must not.
+        let tt = TranspositionTable::new(1);
+        let a = 0xDEAD_BEEF_0000_1234u64;
+        let b = a | (1 << 18);
+        tt.store(
+            tt.probe(tt_key(a)),
+            Move::NONE,
+            Value::new(7),
+            VALUE_ZERO,
+            5,
+            Bound::Exact,
+            false,
+        );
+        assert!(tt.probe(tt_key(a)).hit);
+        assert!(!tt.probe(tt_key(b)).hit);
     }
 
     #[test]
