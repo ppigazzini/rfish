@@ -1074,7 +1074,7 @@ impl Engine {
         let _ = writeln!(out, "{rule}");
         let _ = writeln!(out, "|   Bucket   | Evaluation |");
         let _ = writeln!(out, "{rule}");
-        for (b, &v) in t.positional.iter().enumerate() {
+        for (b, &v) in t.positional[..t.stored].iter().enumerate() {
             // Upstream's `std::left << std::setw(10)`: two-digit buckets exist since SFNNv18.
             let mut row = format!("|  {b:<10}|  ");
             row.push_str(&self.aligned_dot(v));

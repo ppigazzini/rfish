@@ -31,10 +31,15 @@ end of this page carries the gap to upstream and every attempt that failed to cl
                                                                        fc_2 (128→1)
 ```
 
-Thirty-two output stacks exist, four per piece-count bucket: `(pieces - 1) / 4 * 4` picks
-the group, and bit 1 (the side to move has a queen) and bit 0 (its opponent has one) pick
-the stack within it. Its output, scaled down, is the one raw score the blend below holds
-against the material count. There is no PSQT head: upstream's SFNNv17 (`a17c0ce28`) removed
+Upstream's SFNNv20 (`266472790`) selects the output stack by a key of 192, built from four
+facts: the material band `(pieces - 1) / 4`; the queens, 2 if the side to move has one plus 1
+if its opponent does; the pawn layout, 0 with pawns on both halves of the board (files a-d and
+e-h), 1 with pawns on one half only, 2 with none; and whether either side has two or more
+officers, pieces that are neither pawn nor king. Most keys never occur in a game, so the net
+stores fewer heads and carries its own table from each key to the head that answers it. The
+loader checks that table as upstream does -- every key falls back, in one hop, to a key that
+owns a head -- and `eval` prints one row per STORED head. The chosen head's output, scaled
+down, is the one raw score the blend below holds against the material count. There is no PSQT head: upstream's SFNNv17 (`a17c0ce28`) removed
 it, and with it the eight-bucket `i32` accumulator that every fold below used to carry beside
 the `i16` one. Upstream's SFNNv18 (`5c4cef0bf`) went from eight stacks to thirty-two, made
 every transformer weight `i8`, and dropped the LEB128 compression: each block in the file is

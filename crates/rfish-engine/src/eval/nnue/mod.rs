@@ -14,9 +14,12 @@
 //!                                                                        fc_2 (128→1)
 //! ```
 //!
-//! Thirty-two independent output stacks exist; the material count and which sides have a
-//! queen select one, and its output is the network's whole answer. Upstream `a17c0ce28`
-//! removed the PSQT head that used to be summed beside it.
+//! Independent output stacks exist, and four facts about the position select one: the
+//! material band, which sides have a queen, where the pawns stand, and whether either side
+//! has two officers. Those make 192 keys; the net stores fewer heads and carries its own
+//! table from each key to the head that answers it. The chosen head's output is the
+//! network's whole answer -- upstream `a17c0ce28` removed the PSQT head that used to be
+//! summed beside it.
 //!
 //! # No embedded net
 //!
@@ -52,7 +55,7 @@ use transformer::{EvalScratch, FeatureTransformer};
 /// Read from here, never recited into prose: it changes on every net-swapping upstream
 /// sync, and a doc that names the old one sends a reader looking for a file that no longer
 /// exists.
-pub const DEFAULT_NET: &str = "nn-d1ee674a62ca.nnue";
+pub const DEFAULT_NET: &str = "nn-18cd32e11a9c.nnue";
 
 /// The concatenated activation buffer the two hidden layers share.
 const CONCAT: usize = L2 * 2 + L3 * 2;
@@ -135,7 +138,12 @@ impl LayerStack {
 #[derive(Debug)]
 pub struct Network {
     transformer: FeatureTransformer,
+    /// The heads the file stores, in file order.
     stacks: Vec<LayerStack>,
+    /// Per key, the key whose head answers it -- the file's own table, kept to write back.
+    fallback: [u16; LAYER_STACKS],
+    /// Per key, the index into `stacks` of the head that answers it.
+    stack_index: [u16; LAYER_STACKS],
     name: String,
     description: String,
 }
@@ -167,6 +175,8 @@ impl Network {
             return Err(NetError::WrongArchitecture { expected, found: file_hash });
         }
 
+        let (fallback, stack_index, stored) = read_stack_table(&mut r)?;
+
         let mut transformer = FeatureTransformer::new();
         let ft_hash = r.u32()?;
         if ft_hash != hash::FEATURE_TRANSFORMER {
@@ -178,8 +188,8 @@ impl Network {
         }
         transformer.read(&mut r)?;
 
-        let mut stacks = Vec::with_capacity(LAYER_STACKS);
-        for _ in 0..LAYER_STACKS {
+        let mut stacks = Vec::with_capacity(stored);
+        for _ in 0..stored {
             let stack_hash = r.u32()?;
             if stack_hash != hash::ARCHITECTURE {
                 return Err(NetError::WrongComponent {
@@ -202,7 +212,7 @@ impl Network {
         let name = path
             .file_name()
             .map_or_else(|| path.display().to_string(), |s| s.to_string_lossy().into_owned());
-        Ok(Network { transformer, stacks, name, description })
+        Ok(Network { transformer, stacks, fallback, stack_index, name, description })
     }
 
     /// Write this network back out in the format [`Network::load`] reads.
@@ -223,6 +233,11 @@ impl Network {
         let desc = self.description.as_bytes();
         w.u32(u32::try_from(desc.len()).map_err(|_| NetError::Truncated)?)?;
         w.write_all(desc)?;
+
+        w.u32(hash::LAYER_STACK_TABLE)?;
+        w.u32(LAYER_STACKS as u32)?;
+        w.u32(self.stacks.len() as u32)?;
+        w.u16s(&self.fallback)?;
 
         w.u32(hash::FEATURE_TRANSFORMER)?;
         self.transformer.write(&mut w)?;
@@ -270,7 +285,7 @@ impl Network {
     /// Evaluate `pos`: the raw network output, which `eval` prints as internal units.
     #[must_use]
     pub fn evaluate(&self, pos: &Position, ply: Ply, scratch: &mut EvalScratch) -> Value {
-        let bucket = stack_bucket(pos);
+        let bucket = self.stack_of(pos);
         self.transformer.transform(pos, ply.index(), scratch);
         let positional = self.stacks[bucket].propagate(scratch.transformed());
         Value::new((i64::from(positional) / OUTPUT_SCALE) as i32)
@@ -287,36 +302,111 @@ impl Network {
     pub fn trace_evaluate(&self, pos: &Position, scratch: &mut EvalScratch) -> NetworkTrace {
         let mut trace = NetworkTrace {
             positional: [VALUE_ZERO; LAYER_STACKS],
-            correct_bucket: stack_bucket(pos),
+            stored: self.stacks.len(),
+            correct_bucket: self.stack_of(pos),
         };
         self.transformer.transform(pos, 0, scratch);
-        for bucket in 0..LAYER_STACKS {
-            let positional = self.stacks[bucket].propagate(scratch.transformed());
+        for (bucket, stack) in self.stacks.iter().enumerate() {
+            let positional = stack.propagate(scratch.transformed());
             trace.positional[bucket] = Value::new((i64::from(positional) / OUTPUT_SCALE) as i32);
         }
         trace
     }
+
+    /// The stored head that answers `pos`: its key, through the file's table.
+    fn stack_of(&self, pos: &Position) -> usize {
+        usize::from(self.stack_index[stack_key(pos)])
+    }
 }
 
-/// The output stack a position reads: four per piece-count bucket, one per queen state.
+/// Read the table that sends each layer-stack key to a stored head, and check it.
 ///
-/// Material picks the group, `(pieces - 1) / 4`, so an endgame and a full board get different
-/// stacks; within it, bit 1 says the side to move has a queen and bit 0 that its opponent does.
-fn stack_bucket(pos: &Position) -> usize {
-    use crate::board::types::PieceType;
-    let pc_bucket = (pos.piece_total() as usize - 1) / 4;
+/// Returns the file's fallback per key, the stored-head index per key, and how many heads the
+/// file stores. A key whose fallback is itself owns a head; heads are numbered in key order.
+/// Every other key must fall back to a key that owns one -- one hop, never a chain -- which is
+/// upstream's check, and what keeps `stack_index` total.
+fn read_stack_table(
+    r: &mut NetReader<impl std::io::Read>,
+) -> Result<([u16; LAYER_STACKS], [u16; LAYER_STACKS], usize), NetError> {
+    let table_hash = r.u32()?;
+    if table_hash != hash::LAYER_STACK_TABLE {
+        return Err(NetError::WrongComponent {
+            what: "layer stack table",
+            expected: hash::LAYER_STACK_TABLE,
+            found: table_hash,
+        });
+    }
+    if r.u32()? as usize != LAYER_STACKS {
+        return Err(NetError::BadStackTable("the key count is not this build's"));
+    }
+    let stored = r.u32()? as usize;
+    if stored == 0 || stored > LAYER_STACKS {
+        return Err(NetError::BadStackTable("the stored head count is out of range"));
+    }
+    let mut fallback = [0u16; LAYER_STACKS];
+    r.u16s(&mut fallback)?;
+    if fallback.iter().any(|&f| usize::from(f) >= LAYER_STACKS) {
+        return Err(NetError::BadStackTable("a fallback names no key"));
+    }
+
+    let mut stack_index = [0u16; LAYER_STACKS];
+    let mut owned = 0u16;
+    for (s, &f) in fallback.iter().enumerate() {
+        if usize::from(f) == s {
+            stack_index[s] = owned;
+            owned += 1;
+        }
+    }
+    if usize::from(owned) != stored {
+        return Err(NetError::BadStackTable("the keys that own a head are not the stored count"));
+    }
+    for s in 0..LAYER_STACKS {
+        let f = usize::from(fallback[s]);
+        if usize::from(fallback[f]) != f {
+            return Err(NetError::BadStackTable("a fallback names a key without a head"));
+        }
+        stack_index[s] = stack_index[f];
+    }
+    Ok((fallback, stack_index, stored))
+}
+
+/// The layer-stack KEY of a position, from four facts about it.
+///
+/// - the material band, `(pieces - 1) / 4`;
+/// - the queens: 2 if the side to move has one, plus 1 if its opponent does;
+/// - the pawn layout: 0 with pawns on both halves of the board (files a-d and e-h), 1 with
+///   pawns on one half only, 2 with none;
+/// - whether either side has two or more officers -- pieces that are neither pawn nor king.
+fn stack_key(pos: &Position) -> usize {
+    use crate::board::bitboard::{Bitboard, FILE_A, FILE_B, FILE_C, FILE_D};
+    use crate::board::types::{Color, PieceType};
+    const QUEEN_SIDE: Bitboard =
+        Bitboard::from_bits(FILE_A.bits() | FILE_B.bits() | FILE_C.bits() | FILE_D.bits());
+
+    let band = (pos.piece_total() as usize - 1) / 4;
     let us = pos.side_to_move();
-    let queen_bucket = (usize::from(pos.pieces_of(us, PieceType::Queen).any()) << 1)
+    let queens = (usize::from(pos.pieces_of(us, PieceType::Queen).any()) << 1)
         | usize::from(pos.pieces_of(!us, PieceType::Queen).any());
-    pc_bucket * 4 + queen_bucket
+
+    let pawns = pos.pieces(PieceType::Pawn);
+    let both_halves = (pawns & QUEEN_SIDE).any() && (pawns & !QUEEN_SIDE).any();
+    let layout = if pawns.any() { usize::from(!both_halves) } else { 2 };
+
+    let not_officers = pos.pieces(PieceType::Pawn) | pos.pieces(PieceType::King);
+    let officers = |c: Color| (pos.colored(c) & !not_officers).count();
+    let many = usize::from(officers(Color::White).max(officers(Color::Black)) >= 2);
+
+    ((band * 4 + queens) * 3 + layout) * 2 + many
 }
 
 /// Every output stack's answer for one position.
 #[derive(Clone, Copy, Debug)]
 pub struct NetworkTrace {
-    /// Each output stack's evaluation, per bucket.
+    /// Each stored head's evaluation, in file order; only the first `stored` are meaningful.
     pub positional: [Value; LAYER_STACKS],
-    /// The bucket the piece count and the queens select.
+    /// How many heads the net stores.
+    pub stored: usize,
+    /// The stored head the position's key selects.
     pub correct_bucket: usize,
 }
 
@@ -378,8 +468,11 @@ mod hash {
         affine(h, 1)
     };
 
+    /// The layer-stack table's own hash word, upstream's `LayerStackTableHash`.
+    pub(super) const LAYER_STACK_TABLE: u32 = 0x5A7A_B1E5;
+
     /// The whole file's hash, as written in the header.
-    pub(super) const NETWORK: u32 = FEATURE_TRANSFORMER ^ ARCHITECTURE;
+    pub(super) const NETWORK: u32 = FEATURE_TRANSFORMER ^ ARCHITECTURE ^ LAYER_STACK_TABLE;
 }
 
 /// Where to look for a net named `name`.
@@ -426,8 +519,53 @@ mod tests {
         // whole point. The values are recorded so a refactor that silently changes the
         // derivation is caught here rather than by a net that will not load.
         assert_eq!(hash::FEATURE_TRANSFORMER, 0xA306_0B95);
-        assert_eq!(hash::NETWORK, hash::FEATURE_TRANSFORMER ^ hash::ARCHITECTURE);
+        assert_eq!(
+            hash::NETWORK,
+            hash::FEATURE_TRANSFORMER ^ hash::ARCHITECTURE ^ hash::LAYER_STACK_TABLE
+        );
         assert_ne!(hash::ARCHITECTURE, 0);
+    }
+
+    /// The table section as a file carries it, for `read_stack_table`.
+    fn stack_table_bytes(stored: u32, fallback: &[u16; LAYER_STACKS]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&hash::LAYER_STACK_TABLE.to_le_bytes());
+        b.extend_from_slice(&(LAYER_STACKS as u32).to_le_bytes());
+        b.extend_from_slice(&stored.to_le_bytes());
+        for f in fallback {
+            b.extend_from_slice(&f.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn every_key_reaches_the_head_its_fallback_owns() {
+        // Keys 5 and 9 own heads 0 and 1; every other key falls back to one of them.
+        let mut fallback = [5u16; LAYER_STACKS];
+        fallback[9] = 9;
+        fallback[100] = 9;
+        let bytes = stack_table_bytes(2, &fallback);
+        let (read, index, stored) =
+            read_stack_table(&mut NetReader::new(bytes.as_slice())).expect("a valid table");
+        assert_eq!(read, fallback);
+        assert_eq!(stored, 2);
+        assert_eq!((index[5], index[9], index[100], index[0]), (0, 1, 1, 0));
+
+        // A fallback to a key that owns no head is a chain, which upstream refuses.
+        let mut chained = fallback;
+        chained[7] = 100;
+        let bytes = stack_table_bytes(2, &chained);
+        assert!(matches!(
+            read_stack_table(&mut NetReader::new(bytes.as_slice())),
+            Err(NetError::BadStackTable(_))
+        ));
+
+        // A stored count that is not the number of keys owning a head.
+        let bytes = stack_table_bytes(3, &fallback);
+        assert!(matches!(
+            read_stack_table(&mut NetReader::new(bytes.as_slice())),
+            Err(NetError::BadStackTable(_))
+        ));
     }
 
     #[test]

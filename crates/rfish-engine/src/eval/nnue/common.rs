@@ -117,8 +117,12 @@ pub const L2: usize = 32;
 /// Outputs of the second fully connected layer.
 pub const L3: usize = 32;
 
-/// Independent output heads, selected by the piece count and the two sides' queens.
-pub const LAYER_STACKS: usize = 32;
+/// The output-head KEYS a position can select: eight material bands, four queen states,
+/// three pawn layouts, and whether either side has two officers.
+///
+/// It is also the most heads a net can store. A net stores fewer -- most keys never occur in
+/// a game -- and its own table sends each key without a head of its own to one that has one.
+pub const LAYER_STACKS: usize = 192;
 
 /// Scales the final output into centipawn-adjacent units.
 pub const OUTPUT_SCALE: i64 = 16;
@@ -148,6 +152,8 @@ pub enum NetError {
     Truncated,
     /// The file has trailing bytes after the last layer stack.
     TrailingData,
+    /// The table mapping each layer-stack key to a stored stack is inconsistent.
+    BadStackTable(&'static str),
 }
 
 impl std::fmt::Display for NetError {
@@ -163,6 +169,7 @@ impl std::fmt::Display for NetError {
             }
             NetError::Truncated => f.write_str("network file ends before its structure does"),
             NetError::TrailingData => f.write_str("network file has trailing data"),
+            NetError::BadStackTable(why) => write!(f, "layer stack table: {why}"),
         }
     }
 }
@@ -203,6 +210,16 @@ impl<R: Read> NetReader<R> {
         let mut b = [0u8; 4];
         self.read_exact(&mut b)?;
         Ok(u32::from_le_bytes(b))
+    }
+
+    /// `out.len()` little-endian `u16`s.
+    pub fn u16s(&mut self, out: &mut [u16]) -> Result<(), NetError> {
+        let mut buf = vec![0u8; out.len() * 2];
+        self.read_exact(&mut buf)?;
+        for (o, c) in out.iter_mut().zip(buf.as_chunks::<2>().0) {
+            *o = u16::from_le_bytes(*c);
+        }
+        Ok(())
     }
 
     /// `out.len()` little-endian `i16`s, uncompressed.
@@ -296,6 +313,12 @@ impl<W: Write> NetWriter<W> {
         self.write_all(&v.to_le_bytes())
     }
 
+    /// Little-endian `u16`s.
+    pub fn u16s(&mut self, v: &[u16]) -> Result<(), NetError> {
+        let buf: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+        self.write_all(&buf)
+    }
+
     /// Little-endian `i16`s, uncompressed.
     pub fn i16s(&mut self, v: &[i16]) -> Result<(), NetError> {
         let mut buf = Vec::with_capacity(v.len() * 2);
@@ -376,7 +399,7 @@ mod tests {
         assert_eq!(L1, 1024);
         assert_eq!(L2, 32);
         assert_eq!(L3, 32);
-        assert_eq!(LAYER_STACKS, 32);
+        assert_eq!(LAYER_STACKS, 192);
         assert_eq!(ceil_to_multiple(1024, 32), 1024);
         assert_eq!(ceil_to_multiple(60, 32), 64);
     }

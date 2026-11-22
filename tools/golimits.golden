@@ -24,13 +24,13 @@ g1h3: 1
 Nodes searched: 20
 
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 22 nodes 20 tbhits 0 pv d2d4
+info depth 1 seldepth 2 multipv 1 score cp 17 nodes 20 tbhits 0 pv d2d4
 bestmove d2d4
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 22 nodes 20 tbhits 0 pv d2d4
+info depth 1 seldepth 2 multipv 1 score cp 17 nodes 20 tbhits 0 pv d2d4
 bestmove d2d4
 info string Network replica 1: Local memory.
-info depth 1 seldepth 2 multipv 1 score cp 22 nodes 20 tbhits 0 pv d2d4
+info depth 1 seldepth 2 multipv 1 score cp 17 nodes 20 tbhits 0 pv d2d4
 bestmove d2d4
 
 
@@ -38,43 +38,103 @@ NNUE network contributions (Normalized, White to move)
 +------------+------------+
 |   Bucket   | Evaluation |
 +------------+------------+
-|  0         |  +  0.06   |
-|  1         |  -  5.60   |
-|  2         |  + 22.92   |
-|  3         |  -  0.49   |
-|  4         |  -  0.02   |
-|  5         |  -  2.06   |
-|  6         |  +  2.42   |
-|  7         |  -  0.04   |
-|  8         |  +  0.08   |
-|  9         |  -  1.88   |
-|  10        |  +  2.72   |
-|  11        |  +  0.19   |
-|  12        |  -  0.09   |
-|  13        |  -  1.20   |
-|  14        |  +  2.44   |
-|  15        |  +  0.03   |
-|  16        |  +  0.03   |
-|  17        |  -  2.04   |
-|  18        |  +  2.69   |
-|  19        |  +  0.12   |
-|  20        |  +  0.10   |
-|  21        |  -  1.08   |
-|  22        |  +  2.47   |
-|  23        |  -  0.01   |
-|  24        |  +  0.05   |
-|  25        |  -  1.08   |
-|  26        |  +  1.77   |
-|  27        |  +  0.04   |
-|  28        |  -  0.05   |
-|  29        |  -  0.20   |
-|  30        |  +  2.92   |
-|  31        |  +  0.04   | <-- this bucket is used
+|  0         |  +  1.58   |
+|  1         |  -  1.11   |
+|  2         |  -  0.05   |
+|  3         |  -  0.26   |
+|  4         |  - 17.08   |
+|  5         |  - 13.78   |
+|  6         |  -  9.74   |
+|  7         |  +  5.78   |
+|  8         |  + 17.70   |
+|  9         |  -  7.53   |
+|  10        |  +  0.81   |
+|  11        |  +  0.76   |
+|  12        |  +  0.65   |
+|  13        |  +  0.16   |
+|  14        |  +  0.28   |
+|  15        |  +  0.46   |
+|  16        |  -  0.84   |
+|  17        |  +  0.65   |
+|  18        |  -  0.14   |
+|  19        |  -  1.91   |
+|  20        |  +  1.18   |
+|  21        |  +  2.33   |
+|  22        |  +  0.87   |
+|  23        |  +  1.81   |
+|  24        |  +  2.17   |
+|  25        |  +  1.16   |
+|  26        |  +  0.66   |
+|  27        |  +  0.46   |
+|  28        |  +  0.96   |
+|  29        |  +  0.75   |
+|  30        |  +  0.14   |
+|  31        |  -  0.03   |
+|  32        |  +  0.19   |
+|  33        |  -  0.01   |
+|  34        |  -  1.19   |
+|  35        |  +  0.72   |
+|  36        |  -  1.20   |
+|  37        |  -  2.47   |
+|  38        |  -  0.25   |
+|  39        |  -  0.83   |
+|  40        |  +  1.11   |
+|  41        |  +  2.41   |
+|  42        |  +  2.69   |
+|  43        |  +  3.09   |
+|  44        |  -  2.74   |
+|  45        |  +  0.98   |
+|  46        |  +  0.15   |
+|  47        |  +  0.28   |
+|  48        |  +  0.07   |
+|  49        |  +  0.01   |
+|  50        |  +  0.42   |
+|  51        |  -  0.05   |
+|  52        |  +  0.04   |
+|  53        |  +  0.01   |
+|  54        |  +  0.25   |
+|  55        |  -  0.62   |
+|  56        |  -  0.05   |
+|  57        |  +  0.13   |
+|  58        |  +  1.94   |
+|  59        |  +  2.66   |
+|  60        |  +  0.62   |
+|  61        |  +  0.44   |
+|  62        |  -  3.65   |
+|  63        |  +  0.30   |
+|  64        |  +  0.54   |
+|  65        |     0.00   |
+|  66        |  +  0.00   |
+|  67        |  +  1.57   |
+|  68        |  -  1.19   |
+|  69        |  +  0.06   |
+|  70        |  +  1.70   |
+|  71        |  +  2.08   |
+|  72        |  +  1.04   |
+|  73        |  +  0.06   |
+|  74        |  +  0.42   |
+|  75        |  +  0.04   |
+|  76        |  -  0.02   |
+|  77        |  +  0.65   |
+|  78        |  -  0.31   |
+|  79        |  -  0.70   |
+|  80        |  +  1.51   |
+|  81        |  +  0.98   |
+|  82        |  +  0.07   |
+|  83        |  +  0.35   |
+|  84        |  +  0.08   |
+|  85        |  -  0.55   |
+|  86        |  +  1.67   |
+|  87        |  +  0.04   |
+|  88        |  +  0.22   |
+|  89        |  -  1.36   |
+|  90        |  +  4.79   |
+|  91        |  +  0.12   | <-- this bucket is used
 +------------+------------+
 
-NNUE evaluation          +10 (side to move, internal units)
-NNUE evaluation        +0.04 (white side)
-Final evaluation      +0.04 (white side) [with scaled NNUE, ...]
+NNUE evaluation          +34 (side to move, internal units)
+NNUE evaluation        +0.12 (white side)
+Final evaluation      +0.15 (white side) [with scaled NNUE, ...]
 
 
 Final evaluation: none (in check)
