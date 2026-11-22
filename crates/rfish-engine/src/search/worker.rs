@@ -826,7 +826,6 @@ impl SearchWorker {
         captures_searched: &[Move],
         depth: i32,
         tt_move: Move,
-        pv_node: bool,
     ) {
         let moved_piece = self.pos.moved_piece(best_move);
 
@@ -835,20 +834,18 @@ impl SearchWorker {
             + self.stack[si.back(1).index()].stat_score / 28;
         let malus = Bonus::new((968 * depth - 235).min(2244));
 
-        if !pv_node {
-            // A node that searched many moves before finding its best one has stronger
-            // evidence for that move than one that found it first.
-            //
-            // Upstream multiplies an `int` by a `u64`, which in C++ converts the int to
-            // unsigned. For a NEGATIVE bonus that is not a no-op: the division then floors
-            // instead of truncating toward zero, so the result is one lower whenever the
-            // product does not divide exactly. Reproduced here rather than corrected,
-            // because "corrected" is a different engine — the off-by-one propagates into
-            // every history table and moves the node count.
-            let searched = (quiets_searched.len() + captures_searched.len()) as u64;
-            let scaled = (bonus.get() as i64 as u64).wrapping_mul(searched) / 256;
-            bonus = Bonus::new(bonus.get().wrapping_add(scaled as u32 as i32));
-        }
+        // A node that searched many moves before finding its best one has stronger evidence
+        // for that move than one that found it first -- at PV nodes too, since e7ab6d448.
+        //
+        // Upstream multiplies an `int` by a `u64`, which in C++ converts the int to unsigned.
+        // For a NEGATIVE bonus that is not a no-op: the division then floors instead of
+        // truncating toward zero, so the result is one lower whenever the product does not
+        // divide exactly. Reproduced here rather than corrected, because "corrected" is a
+        // different engine — the off-by-one propagates into every history table and moves
+        // the node count.
+        let searched = (quiets_searched.len() + captures_searched.len()) as u64;
+        let scaled = (bonus.get() as i64 as u64).wrapping_mul(searched) / 256;
+        bonus = Bonus::new(bonus.get().wrapping_add(scaled as u32 as i32));
 
         if self.pos.is_capture_stage(best_move) {
             let captured = self.pos.piece_on(best_move.to()).piece_type();
@@ -2513,7 +2510,6 @@ impl SearchWorker {
                 &captures_searched[..n_captures],
                 depth,
                 tt_move,
-                N::PV,
             );
             if !N::PV {
                 self.histories.update_tt_move(Bonus::new(if best_move == tt_move {
