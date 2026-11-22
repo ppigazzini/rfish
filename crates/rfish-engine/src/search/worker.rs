@@ -1458,12 +1458,14 @@ impl SearchWorker {
             } else {
                 skill.best()
             };
-            if let Some(i) = self.root_moves.iter().position(|rm| rm.mv == chosen) {
-                // Swap ONLY. Upstream does not mark the PV unsent here, so the last line the
-                // GUI saw describes the strongest move while `bestmove` names the
-                // handicapped one -- marking it unsent re-sent a line identical to the one
-                // already published, which is a duplicate rather than a correction.
+            // A swap marks the PV unsent, so the last line the GUI sees describes the move
+            // `bestmove` names; when the pick is already first, nothing moved and the line
+            // already published stands.
+            if chosen != self.root_moves[0].mv
+                && let Some(i) = self.root_moves.iter().position(|rm| rm.mv == chosen)
+            {
                 self.root_moves.swap(0, i);
+                uci_pv_sent = false;
             }
         }
 
