@@ -1913,14 +1913,19 @@ impl SearchWorker {
                 // Give the opponent a free move; if the position still beats beta, the
                 // real move would too. Skipped in a pawn endgame, where zugzwang makes
                 // "pass" a genuinely good option and the assumption fails.
+                // The margin term is capped at half the ply (upstream 3e8fde754), so a
+                // large static margin near the root cannot cut the verification short.
+                //
                 // `>> 8` rather than `/ 256`, and the two agree here with no precondition
                 // on the sign: for a non-negative margin they are the same value, and for a
-                // negative one both are at most zero, so the `max` returns zero either way.
-                // Moving the `max` off it is what would break the identity. rustc pays the
-                // round-toward-zero correction for the division -- `lea 0xff(%rax),%edx`,
-                // `test`, `cmovns` ahead of the `sar $0x8` -- and the shift is the sar alone.
-                let mut r =
-                    7 + depth / 3 + ((self.stack[si.index()].static_eval - beta) >> 8).max(0);
+                // negative one both are at most zero, so the clamp's floor returns zero
+                // either way. Moving the floor off it is what would break the identity. rustc
+                // pays the round-toward-zero correction for the division -- `lea
+                // 0xff(%rax),%edx`, `test`, `cmovns` ahead of the `sar $0x8` -- and the shift
+                // is the sar alone.
+                let mut r = 7
+                    + depth / 3
+                    + ((self.stack[si.index()].static_eval - beta) >> 8).clamp(0, ply.get() / 2);
                 // Odd-numbered threads reduce one ply less, so half of a Lazy-SMP pool
                 // verifies a null-move cutoff more carefully.
                 r -= (self.id & 1) as i32;
