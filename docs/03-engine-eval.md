@@ -125,7 +125,7 @@ let se_norm   = (se * 1024) / (se.abs() + 1024);
 let nnue_norm = (nnue * 1024) / (nnue.abs() + 1024);
 let alignment = (se_norm * nnue_norm) / 512;
 
-let base_eval = nnue + (nnue * alignment) / 65536 + (optimism * alignment) / 16384;
+let base_eval = nnue + (nnue + optimism) * alignment / 65536;
 
 let material = 521 * pawns + non_pawn_material_total;
 let v = i64::from(base_eval) * i64::from(90649 + material) / 90649;

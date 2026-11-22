@@ -1207,7 +1207,7 @@ impl SearchWorker {
                 // The evaluation is nudged toward the side that is already doing well, so
                 // a won position is evaluated by a network that expects to win it.
                 let us = self.pos.side_to_move();
-                self.optimism[us.index()] = 114 * avg / (avg.abs().get() + 85);
+                self.optimism[us.index()] = 456 * avg / (avg.abs().get() + 85);
                 self.optimism[(!us).index()] = -self.optimism[us.index()];
 
                 let mut failed_high_cnt = 0i32;

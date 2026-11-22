@@ -119,7 +119,7 @@ pub fn scale_evaluation(nnue: Value, optimism: Value, pos: &Position) -> Value {
     let correl = (se_norm * nnue_norm) / 512;
 
     // Boost a straightforward position when winning, and a complicated one when losing.
-    let v = nnue + (nnue * correl) / 65536 + (optimism * correl) / 16384;
+    let v = nnue + (nnue + optimism) * correl / 65536;
 
     // Scale by the material on the board. Upstream spells this `v += m * v / 90649`, which
     // is the same quotient -- `m` is never negative -- and costs more here.
