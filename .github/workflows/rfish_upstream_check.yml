@@ -33,7 +33,7 @@ permissions:
 jobs:
   upstream-check:
     name: Detect upstream drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       # Full history: `git rev-list <pin>..<master>` needs the pinned commit to be present,
@@ -95,7 +95,7 @@ jobs:
   # where they belong. Until this job existed both only ran when someone remembered.
   fidelity:
     name: Fidelity against the pinned oracle
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

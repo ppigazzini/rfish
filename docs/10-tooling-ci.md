@@ -711,7 +711,8 @@ expression is spliced into a `run:` script: a dispatch input reaches its command
 with `uvx zizmor==1.33.0 .github/` and the job token for the online audits; the version is
 pinned so a zizmor release cannot redden an unchanged tree. `.github/dependabot.yml` proposes
 action updates weekly, seven days after a release, the setting zizmor's
-`dependabot-cooldown` audit reads.
+`dependabot-cooldown` audit reads. Every job names its image — `ubuntu-26.04`, `macos-26`,
+`windows-2025` — rather than a `-latest` alias, so no image moves under a lane.
 
 **The toolchain is read with `sed`, not `grep -oP`.** `-P` is a GNU extension. macOS ships
 BSD grep, which rejects the flag outright, and Git Bash on Windows is frequently built

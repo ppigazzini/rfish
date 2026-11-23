@@ -34,7 +34,7 @@ env:
 jobs:
   lint:
     name: Format, clippy and the unsafe gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,7 +73,7 @@ jobs:
   # cannot redden a tree nothing changed.
   zizmor:
     name: Workflow audit (zizmor)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,17 +91,18 @@ jobs:
   test:
     # Named per ROW rather than per runner label, as ../zfish's native-os lane is: the label
     # says which image GitHub boots, and the architecture it boots on is the thing a reader
-    # of a red lane needs -- `macos-latest` has been aarch64 since the Intel images retired.
+    # of a red lane needs -- `macos-26` boots aarch64, and only `macos-26-intel` boots x86-64.
+    # Every label names its image rather than a `-latest` alias, so no image moves under a lane.
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             name: Linux x86-64 test
-          - os: macos-latest
+          - os: macos-26
             name: macOS aarch64 test
-          - os: windows-latest
+          - os: windows-2025
             name: Windows x86-64 test
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -133,7 +134,7 @@ jobs:
 
   parity:
     name: Linux x86-64 parity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -220,7 +221,7 @@ jobs:
   # type system is happy with.
   tsan-race:
     name: Linux TSan race gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -259,7 +260,7 @@ jobs:
   # than counting it checked. Full five-tier coverage is a LOCAL run on an AVX-512 box.
   arch-determinism:
     name: Every tier builds, and every tier the runner can execute benches the anchor
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -288,7 +289,7 @@ jobs:
 
   valgrind:
     name: Linux valgrind memcheck
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
