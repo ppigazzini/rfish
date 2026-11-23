@@ -125,7 +125,7 @@ plugins:
         Practice:
           - idiomatic-rust.md: "the pattern-by-pattern translation, and the measurement laws"
           - type-design.md: "the value domain: what each type means, why it has that shape, and what it does not promise"
-          - performance.md: "the six cost axes, what each proves and what it cannot see"
+          - performance.md: "the seven cost axes, what each proves and what it cannot see"
         Tooling and CI:
           - tooling-ci.md: "`cargo xtask`, the gates and CI — the instruments that say whether the engine is RIGHT"
         Reference:

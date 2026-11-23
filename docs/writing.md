@@ -132,7 +132,7 @@ lands, and nobody knows which claim broke better than the person who broke it.
 | [idiomatic-rust.md](idiomatic-rust.md) | the Rust patterns, the falsified list, the measured shapes | cold as prose, append-only as a ledger |
 | [type-design.md](type-design.md) | the value domain, its algebra, and the boundary of what it promises | warm — a type added without a row here makes the page wrong |
 | [tooling-ci.md](tooling-ci.md) | `cargo xtask` steps, the tiers, `.github/workflows/` | hot — a step added here is a page edit there |
-| [performance.md](performance.md) | the six cost axes and what each is blind to | hot — every measured figure on it is a property of one toolchain on one box |
+| [performance.md](performance.md) | the seven cost axes and what each is blind to | hot — every measured figure on it is a property of one toolchain on one box |
 | [references.md](references.md) | external links | cold |
 | this page | the rules | cold |
 | [glossary.md](glossary.md) | the vocabulary, in four tiers | warm — every entry names an owner, and a rename dates it |
