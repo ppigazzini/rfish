@@ -188,7 +188,7 @@ pub fn generate_into<S: MoveSink>(pos: &Position, gt: GenType, list: &mut S) {
         // resolves to that type's own kernel at each site. Through a RUNTIME piece type the
         // match inside it cannot fold, and what is left is an indirect branch taken once per
         // attacker that the predictor misses -- the same reason the NNUE threat scan is
-        // written out, where ../zfish 24883582 measured 193K misses over its bench from one
+        // written out, where ../zfish 3a20d5a1 measured 193K misses over its bench from one
         // such call.
         //
         // The ORDER is upstream's and must stay -- per type, the unpinned pieces and then

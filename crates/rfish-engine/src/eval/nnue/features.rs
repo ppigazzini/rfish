@@ -337,7 +337,7 @@ pub fn k32h3_index(perspective: Color, s: Square, pc: Piece, ksq: Square, block:
 /// re-indexed and this cannot express it — the caller rebuilds from a base that has the right
 /// bucket, which is what the refresh cache is for.
 ///
-/// ../mcfish 4dcdec6b and ../zfish 63078a65 each arrived at the same board diff.
+/// ../mcfish 2a2e280e and ../zfish 0927b017 each arrived at the same board diff.
 pub fn k32h3_delta(
     was: &[Piece; SQUARE_NB],
     now: &[Piece; SQUARE_NB],
@@ -464,7 +464,7 @@ struct ThreatBlock {
     ///
     /// The two were separate tables, and a threat index added one to the other at every
     /// lookup. They are constants of each other, so they are summed once here instead.
-    /// ../zfish 662d82ef made the same merge. `u16` holds it comfortably: the largest sum
+    /// ../zfish 07616a62 made the same merge. `u16` holds it comfortably: the largest sum
     /// is a queen's, around 1400 against a ceiling of 65535, and the builder asserts it
     /// rather than trusting the arithmetic.
     slot: [[u16; SQUARE_NB]; SQUARE_NB],
@@ -696,7 +696,7 @@ pub fn threat_active(pos: &Position, wanted: [bool; COLOR_NB], out: &mut [Vec<Tp
         // Written out per piece type rather than looped over one, so `piece_attacks`
         // resolves to that type's own kernel at each site. Through a runtime piece type it
         // is an indirect branch taken once per attacker, and the predictor misses it --
-        // ../zfish 24883582 measured 193K misses over its bench from this one call.
+        // ../zfish 3a20d5a1 measured 193K misses over its bench from this one call.
         // A knight and a queen may threaten a queen; a bishop and a rook may not.
         macro_rules! scan {
             ($pt:expr, $targets:expr) => {{

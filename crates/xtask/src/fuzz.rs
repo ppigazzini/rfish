@@ -2,7 +2,7 @@
 //!
 //! # Two harnesses, because they fail differently
 //!
-//! ../mcfish learned this the hard way and says so in `2b8eaad7`: fuzzing the shipped
+//! ../mcfish learned this the hard way and says so in `3993c291`: fuzzing the shipped
 //! binary's stdin spends most of a mutation's budget on the PARSER, and never reaches the
 //! search behind it. So it grew a second, in-process harness. rfish has the same split:
 //!
@@ -294,7 +294,7 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
             scripts += 1;
         }
         // A fuzz run that fuzzed nothing is the loudest version of a gate that compared
-        // nothing: it reports a survival nobody tested. ../zfish 6782c38e found a target
+        // nothing: it reports a survival nobody tested. ../zfish f1b148af found a target
         // that had gone dark under a starved runner and cleared its own floor for a whole
         // lane; the counter is the only thing that can see it.
         if let Some(refusal) =
@@ -350,7 +350,7 @@ pub(crate) fn fuzz(args: &[&str]) -> Result<Outcome, String> {
         }
         // **A FILTER THAT MATCHES NOTHING EXITS 0.** `cargo test` calls "0 passed" a success,
         // so renaming or `#[ignore]`-ing a soak takes the target dark and leaves this gate
-        // green — the whole class ../zfish 6782c38e and ../mcfish's `assert_fuzz_executed`
+        // green — the whole class ../zfish f1b148af and ../mcfish's `assert_fuzz_executed`
         // exist to catch. Assert the run happened rather than inferring it from the status.
         if !text.contains("1 passed") {
             return Ok(Outcome::Fail(format!(

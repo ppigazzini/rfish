@@ -10,7 +10,7 @@
 //! `forbid(unsafe_code)` means a bad index is a bounds check that aborts the process rather
 //! than a read of someone else's memory. That is still a denial of service reached from a
 //! file, and it is exactly what the sibling ports' fixes were about — "bound the decoder's
-//! block index, descent and bit window" is `../zfish` `99602ca8`.
+//! block index, descent and bit window" is `../zfish` `3ea18d4b`.
 //!
 //! The iteration is what a user does, rather than a reimplementation of the carve: mutate a
 //! REAL table's bytes, write them to a `.rtbw`/`.rtbz`, point discovery at that directory and

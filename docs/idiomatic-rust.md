@@ -1019,7 +1019,7 @@ loads: **−7.7M**.
 
 Both siblings found half of this. Sum the entries at build time where they are constants of
 each other — `slot` is the pre-summed `Offsets[from] + IndexLut2[from][to]`, after ../zfish
-662d82ef — and colocate them behind one base where they are not, which is ../mcfish's
+07616a62 — and colocate them behind one base where they are not, which is ../mcfish's
 `ThreatIndexBlocks` and `nnue_full_make_index`, measured there at −1.16%. Taking the second
 half after the first is why this reads smaller here than there.
 

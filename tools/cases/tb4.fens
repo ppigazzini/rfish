@@ -8,7 +8,7 @@
 #
 #   - A REMAPPED DTZ file. Its values pass through a per-outcome map, a branch of
 #     `map_score` that no 3-man file enters, and rfish read it one entry early from the
-#     port until 3558ada. The four positions after the blocked pair are ones that read
+#     port until 46f87c9. The four positions after the blocked pair are ones that read
 #     wrong before it, a win and a loss for each side to move.
 #   - SYMMETRIC material with pawns. Every position probes as white to move, so Black to
 #     move takes the mirrored path. The blocked pair covers both sides: neither has a

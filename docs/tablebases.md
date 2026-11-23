@@ -348,7 +348,7 @@ else and the probe answers `Fail`, exactly as it does for a table that is not th
 - **At conversion time, make the domain unrepresentable.** `Wdl` is a five-valued enum with
   one fallible constructor and no other way in, so the check cannot be forgotten by a
   consumer added later. Both sibling ports close this hole with a range test at the probe
-  (`../mcfish` `f08ee9ef`, `../zfish` `741f8ffc`); neither language can stop a caller from
+  (`../mcfish` `5c2fda47`, `../zfish` `74bb9431`); neither language can stop a caller from
   simply not writing one, which is why they had to bound it where it is born and rfish can
   bound it in the type.
 
@@ -375,7 +375,7 @@ disagrees is refused at load, where the answer can still be "no table".
 **A bound stated against the wrong quantity is not a weaker bound, it is an absent one.** The
 type check read as if it covered `pieces[0]`, and covered one bit of it; the fuzz lane had been
 green over the remaining hole for three nights. `../zfish` fixed the same half-hole two days
-earlier (`3883af90`), from this port's own harness finding — the two ports keep re-finding each
+earlier (`aa899257`), from this port's own harness finding — the two ports keep re-finding each
 other's residue, and the shape to look for is a validated field whose *consumers* read more out
 of it than the validation checked.
 
@@ -385,7 +385,7 @@ pawnful `.rtbz` whose STM flag claims black answers `ChangeStm` for both sides, 
 `probe_dtz`'s one-ply search recursed down the quiet moves until the stack ran out — in safe
 Rust an abort, after a heap that grew with the square of the depth, because every level
 clones a `Position` whose history is one longer. `../mcfish`'s nightly lane found it on
-KPvKP (`9659811f`), and pristine upstream segfaults on the same file. `TbTable::parse` now
+KPvKP (`23319627`), and pristine upstream segfaults on the same file. `TbTable::parse` now
 refuses it; a real one has the flag clear on every file.
 
 **This harness could not have found it, for two reasons, and the second was a dead half.**
@@ -415,7 +415,7 @@ It compares the `d` command's tablebase lines WHOLE, state included. Upstream's 
 has no state of its own — the WDL search, the table read and every child of the one-ply
 search write one shared `result`, and it returns holding whatever the last of them left —
 and the search reads only whether that is `Fail`. So a state reported wrong moves no score,
-no PV and no node count, and `d` is the only place it shows: `../mcfish` `e35b5ab1` found its
+no PV and no node count, and `d` is the only place it shows: `../mcfish` `09ba7176` found its
 port reporting a zeroing best move as a plain one there. rfish's `d` printed no state at
 all, and printed nothing for a failed probe where upstream prints `0 (0)`.
 

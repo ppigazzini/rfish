@@ -256,7 +256,7 @@ pub struct Position {
     // the 8-byte bitboard arrays ahead of a `[Piece; 64]` and pushes the board off the
     // line boundary; `piece_on` is among the most frequent reads in the engine (movepick
     // scoring, SEE, gives_check, legality and every make), so a random square read was
-    // landing on one of two lines. ../mcfish 41d17080 found and fixed the same thing.
+    // landing on one of two lines. ../mcfish 422a92df found and fixed the same thing.
     board: [Piece; SQUARE_NB],
     /// Index 0 ([`PieceType::ALL_PIECES`]) is the total occupancy, not an empty set.
     by_type: [Bitboard; PIECE_TYPE_NB],

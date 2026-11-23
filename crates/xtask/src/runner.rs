@@ -34,7 +34,7 @@ impl Outcome {
 /// `Ok(false) == no mismatches` is true of an empty subject list, so a gate whose corpus is
 /// missing, filtered away or renamed reports "0 of 0 match" and exits 0 — it does not merely
 /// pass having compared nothing, it passes having reported a comparison it never made.
-/// ../mcfish 01e0b71c found this in its transcript gate and ../zfish 108e7af6 in a step
+/// ../mcfish 7b2e2e1e found this in its transcript gate and ../zfish 680f71b2 in a step
 /// checker reading 6% of its subject; the shape is the same wherever a denominator is
 /// computed rather than asserted.
 ///

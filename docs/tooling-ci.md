@@ -178,8 +178,8 @@ goes RED. A filter that matches no test is the same shape one step further out: 
 calls "0 passed" a success, so `fuzz` asserts its soak actually ran rather than reading the
 exit status.
 
-../mcfish 01e0b71c found this in a transcript gate that fed both engines an unmatched glob
-and counted their identical nothing as agreement; ../zfish 108e7af6 found a step checker
+../mcfish 7b2e2e1e found this in a transcript gate that fed both engines an unmatched glob
+and counted their identical nothing as agreement; ../zfish 680f71b2 found a step checker
 reporting OK while reading 6% of its subject.
 
 **A non-empty corpus does not settle it, because two blank sides compare equal.** Every way
@@ -189,7 +189,7 @@ the output, a golden re-derived against a dead engine — and `""` == `""` score
 `golden` refuses a case whose engine printed nothing in BOTH modes: the two failures compose,
 since an update writes the blank golden and the check then passes it against the next dead
 run. Every case here ends by printing something, so a blank side is a dead engine and never a
-behaviour. ../zfish a4f0b6e9 is the same equality one gate over.
+behaviour. ../zfish 2d37d17b is the same equality one gate over.
 
 ## The local gates, which `parity` does not run
 
@@ -338,7 +338,7 @@ Elo standing — is a comparison across builds that cannot be reproduced anywher
 
 The cost is real and belongs next to the benefit: a fixed-flag tier gives up whatever the
 host-tuned build was worth, and buys a number that can be reproduced on any host of that
-tier. ../mcfish 3b9fc8ae measured **+1.38%** for the same trade, and its history is the
+tier. ../mcfish 9f330a15 measured **+1.38%** for the same trade, and its history is the
 argument for taking the cause rather than the symptom — it first keyed its budget rows by
 the resolved host CPU, which records host-specific codegen instead of removing it. ../zfish
 resolved `native` this way from the start.
@@ -565,7 +565,7 @@ than silently compared against.
 random legal positions through the real search in-process, and mutated table bytes at the
 Syzygy decoder. Three harnesses because they fail differently. Subprocess fuzzing spends
 a mutation's budget on the PARSER and never reaches the search behind it, which is the lesson
-../mcfish records in `2b8eaad7` when it added its own in-process harness beside its UCI one;
+../mcfish records in `3993c291` when it added its own in-process harness beside its UCI one;
 and neither of those two ever reaches a **file**, which is the only input here that no part of
 the process vouches for. Both sibling ports fuzz the table parse — ../mcfish with a dedicated
 lane, ../zfish with its own targets — and rfish lacked it until the decoder had already

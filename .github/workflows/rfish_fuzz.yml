@@ -4,7 +4,7 @@ name: rfish fuzz (nightly)
 # "nothing failed inside that budget", which is not the kind of statement a merge should
 # block on. It is also the only lane here that can find a bug nobody wrote a case for, so it
 # runs every night rather than when someone remembers -- the same reasoning ../mcfish gives
-# for `mcfish_fuzz.yml` and for moving its node differential onto a schedule in `6bc4db61`.
+# for `mcfish_fuzz.yml` and for moving its node differential onto a schedule in `ed3fddd6`.
 #
 # THREE JOBS, one per harness, each with the WHOLE budget -- the shape ../mcfish's fuzz
 # workflow uses (`fuzz`, `fuzz-search`, `fuzz-tb`) and for its reason: the harnesses run at

@@ -95,7 +95,7 @@ Five properties, each of which cost a sibling port a wrong verdict before it was
   directions at the shipped value: clean → exit 0 at +0.0000%, mutated → exit 1 at +0.0541%.
 - **Every row is keyed by an ENUMERATED tier**, and `native` resolves to one before a row is
   ever written — so a row names a build any host of that tier can reproduce. That is what
-  removed the hazard ../zfish 7d4de85f refused by hand and ../mcfish 71c3fae3 first tried to
+  removed the hazard ../zfish ff794bfd refused by hand and ../mcfish 7fd108d9 first tried to
   key around; see [tooling-ci.md](tooling-ci.md)'s tier section. The key carries the
   tier AND its `target-cpu`, so a row written before a tier-table change is named rather than
   matched. A tier callgrind

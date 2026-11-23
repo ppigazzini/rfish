@@ -454,7 +454,7 @@ pub(crate) fn golden(update: bool) -> Result<Outcome, String> {
         // ends by printing something, so a blank side means the run failed. Refused in both
         // modes, because the two failures compose — an update writes the blank golden, and
         // the check then passes it against the next dead run (blank == blank). ../zfish
-        // a4f0b6e9 is the same shape one gate over.
+        // 2d37d17b is the same shape one gate over.
         if out.trim().is_empty() {
             return Ok(Outcome::Fail(format!(
                 "{stem}: the engine printed nothing, so there is no behaviour to \
@@ -694,7 +694,7 @@ pub(crate) fn golden_audit(args: &[&str]) -> Result<Outcome, String> {
         // oracle that dies before its banner, a driver whose filter eats the output, a
         // golden re-derived against a dead engine. That scores an `agree` — the gate does
         // not merely pass having compared nothing, it reports a comparison it never made.
-        // ../zfish a4f0b6e9 found the same equality in its transcript gate. A rig fault, not
+        // ../zfish 2d37d17b found the same equality in its transcript gate. A rig fault, not
         // a diff, and checked BEFORE the tally either side lands in.
         if nothing_was_compared(&ours, &theirs) {
             return Ok(Outcome::Fail(format!(
@@ -1641,7 +1641,7 @@ pub(crate) fn tb() -> Result<Outcome, String> {
 /// Whole, because the parenthesised STATE is part of the answer: the search reads only
 /// whether a probe failed, so a state that differs from upstream's -- a zeroing best move
 /// reported as a plain one -- moves no score, no PV and no node count, and `d` is the only
-/// place it shows. `../mcfish` `e35b5ab1` found its port reporting the wrong one there.
+/// place it shows. `../mcfish` `09ba7176` found its port reporting the wrong one there.
 fn tb_verdict(out: &str) -> Vec<String> {
     out.lines()
         .map(str::trim)
@@ -1738,8 +1738,8 @@ pub(crate) fn nnue_check() -> Result<Outcome, String> {
 /// rfish reads a net as a SEQUENTIAL STREAM — `NetReader` is `read_exact` over an
 /// `impl Read`, with no mapped image and no computed region offsets — so it cannot have the
 /// defect the sibling ports fixed, where the parse writes each region at one derivation of the
-/// blob layout and the accessors read it back at another (`../mcfish` `ef3c0170`, `../zfish`
-/// `0f66e726`, both closed with asserts tying the two spellings together). The hazard survives
+/// blob layout and the accessors read it back at another (`../mcfish` `b10eb18d`, `../zfish`
+/// `d7086bde`, both closed with asserts tying the two spellings together). The hazard survives
 /// the difference: an ORDER stated twice drifts exactly as offsets do. What changes is the
 /// instrument. There are no two constants to assert equal, so the weld is the round trip
 /// itself, which is stronger — it checks every group, every split point and every hash at once

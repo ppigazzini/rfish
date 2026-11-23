@@ -40,8 +40,8 @@ impl Wdl {
     /// Fallible rather than total on purpose. A catch-all arm here would be the worst of the
     /// available answers — it launders an invented byte into a confident `Draw`, which the
     /// root ranking then scores and ranks as a real tablebase verdict. Both sibling ports
-    /// close the same hole with a range check at the probe (`../mcfish` `f08ee9ef`,
-    /// `../zfish` `741f8ffc`), because C and Zig cannot stop a caller writing the check's
+    /// close the same hole with a range check at the probe (`../mcfish` `5c2fda47`,
+    /// `../zfish` `74bb9431`), because C and Zig cannot stop a caller writing the check's
     /// absence. Here the type can: `Wdl` has no other constructor, so every future consumer
     /// is downstream of this one decision whether it knows the format or not.
     #[must_use]

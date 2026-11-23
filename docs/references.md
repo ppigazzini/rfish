@@ -44,7 +44,7 @@ A third sibling is not a port at all:
 
 **A sibling's refactor is a hypothesis about what this tree never wired up** — ask what it
 implies about rfish's *use* of the same thing, not only whether the same duplication is
-here. The 2026-08-06 sweep took `mcfish ac7d02c7` and `zfish b09519f6`, which each gave the
+here. The 2026-08-06 sweep took `mcfish b2bf3934` and `zfish b3f08c4d`, which each gave the
 `currmove` node threshold one owner after finding it declared twice. rfish already had one
 owner and all three of upstream's call sites, so on the sibling's own terms there was
 nothing to take. The site that announces the move called nothing at all, and the whole
@@ -65,17 +65,17 @@ siblings exited 0. **The instrument is the finding more often than the code is.*
 
 **Probe against this tree, not against the subject line.** The commits worth recording are
 as often the ones NOT taken, with the reason, so the next sweep does not re-open them. From
-the 2026-08-08 window (`mcfish 75a76202..187ddec0`, `zfish 37da78fb..d0549833`):
+the 2026-08-08 window (`mcfish 83e680e7..450d5afd`, `zfish ef1f5ad0..1b906a9f`):
 
 | probed | verdict |
 |---|---|
-| `mcfish 233525f0`, comments naming files that no longer exist | **nothing here.** No comment names an absent `crates/**.rs`, and every upstream `*.cpp`/`*.h` cited in one exists at the pin |
-| `mcfish cd3603cd`, includes a file already had | **no analogue.** Rust has no include graph to duplicate; a redundant `use` is a compiler warning `clippy` already refuses |
-| `mcfish f757587d`, a `gives_check` argument `do_move` trusts | **no analogue.** rfish's prober calls `do_move`, which computes the checkers itself; `do_move_checked` is a separate entry point the tablebase path never takes, so there is no contract to pass `false` to |
-| `mcfish 1cede41d`, a gap list describing shipped subsystems | **already current here.** All four of rfish's "What is not here" sections name what has come OFF the list as well as what is on it |
-| `zfish 1f208d00`, docs-lint permitting a pinned anchor | **already stronger here.** `docs-lint` refuses ANY quoted signature rather than only a stale one |
-| `zfish 88b2cc42`, a module no page names | **taken** — the sweep found `debug_log` |
-| `zfish d0549833` / `mcfish 187ddec0`, a commit-format section | **already here.** All three sets had the same hole — a writing page deferring to the commit message twice without saying what one looks like — and all three closed it in this window |
+| `mcfish 402ed706`, comments naming files that no longer exist | **nothing here.** No comment names an absent `crates/**.rs`, and every upstream `*.cpp`/`*.h` cited in one exists at the pin |
+| `mcfish 0b3114cb`, includes a file already had | **no analogue.** Rust has no include graph to duplicate; a redundant `use` is a compiler warning `clippy` already refuses |
+| `mcfish fd85937e`, a `gives_check` argument `do_move` trusts | **no analogue.** rfish's prober calls `do_move`, which computes the checkers itself; `do_move_checked` is a separate entry point the tablebase path never takes, so there is no contract to pass `false` to |
+| `mcfish 3da33ef6`, a gap list describing shipped subsystems | **already current here.** All four of rfish's "What is not here" sections name what has come OFF the list as well as what is on it |
+| `zfish 4321a8bf`, docs-lint permitting a pinned anchor | **already stronger here.** `docs-lint` refuses ANY quoted signature rather than only a stale one |
+| `zfish 99988f8e`, a module no page names | **taken** — the sweep found `debug_log` |
+| `zfish 1b906a9f` / `mcfish 450d5afd`, a commit-format section | **already here.** All three sets had the same hole — a writing page deferring to the commit message twice without saying what one looks like — and all three closed it in this window |
 
 **A sibling's DEFECT REGISTER is swept per SITE, not per entry.** The 2026-08-15 sweep of
 `../Stockfish`'s `refish` branch — 199 commits, its twenty-defect register, its speedup log
@@ -130,7 +130,7 @@ the four lines above the line refish changed.
 | `6ba0a756` / entry 33, a numa policy that does not parse whole | **divergent, and neither theirs nor upstream's.** `str_to_size_t` accepts `0,1 2,3` as `{0,1,3}`; this port's `parse::<usize>()` refuses the piece and yields `{0,3}`; refish refuses the string. Left alone: it is a third answer on an input no operator sends, and changing it is a behaviour choice rather than a defect fix |
 | `060b4146` / entry 26, an unbounded cpu index, and `6d08acbf` / entry 28, an unbindable policy | **no analogue**, as the 2026-08-15 sweep found for the same class: there is no `CPU_ALLOC` here, the total is bounded, and there is no pinning to fail |
 | `46944a92` / entry 30, `std::exit` under a live tablebase probe | **no analogue.** Nothing unmaps a table, and the one `exit` on the shell's failure path is not reachable with workers inside a probe |
-| entry 22, a crafted LEB128 header hanging the loader | **already closed** at `c996043`, by the 2026-08-15 sweep's own second look |
+| entry 22, a crafted LEB128 header hanging the loader | **already closed** at `3bbb788`, by the 2026-08-15 sweep's own second look |
 | `d657cfae`, gating the startup the budget only printed | **taken** — see [tooling-ci.md](tooling-ci.md). It closes a hole AGENTS.md carried as a trap row telling the reader to measure it by hand |
 | `9b6ebbab` a liveness gate, `ccdd41c1` thread scaling, `e5476414` shellcheck, `662c6675`/`3bb90d38` CI pins and citations, `5c00ff7d`/`6b36496a` include and friend direction | **not taken.** The first two are wall-clock instruments this repository already refuses to put in `parity`; the rest are C++-tree properties — an include graph, a `friend`, a bash suite — that `cargo` and `clippy` make unrepresentable here, and `sync-status` already answers the citation question for the one SHA that matters |
 **A sibling's GATE SUITE is swept the same way, and the useful half is the gate with no
@@ -172,7 +172,7 @@ tiers:
 | `949c8eebb`, picking both threat lists by index rather than by branch | **no analogue as stated.** `append_changed_indices_both` chooses between a removed and an added list twice a trip; `collect_diff` here does not have that shape at all — it marks the old set in a bitset and clears bits as the new set is read, so the two data-dependent branches it does have are a membership test, not a list choice. The technique — a flag as an index rather than as a branch — stays available and is not free in safe Rust, because a branchless push needs a cursor into a pre-sized buffer rather than `Vec::push` |
 | `3be968e97`, removing castling's rook before its king | **no analogue.** It removes 5,132 CANCELLING threat pairs a bench, which exist because refish emits a per-move delta list. This port DIFFS the recomputed feature sets, so a pair that cancels is a bit set and cleared in `collect_diff`'s bitset and never reaches a weight row |
 | `c890a5659`, generating the picker's moves into its own slots | **already done by construction.** `MovePicker::generate` writes straight into the worker's `MoveBuf`; there is no `MoveList` to copy out of, and §9 of [idiomatic-rust.md](idiomatic-rust.md) records why the buffer is owned by the worker |
-| `9c853540b`, bounding the conthist bonus so the clamp folds away | **answered differently, and already landed.** Upstream 47be34c5 put the same six clamps on the hot path here; c7d89ec tables `weight * multiplier` instead, and 14ce57f prices it. refish's answer needs a `u16` table to bound the product and a branch to prove the bonus small |
+| `9c853540b`, bounding the conthist bonus so the clamp folds away | **answered differently, and already landed.** Upstream 47be34c5 put the same six clamps on the hot path here; 43abba8 tables `weight * multiplier` instead, and b0e0875 prices it. refish's answer needs a `u16` table to bound the product and a branch to prove the bonus small |
 | `3bb0d5a33`, `c9adca61e`, `d043c9be3`, `055e137e8` | **no analogue.** Three name frames Ubuntu's gcc guards with `-fstack-protector-strong`, which rustc does not enable and which refish's own clang binary carries none of; the fourth keeps a 2296-byte `MovePicker` off gcc's SLP vectoriser, which raises a stack object's alignment to 32 whatever the source says |
 | `2226fd0fa`, `d7162e2a4`, `faa89a353`, `56d90a5d4`, `ae8da3b9a`, `1a9a7a785` | **no analogue as written.** Intrinsic folds in the nnz bitset, a trip count gcc takes and clang does not, gcc coalescing an accumulator with its output, gcc rolling a two-trip loop, gcc's final-value pass rebuilding a pointer from a popcount, and eight out-of-line copies of a function gcc declined to inline |
 | `5e97aa312`, aligning `do_move`'s ply pair out of a forwarding stall | **not measurable on the axes here.** It is a store-to-load forwarding stall — a LATENCY win, and an instruction count cannot see one |
@@ -368,7 +368,7 @@ instructions at a source line in a `--profile profiling` build before anything w
 | `6050b7c8`, the rank solved in the lane the other rays leave empty | **no analogue, structurally.** It puts a rank's hyperbola-quintessence mask in `DualMagic`'s fourth lane using `vgf2p8affineqb`; this port uses magic bitboards, so there is no vector lane going to waste — and `std::arch`'s GFNI intrinsics are `unsafe fn` and `std::simd` has no bit-reversal, so the instruction is unreachable here whatever the layout |
 | `24e7a1a9`, the accumulator's index lists walked down to zero | **refuted by its own author on this compiler.** The commit gates itself to gcc and records **+0.048%** for clang at depth 20 under PGO, with the reason: clang peels those loops and outlines the remainder, and the reversed shape costs it. rustc's backend is LLVM, so the guard excludes this port by construction |
 
-**The assembled stack is −0.0160% at avx2**, `d7e3112` against the finished tree, 182,697
+**The assembled stack is −0.0160% at avx2**, `6017c40` against the finished tree, 182,697
 nodes on both sides — the exact sum of the two rows above, each of which was measured against
 the previous one. That is what the chain rule predicts when it holds, and it is a separate
 measurement rather than an arithmetic claim.

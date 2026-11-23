@@ -59,7 +59,7 @@ pub(crate) struct Tier {
 /// is a property of the machine that ran the build — znver4 tuning on this box — so two hosts
 /// reporting the same tier label ship different binaries, and every per-tier number in this
 /// repository is a comparison across builds. `native` is a SELECTOR over this table instead;
-/// see [`resolve_tier`]. ../mcfish 3b9fc8ae removed the same cause after patching the symptom
+/// see [`resolve_tier`]. ../mcfish 9f330a15 removed the same cause after patching the symptom
 /// first, and ../zfish has always resolved it this way.
 const TIERS: [Tier; 5] = [
     Tier {
@@ -493,7 +493,7 @@ fn stamp_oracle(dir: &Path, base: &str) -> Result<(), String> {
 /// counts before quoting a ratio. Eventually is the problem: that check only runs when
 /// callgrind does, so at `--tier native`, or on a box without valgrind, the wall-clock A/B ran
 /// against the wrong binary and reported a ratio with no warning at all. `../zfish` stamps its
-/// oracle by SHA for the same reason (`b96f9f24`).
+/// oracle by SHA for the same reason (`54dc460c`).
 /// Refuse a measured binary older than the source it is supposed to be a build of.
 ///
 /// **The oracle's identity was checked and this side's was not.** `verify_oracle` proves the
@@ -559,7 +559,7 @@ fn verify_oracle(dir: &Path, tier: &Tier) -> Result<(), String> {
 /// A node comparison across two different nets is meaningless — the trees differ because the
 /// evaluations differ, not because either engine is wrong — and it fails in the direction that
 /// looks like a porting bug. Both sibling ports added this check after being misled by one
-/// (`../zfish` `a45bb2a0`, `../mcfish` `2abfce75`).
+/// (`../zfish` `0a272c63`, `../mcfish` `4e76b3ac`).
 fn engine_net(bin: &Path, cwd: &Path) -> Result<String, String> {
     let out = capture_both(Command::new(bin).current_dir(cwd).args(["bench", "1", "1", "1"]))?;
     out.lines()
@@ -1004,7 +1004,7 @@ const BUDGET_ROUNDS: usize = 2;
 ///
 /// `signature` proves the same NODE count and says nothing about what those nodes cost, so a
 /// change can shed no nodes, keep every gate in `parity` green, and still run measurably
-/// slower. Ported from ../mcfish's `perf-budget` and ../zfish 51031f48, with the instrument
+/// slower. Ported from ../mcfish's `perf-budget` and ../zfish 1911619c, with the instrument
 /// swapped: both siblings read hardware counters through `perf_event_open`, which many CI
 /// containers refuse; rfish already has callgrind wired for the differential and it is
 /// deterministic, so the budget reuses it.
@@ -1014,8 +1014,8 @@ const BUDGET_ROUNDS: usize = 2;
 /// perf commit and after a toolchain bump.
 pub(crate) fn perf_budget(args: &[&str], update: bool) -> Result<Outcome, String> {
     // `native` has already resolved to an enumerated tier, so a row is keyed by a name that
-    // decides the codegen — the reason ../zfish 7d4de85f could refuse a `native` key outright
-    // and ../mcfish 3b9fc8ae dropped the target-cpu it had folded INTO the key. What remains
+    // decides the codegen — the reason ../zfish ff794bfd could refuse a `native` key outright
+    // and ../mcfish 9f330a15 dropped the target-cpu it had folded INTO the key. What remains
     // is an instrument limit and nothing to do with keys: callgrind implements no AVX-512.
     let tier = tier_of(args)?;
     if !tier.callgrind_safe {
@@ -1487,8 +1487,8 @@ fn nps_ab(
         // And hold every round to ROUND ONE, not just the two sides of a round to each other.
         // A pair that moves together — a net that goes missing after the first launch, an
         // engine restarted mid-run against a changed tree — passes the check above and
-        // publishes a plausible median over a workload nobody asked for. ../mcfish 8d24312d
-        // and ../zfish 03bbb6f7 both landed this after finding the guard applied on round
+        // publishes a plausible median over a workload nobody asked for. ../mcfish 06b050cc
+        // and ../zfish 32395ab6 both landed this after finding the guard applied on round
         // one alone.
         if round == 1 {
             first_nodes = our_nodes;

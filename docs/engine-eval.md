@@ -821,7 +821,7 @@ anything that revisits this needs it. Nothing calls it.
 ### The ablation that reframes all of the above
 
 ../zfish ran the ablation this page never did: the SAME port, built three ways, bit-exact on
-one 163,081-node tree (`f876cb5b`, `bench 16 1 8` at `x86-64-sse41-popcnt`, box spread
+one 163,081-node tree (`b15578d7`, `bench 16 1 8` at `x86-64-sse41-popcnt`, box spread
 0.00063%).
 
 | ../zfish build | instructions | vs shipped |
