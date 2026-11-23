@@ -4,11 +4,12 @@ name: rfish parity
 # what runs here: a contributor who sees a green `cargo xtask parity` should not be
 # surprised by the merge gate. See docs/tooling-ci.md.
 #
-# Every third-party action is pinned BY COMMIT SHA, with the tag in a trailing comment. A
-# tag is a mutable pointer -- the owner can move `v7` to anything -- so a tag-pinned action is
-# an unreviewed dependency that can change under a merge gate. These are the same pins the
-# sibling ports (`../zfish`, `../mcfish`) and `../valgebra` carry, so a bump is decided once
-# and applied across all four. The toolchain is not an action at all: every lane installs it
+# Every third-party action names a release tag, and .github/workflows/actions.lock holds the
+# commit the runner runs for it. A tag is a mutable pointer -- the owner can move `v7` to
+# anything -- so the lock, not the tag, is what the runner trusts, and the `actions-lock` job
+# fails on a tag moved off its locked commit. These are the same releases the sibling ports
+# (`../zfish`, `../mcfish`) and `../valgebra` lock, so a bump is decided once and applied
+# across all of them. The toolchain is not an action at all: every lane installs it
 # through `.github/actions/setup-rust`, which runs rustup itself. See docs/tooling-ci.md.
 
 on:

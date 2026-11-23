@@ -13,8 +13,8 @@ name: rfish fuzz (nightly)
 # other two spend their time, and the job name says which harness went red without reading a
 # log. `cargo xtask fuzz <seconds> all` is the local single-process form.
 #
-# Third-party actions are pinned BY COMMIT SHA with the tag in a trailing comment, and the
-# toolchain comes from rustup, as in rfish_parity.yml.
+# Third-party actions name a release tag that .github/workflows/actions.lock locks to a
+# commit, and the toolchain comes from rustup, as in rfish_parity.yml.
 
 on:
   schedule:

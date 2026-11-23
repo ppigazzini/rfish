@@ -10,9 +10,9 @@ name: rfish perft (nightly)
 # It is a GATE, unlike upstream drift: a perft mismatch is always a movegen bug, never a
 # difference of opinion, so a red run here means the tree is wrong.
 #
-# Every third-party action is pinned BY COMMIT SHA with the tag in a trailing comment, the
-# same pins the sibling ports carry, and the toolchain comes from rustup, as in
-# rfish_parity.yml.
+# Every third-party action names a release tag that .github/workflows/actions.lock locks to
+# a commit, the same releases the sibling ports lock, and the toolchain comes from rustup,
+# as in rfish_parity.yml.
 
 on:
   schedule:

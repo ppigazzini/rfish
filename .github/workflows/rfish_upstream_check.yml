@@ -12,9 +12,9 @@ name: rfish upstream check
 # against the next one, and the rule this serves is upstream's own: sync at least at every
 # net bump.
 #
-# Every third-party action is pinned BY COMMIT SHA with the tag in a trailing comment, the
-# same pins the sibling ports carry, so a bump is decided once and applied across all of
-# them. The toolchain comes from rustup, as in rfish_parity.yml.
+# Every third-party action names a release tag that .github/workflows/actions.lock locks to
+# a commit, the same releases the sibling ports lock, so a bump is decided once and applied
+# across all of them. The toolchain comes from rustup, as in rfish_parity.yml.
 
 on:
   schedule:
