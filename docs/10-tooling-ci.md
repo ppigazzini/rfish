@@ -471,15 +471,16 @@ Every lane, which is what the file has rather than the ones worth mentioning:
 | `tsan-race` | Linux TSan race gate | `net`, then a four-thread search under ThreadSanitizer |
 | `valgrind` | Linux valgrind memcheck | `net`, `build`, then the binary under memcheck |
 | `arch-determinism` | Every tier builds, and every tier the runner can execute benches the anchor | `net`, then `arch-determinism --host-tiers` |
-| `cross-build` | Cross-build (`<target>`) | `cargo check` for `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-gnu` |
 
-`cross-build` **checks rather than builds**, and the reason is worth keeping: the runner has
-no cross LINKER for either target, so a build fails at the link step having already proven
-everything the lane is for. What it is for is catching a `cfg` sneaking into engine code —
-the engine's only real platform differences are the `SyzygyPath` separator and the binary's
-extension. Every lane reads its toolchain from `rust-toolchain.toml` rather than naming a
-channel, because that file overrides whatever the action installs: a hard-coded channel
-installs one toolchain and silently runs another, without the target's `std` in this lane.
+**There is no cross-build lane.** It ran `cargo check --target` for
+`aarch64-unknown-linux-gnu` and `x86_64-pc-windows-gnu`, to catch a `cfg` creeping into
+engine code, and the `test` matrix already compiles and tests the engine natively on aarch64
+(macOS) and on Windows. The engine's only platform conditionals are `cfg!(windows)`, for the
+`SyzygyPath` separator, and x86 `target_feature`s; each reads the same on windows-gnu as on
+the Windows row, and on aarch64-linux as on the macOS row, so the lane checked nothing those
+rows do not run. Every lane reads its toolchain from `rust-toolchain.toml` rather than naming
+a channel, because that file overrides whatever the action installs: a hard-coded channel
+installs one toolchain and silently runs another.
 
 `cargo xtask tb-fetch` downloads the 3-man Syzygy set — ~26 KiB, ten files — into
 `resources/syzygy/`, and KPvKP — ~300 KiB — into `resources/syzygy4/`, and CI caches both
@@ -682,8 +683,7 @@ engine enables `portable_simd`, which no stable channel accepts.
 design rather than a trap to route around. Every lane reads the channel OUT of that file and
 hands it to `.github/actions/setup-rust`, so the toolchain it installs is the toolchain that
 runs. Hard-coding a channel in the workflow instead would install one and silently run
-another — with that other one's components, and in the cross lane without the target's std,
-which is exactly how a `check --target` lane passes while proving nothing.
+another, with that other one's components.
 
 That trap used to be worked around in the msrv lane with an explicit `cargo +<version>`.
 The lane is gone (above), and with it the only place the two could disagree.
@@ -695,8 +695,8 @@ tag stays where the pin was taken. A toolchain action that publishes one moving 
 next upstream commit. `zizmor`'s `ref-version-mismatch` audit reports that drift, and the
 `zizmor` lane runs it on every push (below), but only once the tag has moved: the drift is
 caught after the fact, not prevented. `.github/actions/setup-rust` runs what such an
-action runs: `rustup toolchain install` with the minimal profile, the components and targets
-a lane names, and a retry for the one failure the release server produces while it
+action runs: `rustup toolchain install` with the minimal profile, the components a lane
+names, and a retry for the one failure the release server produces while it
 publishes, then `rustup default`, with incremental compilation off. The runner carries
 rustup, so no third-party commit sits between it and the compiler, and no tag is left to
 drift. Lanes name it as `$/.github/actions/setup-rust`, the form `zizmor`'s
@@ -719,10 +719,6 @@ without PCRE. The `msrv` lane got away with `grep -oP` for as long as it existed
 ran only on `ubuntu-latest`; the step that replaced it runs in the three-OS `test` matrix,
 where the same line breaks two of the three. A shell one-liner that has only ever run on
 Linux is not portable, it is untested.
-
-**The cross lane uses `cargo check`, not `cargo build`.** The runner has no cross linker for
-either target, so a build fails at the link step having already proven everything the lane
-exists to prove — that no `cfg` has crept into engine code.
 
 **The declared MSRV is now documentation, not a gated property.** `Cargo.toml` says 1.88
 because 1.87 rejects the `let` chains in the move picker, the network path search and the

@@ -45,8 +45,7 @@ jobs:
         shell: bash
         # From rust-toolchain.toml, never repeated here. That file OVERRIDES whatever the
         # action installs, so a hard-coded channel in this workflow would install one
-        # toolchain and then silently run a different one -- with the wrong components and,
-        # in the cross lane, without the target's std.
+        # toolchain and then silently run a different one -- with the wrong components.
         # POSIX `sed`, not `grep -oP`. `-P` is a GNU extension: macOS ships BSD grep, which
         # rejects the flag outright, and Git Bash on Windows is often built without PCRE. This
         # step runs on all three, so the portable form is the only correct one.
@@ -115,8 +114,7 @@ jobs:
         shell: bash
         # From rust-toolchain.toml, never repeated here. That file OVERRIDES whatever the
         # action installs, so a hard-coded channel in this workflow would install one
-        # toolchain and then silently run a different one -- with the wrong components and,
-        # in the cross lane, without the target's std.
+        # toolchain and then silently run a different one -- with the wrong components.
         # POSIX `sed`, not `grep -oP`. `-P` is a GNU extension: macOS ships BSD grep, which
         # rejects the flag outright, and Git Bash on Windows is often built without PCRE. This
         # step runs on all three, so the portable form is the only correct one.
@@ -146,8 +144,7 @@ jobs:
         shell: bash
         # From rust-toolchain.toml, never repeated here. That file OVERRIDES whatever the
         # action installs, so a hard-coded channel in this workflow would install one
-        # toolchain and then silently run a different one -- with the wrong components and,
-        # in the cross lane, without the target's std.
+        # toolchain and then silently run a different one -- with the wrong components.
         # POSIX `sed`, not `grep -oP`. `-P` is a GNU extension: macOS ships BSD grep, which
         # rejects the flag outright, and Git Bash on Windows is often built without PCRE. This
         # step runs on all three, so the portable form is the only correct one.
@@ -328,39 +325,9 @@ jobs:
   # nightly and every lane above reads it from there -- and a floor lane tests nothing a
   # pin does not already fix. See docs/10-tooling-ci.md.
 
-  cross-build:
-    name: Cross-build (${{ matrix.target }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [aarch64-unknown-linux-gnu, x86_64-pc-windows-gnu]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Read the pinned toolchain
-        id: rt
-        shell: bash
-        # From rust-toolchain.toml, never repeated here. That file OVERRIDES whatever the
-        # action installs, so a hard-coded channel in this workflow would install one
-        # toolchain and then silently run a different one -- with the wrong components and,
-        # in the cross lane, without the target's std.
-        # POSIX `sed`, not `grep -oP`. `-P` is a GNU extension: macOS ships BSD grep, which
-        # rejects the flag outright, and Git Bash on Windows is often built without PCRE. This
-        # step runs on all three, so the portable form is the only correct one.
-        run: |
-          channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)
-          test -n "$channel" || { echo "no channel in rust-toolchain.toml"; exit 1; }
-          echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      - uses: $/.github/actions/setup-rust
-        with:
-          toolchain: ${{ steps.rt.outputs.channel }}
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # `check`, not `build`: the runner has no cross LINKER for either target, so a build
-      # fails at the link step having already proven everything this lane is for. What it is
-      # for is catching a `cfg` sneaking into engine code -- the engine's only real platform
-      # differences are the SyzygyPath separator and the binary's extension.
-      - run: cargo check --workspace --all-targets --target ${{ matrix.target }}
+  # NO cross-build lane. It ran `cargo check --target` for aarch64-unknown-linux-gnu and
+  # x86_64-pc-windows-gnu to catch a `cfg` creeping into engine code, and the `test` matrix
+  # above already compiles AND tests the engine natively on aarch64 (macOS) and on Windows.
+  # The engine's only platform conditionals are `cfg!(windows)` (the SyzygyPath separator)
+  # and x86 `target_feature`s, and each reads the same on windows-gnu as on the Windows row
+  # and on aarch64-linux as on the macOS row. See docs/10-tooling-ci.md.

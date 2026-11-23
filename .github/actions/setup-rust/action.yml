@@ -24,11 +24,6 @@ inputs:
       Components to add beside the minimal profile, separated by commas.
     required: false
     default: ""
-  targets:
-    description: >-
-      Targets whose standard library to add, separated by commas.
-    required: false
-    default: ""
 
 runs:
   using: composite
@@ -41,15 +36,11 @@ runs:
       env:
         TOOLCHAIN: ${{ inputs.toolchain }}
         COMPONENTS: ${{ inputs.components }}
-        TARGETS: ${{ inputs.targets }}
         RUSTUP_PERMIT_COPY_RENAME: "1"
       run: |
         args=(toolchain install "$TOOLCHAIN" --profile minimal --no-self-update)
         for component in ${COMPONENTS//,/ }; do
           args+=(--component "$component")
-        done
-        for target in ${TARGETS//,/ }; do
-          args+=(--target "$target")
         done
         log=$(mktemp)
         trap 'rm -f "$log"' EXIT
