@@ -28,7 +28,7 @@ __pycache__/
 .ty_cache/
 
 # Profiler and memcheck output from the local-only tools in tools/ (see
-# docs/09-tooling-ci.md). `perf_callgrind.sh` writes into the CURRENT directory
+# docs/tooling-ci.md). `perf_callgrind.sh` writes into the CURRENT directory
 # unless OUT= names one, and that file is routinely larger than the whole
 # repository -- it is measurement, never a result to keep.
 callgrind.out*

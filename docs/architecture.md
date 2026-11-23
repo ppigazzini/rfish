@@ -75,7 +75,7 @@ from `resources/`.
 `cargo xtask perf-budget` and `budget-ab` measure a `quit`-only profile, SUBTRACT it from the
 search figure, and gate it as a second axis on its own 1% tolerance; the net load and the
 magic build are ~1.02e9 instructions against a ~1.51e9 search.
-[03-engine-eval.md](03-engine-eval.md) carries that axis, how to measure it, and what two
+[engine-eval.md](engine-eval.md) carries that axis, how to measure it, and what two
 defects on it looked like — the second was found by the gate's first run.
 
 ## How a search flows
@@ -118,7 +118,7 @@ which converts the clock model once for the whole pool and then opens a
 thread**, so a single-threaded run involves no spawn at all. Each worker runs
 `iterative_deepening` over the same root, recursing through `search` into `qsearch` at depth
 zero. Ordering comes from the picker, leaf scores from the NNUE, and the move finally played
-is the one `elect` says the pool agrees on — see [04-multithreading.md](04-multithreading.md).
+is the one `elect` says the pool agrees on — see [multithreading.md](multithreading.md).
 
 The reader thread is the second edge into the pool and it is not decorative: it owns `stop`,
 `ponderhit` and the unbounded-search `quit`, because the command loop is inside the search
@@ -126,7 +126,7 @@ while one is running and cannot read them.
 
 **The search allocates nothing per node.** Move lists are fixed arrays, and the stack, the
 histories and the accumulator scratch are owned by the worker and reused.
-[08-idiomatic-rust.md](08-idiomatic-rust.md) §9 records what three per-node allocations cost
+[idiomatic-rust.md](idiomatic-rust.md) §9 records what three per-node allocations cost
 against upstream's zero, and why the obvious fix measured worse than the one that landed.
 
 ## The crate boundary is the zone check
@@ -240,7 +240,7 @@ The pin is DATED rather than `nightly`, because the instruction mix and every pe
 in the ledger are properties of the compiler and a floating channel would silently
 invalidate them.
 
-[docs/08-idiomatic-rust.md](08-idiomatic-rust.md) is the pattern-by-pattern account of what
+[docs/idiomatic-rust.md](idiomatic-rust.md) is the pattern-by-pattern account of what
 that costs and what it buys.
 
 ## Profiles
@@ -274,7 +274,7 @@ catches it.
 - **No large-page allocator and no memory mapping**, and **NUMA without PINNING**: the
   topology, the policies and the reporting are in `crates/rfish-engine/src/platform/numa.rs`,
   read from `/sys` and `/proc`; what `std` exposes no API for is binding a thread to a node.
-  See [06-platform.md](06-platform.md) for why each gap is blocked rather than pending.
+  See [platform.md](platform.md) for why each gap is blocked rather than pending.
 
 ## The gates
 
@@ -285,8 +285,8 @@ cannot check by reading, because both are properties of what the tree does NOT c
 |---|---|---|
 | `zone-check` | no engine module names a zone at or above its own, except where a baseline says why | this page |
 | `unsafe-lint` | the workspace `forbid` is still there, asserted from OUTSIDE the compiler that enforces it | this page |
-| `test` | the whole stack under the gate profile, where `debug_assert!` and overflow checks are on | [10-tooling-ci.md](10-tooling-ci.md) |
-| `signature` | the three crates, assembled, search upstream's tree | [10-tooling-ci.md](10-tooling-ci.md) |
+| `test` | the whole stack under the gate profile, where `debug_assert!` and overflow checks are on | [tooling-ci.md](tooling-ci.md) |
+| `signature` | the three crates, assembled, search upstream's tree | [tooling-ci.md](tooling-ci.md) |
 
 ### `zone-check` — the direction `cargo` cannot check
 
@@ -301,7 +301,7 @@ nothing below it can influence it. The crate boundary is checked by the compiler
 inside ONE crate, where a cycle between modules builds fine.
 
 So it was a property a reviewer maintained, and
-[00-architecture.md](00-architecture.md) said so: it carried a hand-written inventory of what
+[architecture.md](architecture.md) said so: it carried a hand-written inventory of what
 crosses, with the note that a fourth edge would be noticed by nobody. **There was already a
 fourth** — `search/worker.rs` names `platform::syzygy`'s types in five places, in every shipped
 build. The gate found it on its first run, which is the second time in this repository that

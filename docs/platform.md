@@ -11,9 +11,9 @@ platform question they answer:
 
 | Module | Owns | Detail |
 |---|---|---|
-| `threads.rs` | the worker set, the scoped search, the best-move vote | [04-multithreading.md](04-multithreading.md) |
+| `threads.rs` | the worker set, the scoped search, the best-move vote | [multithreading.md](multithreading.md) |
 | `numa.rs` | the topology, upstream's three auto policies, the `NumaPolicy` syntax, the distribution | below |
-| `syzygy/` | discovery, the pairs decoder, the index computation, the WDL and DTZ probes | [05-tablebases.md](05-tablebases.md) |
+| `syzygy/` | discovery, the pairs decoder, the index computation, the WDL and DTZ probes | [tablebases.md](tablebases.md) |
 
 **`numa.rs` reads the machine out of the filesystem, and that is the whole trick.** Upstream
 discovers the same facts through `sched_getaffinity` and `GetNumaProcessorNodeEx`, which are
@@ -28,7 +28,7 @@ page.
 is the case that proves it matters.** It accepts a processor list; upstream bounds each range
 and not their sum, and a few hundred bytes of input reached gigabytes of resident memory here
 before the allocator gave up. `numa.rs` bounds the total. `Hash` and `Threads` are the other
-two of the three, and [07-shell.md](07-shell.md) owns them.
+two of the three, and [shell.md](shell.md) owns them.
 
 ## What upstream has here that rfish does not
 
@@ -47,7 +47,7 @@ own allocators return a null that the placement-new after them would write throu
 
 **Memory mapping.** A mapping is `unsafe` in Rust because the file can change under it. The
 Syzygy prober reads with positioned file reads instead; see
-[05-tablebases.md](05-tablebases.md).
+[tablebases.md](tablebases.md).
 
 **Converting a path from the system code page.** Upstream's `path_from_utf8` reads a
 Windows path as UTF-8 and, when that fails, again as ANSI (`CP_ACP`), because an old GUI —
@@ -77,7 +77,7 @@ first place. The absence is visible in exactly one byte of output: rfish prints
 
 **A thread pool.** `std::thread::scope` lends each worker a `&mut` for exactly the duration
 of the search. There is no pool to own, no join to forget, and no lifetime to assert by
-hand. See [04-multithreading.md](04-multithreading.md).
+hand. See [multithreading.md](multithreading.md).
 
 **NUMA.** Upstream keeps one copy of the network per NUMA node and binds each thread to
 the node holding the copy it reads. rfish keeps one `Arc<Network>` for the whole pool.
@@ -128,7 +128,7 @@ right up to the point where the allocator gives up.
 
 | gate | what it proves here | owned by |
 |---|---|---|
-| `test` | the topology model, the three auto policies and the `NumaPolicy` bounds, as PURE FUNCTIONS — the only way this class may be exercised, because a reproducer that drives the binary has taken this box down twice | [10-tooling-ci.md](10-tooling-ci.md) |
-| `golden` | the shell still prints `info string Network replica 1: Local memory.` in upstream's own words, which is this zone's honest report of what it cannot do | [07-shell.md](07-shell.md) |
-| `zone-check` | nothing above this zone reads it, which is what makes the direction stated at the top of this page a fact rather than an intention | [00-architecture.md](00-architecture.md) |
-| `unsafe-lint` | the file reads that replace upstream's FFI are still the whole mechanism | [00-architecture.md](00-architecture.md) |
+| `test` | the topology model, the three auto policies and the `NumaPolicy` bounds, as PURE FUNCTIONS — the only way this class may be exercised, because a reproducer that drives the binary has taken this box down twice | [tooling-ci.md](tooling-ci.md) |
+| `golden` | the shell still prints `info string Network replica 1: Local memory.` in upstream's own words, which is this zone's honest report of what it cannot do | [shell.md](shell.md) |
+| `zone-check` | nothing above this zone reads it, which is what makes the direction stated at the top of this page a fact rather than an intention | [architecture.md](architecture.md) |
+| `unsafe-lint` | the file reads that replace upstream's FFI are still the whole mechanism | [architecture.md](architecture.md) |

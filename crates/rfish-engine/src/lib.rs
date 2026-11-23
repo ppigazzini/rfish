@@ -11,7 +11,7 @@
 //! `#![forbid(unsafe_code)]` is set for the whole workspace in `Cargo.toml`. There is no
 //! `unsafe` block anywhere in rfish, and no module can opt out with a local `#[allow]`.
 //! Everything the C++ does with raw pointers is expressed with slices, indices, atomics
-//! and scoped threads instead. See `docs/08-idiomatic-rust.md` for the pattern-by-pattern
+//! and scoped threads instead. See `docs/idiomatic-rust.md` for the pattern-by-pattern
 //! translation.
 //!
 //! # Zones
@@ -22,14 +22,14 @@
 //! - [`search`] — the search, the move picker, the histories, the transposition table.
 //! - [`platform`] — threads, timing, memory, and the Syzygy prober.
 //!
-//! Reading order is `docs/00-architecture.md`.
+//! Reading order is `docs/architecture.md`.
 
 // The one nightly feature this crate uses, and the reason the toolchain is pinned to a
 // dated nightly. `std::simd` is SAFE -- it needs no `unsafe` block -- so enabling it costs
 // the port nothing it cares about: `forbid(unsafe_code)` below is unchanged and still
 // workspace-wide. The alternative, `std::arch`, is rejected precisely because every
 // intrinsic in it is an `unsafe fn`. See `rust-toolchain.toml` and
-// `docs/08-idiomatic-rust.md` section 12.
+// `docs/idiomatic-rust.md` section 12.
 #![feature(portable_simd)]
 
 pub mod board;

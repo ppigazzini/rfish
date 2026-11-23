@@ -13,9 +13,9 @@ evaluation** and the **Syzygy prober** are written and gated: `cargo xtask nnue-
 proves the network's output is identical to a pristine upstream build's position by
 position, `cargo xtask tb` does the same for the WDL verdict and the DTZ distance, and
 `cargo xtask signature` holds the bench node total to upstream's own. What is missing is
-thread PINNING, which `std` exposes no API for — [docs/06-platform.md](docs/06-platform.md)
+thread PINNING, which `std` exposes no API for — [docs/platform.md](docs/platform.md)
 says why that is blocked rather than pending. Run `cargo xtask parity` for the current state
-of every gate, and see [docs/](docs/README.md) for what each zone does.
+of every gate, and see [docs/](docs/index.md) for what each zone does.
 
 ## Why safe Rust
 
@@ -34,7 +34,7 @@ same idea another way:
 None of those are workarounds. Each removes a class of bug the C++ has to avoid by
 convention — a dangling `StateInfo`, a worker outliving its data, a table truncated under
 its own mapping — and the cost is measured rather than assumed. See
-[docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md).
+[docs/idiomatic-rust.md](docs/idiomatic-rust.md).
 
 ## Build
 
@@ -59,7 +59,7 @@ The NNUE network is a runtime input, not embedded and not committed. Run the eng
 
 ## Documentation
 
-- [docs/](docs/README.md) — the architecture, each subsystem, the Rust patterns.
+- [docs/](docs/index.md) — the architecture, each subsystem, the Rust patterns.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — the gates and the workflow.
 - [AGENTS.md](AGENTS.md) — what an automated contributor gets wrong before reading either.
 

@@ -8,7 +8,7 @@
 # longer unmeasured -- the evaluation sat at 1.8x a pristine upstream build while
 # ../zfish, which writes the same kernels with Zig's `@Vector`, sat near 0.9x, and
 # the disassembly says rfish's autovectorised loops are already as good as that
-# route gets. See docs/08-idiomatic-rust.md section 12 for the measurement and the
+# route gets. See docs/idiomatic-rust.md section 12 for the measurement and the
 # three-way table that made this the only remaining route.
 #
 # What this does NOT trade away: `std::simd` is SAFE. It needs no `unsafe` block,

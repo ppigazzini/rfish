@@ -4,7 +4,7 @@
 //! and `../mcfish` all maintain a dirty-threat list through `do_move` and feed it to the
 //! accumulator; this port rebuilds the whole threat feature set on every evaluation and diffs
 //! the two sets. Measured head to head at an identical tree, the three siblings sit at 1.000,
-//! 1.001 and 0.877 of upstream and this port at 1.667 — see `docs/03-engine-eval.md`.
+//! 1.001 and 0.877 of upstream and this port at 1.667 — see `docs/engine-eval.md`.
 //!
 //! Golden: `Stockfish/src/position.cpp` `Position::update_piece_threats`, and
 //! `../zfish/src/engine/board/move_do_threats.zig`, which is the same algorithm written
@@ -257,7 +257,7 @@ pub fn update_piece_threats_sharing(
 
     // Written out per type rather than through a runtime piece type, so each site resolves
     // to that type's own kernel: through a variable it is an indirect branch per attacker,
-    // which is the shape `docs/03-engine-eval.md` records closing.
+    // which is the shape `docs/engine-eval.md` records closing.
     let raw_threatened = match pc.piece_type() {
         PieceType::Pawn => pawn_attacks_from(pc.color(), s),
         PieceType::Knight => sl.piece(PieceType::Knight, s, occupied),

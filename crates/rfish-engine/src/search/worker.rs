@@ -446,7 +446,7 @@ impl SearchWorker {
     ///
     /// Shared by `Arc`: the weights are around 112 MiB and read-only for the whole search,
     /// so every thread points at one copy. Upstream replicates them per NUMA node instead;
-    /// see `docs/04-multithreading.md`.
+    /// see `docs/multithreading.md`.
     pub fn set_network(&mut self, network: Option<Arc<Network>>) {
         self.network = network;
     }

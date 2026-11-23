@@ -9,7 +9,7 @@ Golden: `Stockfish/src/thread.cpp`.
 
 Every thread searches the same root. They diverge because they hit the shared transposition
 table in a different order. The gain comes from the table, not from a split — which is why
-the table's design (see [02-engine-search.md](02-engine-search.md)) is the load-bearing
+the table's design (see [engine-search.md](engine-search.md)) is the load-bearing
 part of the threading story and the thread management is not.
 
 ## There is no persistent thread pool
@@ -34,7 +34,7 @@ the default hides. The stack is set to upstream `thread_native.h`'s `TH_STACK_SI
 so `threads.rs` names the errno and exits rather than searching a different tree under the
 same `Threads`.
 
-See [08-idiomatic-rust.md](08-idiomatic-rust.md) §3.
+See [idiomatic-rust.md](idiomatic-rust.md) §3.
 
 ## What is shared, and how
 
@@ -88,7 +88,7 @@ away for a configuration change would cost strength for no reason.
   FFI the engine crate cannot reach without `unsafe` or a dependency. Replication follows
   pinning, so it is **blocked** rather than pending, and the shell reports thread
   *distribution* where upstream reports *binding* rather than implying a guarantee it cannot
-  make. [06-platform.md](06-platform.md) has the full reasoning.
+  make. [platform.md](platform.md) has the full reasoning.
 
 Pondering IS here. `Ponder` buys the current move a quarter more time; a budget that runs
 out while pondering sets a flag rather than stopping, because only the GUI can end a ponder;
@@ -103,11 +103,11 @@ not blind to it.
 
 | gate | what it proves here | owned by |
 |---|---|---|
-| `tsan` | a four-thread search under ThreadSanitizer: the table, the counters and the vote, on the paths a real search takes | [10-tooling-ci.md](10-tooling-ci.md) |
-| `repro-search` | what a completed search leaves for the next one — at ONE thread, which is the limit of the row | [02-engine-search.md](02-engine-search.md) |
-| `test` | the vote over a constructed candidate set, and that a resized pool keeps at least the main thread and still searches — both in-process, at 1 and 3 workers | [10-tooling-ci.md](10-tooling-ci.md) |
+| `tsan` | a four-thread search under ThreadSanitizer: the table, the counters and the vote, on the paths a real search takes | [tooling-ci.md](tooling-ci.md) |
+| `repro-search` | what a completed search leaves for the next one — at ONE thread, which is the limit of the row | [engine-search.md](engine-search.md) |
+| `test` | the vote over a constructed candidate set, and that a resized pool keeps at least the main thread and still searches — both in-process, at 1 and 3 workers | [tooling-ci.md](tooling-ci.md) |
 
 A worker is ~15.6 MB resident, so a harness must never drive `Threads` near the option's
 declared maximum — that is `Threads 1024`, ~16 GB, and it has taken this box down. Keep every
-harness at 1, 2, 8 or 16 and test the bounds as a pure function; [07-shell.md](07-shell.md)
+harness at 1, 2, 8 or 16 and test the bounds as a pure function; [shell.md](shell.md)
 owns the rule and the option surface it applies to.

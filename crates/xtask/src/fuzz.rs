@@ -15,7 +15,7 @@
 //!   here that is a binary FILE rather than text. Both sibling ports fuzz it -- ../mcfish with
 //!   a dedicated lane, ../zfish with its own targets -- and it is the surface where a bad byte
 //!   becomes an index rather than a rejected token. It found six panics on the day it was
-//!   written; see `docs/05-tablebases.md`.
+//!   written; see `docs/tablebases.md`.
 //!
 //! # What a clean run means
 //!

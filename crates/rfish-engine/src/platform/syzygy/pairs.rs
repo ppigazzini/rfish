@@ -10,7 +10,7 @@
 //!
 //! Upstream memory-maps the file and stores raw pointers into it. rfish reads the file into
 //! a `Vec<u8>` and stores OFFSETS, which is the same information with the aliasing question
-//! removed — see `docs/05-tablebases.md` for why a mapping is not available here.
+//! removed — see `docs/tablebases.md` for why a mapping is not available here.
 //!
 //! Golden: `Stockfish/src/syzygy/tbprobe.cpp` — `PairsData`, `set_sizes`, `set_groups`,
 //! `decompress_pairs`.

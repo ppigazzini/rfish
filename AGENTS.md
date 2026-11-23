@@ -4,7 +4,7 @@ rfish is a **safe-Rust port of Stockfish**, built with `cargo xtask`. The goal i
 **bit-exact 1:1 clone** — same bench signature, NNUE, Syzygy, Lazy-SMP — in **100% safe
 Rust**.
 
-Read [docs/](docs/README.md) for the architecture and [CONTRIBUTING.md](CONTRIBUTING.md)
+Read [docs/](docs/index.md) for the architecture and [CONTRIBUTING.md](CONTRIBUTING.md)
 for the workflow. This file is only what an agent gets wrong before it has read either.
 
 ## The constraint that outranks everything
@@ -18,7 +18,7 @@ is one line and a reviewer can miss it being deleted.
 
 This is not a style preference to be traded for a constant factor. It is the thing the port
 exists to demonstrate. When a construct appears to need `unsafe`, the answer is a different
-construct — see [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md), which records the
+construct — see [docs/idiomatic-rust.md](docs/idiomatic-rust.md), which records the
 one that worked for every case so far. Do not:
 
 - reach for `stdarch` intrinsics, or for any crate that wraps them — every intrinsic in
@@ -36,7 +36,7 @@ with Zig's `@Vector`, sat near 0.9x, and the disassembly said rfish's autovector
 were already as good as that route gets. Use it in the NNUE kernels where a measurement
 says it pays. Do NOT use it as a first resort elsewhere: five scalar reformulations of the
 same kernels made things WORSE, and the reason is in
-[docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) section 12.
+[docs/idiomatic-rust.md](docs/idiomatic-rust.md) section 12.
 
 ## The golden
 
@@ -55,7 +55,7 @@ state. Check the state against the tree before acting on it:
   The accumulator is updated by **diffing the recomputed feature sets** rather than from a
   per-move delta — correct by construction, and **1.48x FASTER** than the from-scratch
   recompute it replaced, measured rather than assumed. The per-move delta was then built
-  anyway and LOST: `docs/03-engine-eval.md` has both tables, and they are what any further
+  anyway and LOST: `docs/engine-eval.md` has both tables, and they are what any further
   attempt has to beat.
   `crates/rfish-engine/src/eval/classical.rs` is now only the fallback for a run with NO net
   on disk. It is **scaffolding with a scheduled deletion date**: do not tune it, do not
@@ -162,9 +162,9 @@ nothing, fix it and say nothing — a running tally of your own mistakes buries 
 that mattered.
 
 **Match a document's length to what it must carry**, whether it is a page in
-[docs/](docs/README.md) or a report in the reply. Cover the substance and stop: no restated
+[docs/](docs/index.md) or a report in the reply. Cover the substance and stop: no restated
 summary, no recap of what a gate prints, no next-steps list nobody asked for. Length is not
-thoroughness; it is where rot hides ([docs/13-writing.md](docs/13-writing.md)).
+thoroughness; it is where rot hides ([docs/writing.md](docs/writing.md)).
 
 ## Setup
 
@@ -229,28 +229,28 @@ the defect was in the gate BEING WRITTEN rather than in the code it was aimed at
 | `signature-update` on a **red** gate launders a bug into the anchor. Fix the code, then re-derive. `golden-update` now REFUSES, because it drives rfish and writes a photograph of rfish; `golden-audit --write` drives the oracle. Do NOT reach for its override to get past a red gate — that is the one way around the refusal, and it deletes the finding. | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | A `.uci` fixture is piped **RAW**, so a `#` line is a COMMAND, not a comment. `fixture-coverage` refuses one; the `.fens` corpora are read by a gate rather than piped and do carry headers. | `tools/fixture_properties.tsv` |
 | `tools/perft.table` is **not** a golden. Those counts are facts about chess; a mismatch is always a movegen bug. | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| The engine must run from `resources/` — it looks for its net relative to the working directory, and a run from the repo root silently finds none, falls back to the classical scaffolding, and reports a node count that looks entirely plausible. | [docs/10-tooling-ci.md](docs/10-tooling-ci.md) |
-| A measurement without a net is a measurement of a different engine. Check for the `info string NNUE evaluation using …` line before believing any node count. | [docs/03-engine-eval.md](docs/03-engine-eval.md) |
-| Release builds have `overflow-checks = false`; every intended wrap says `wrapping_*` in the source. A bare `+` that wraps in release and traps in `gate` is a bug the gate profile is there to catch. | [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) |
-| The default build sets no `-C target-cpu`. `cargo xtask build --arch <tier>` does, and it changes what the NNUE loops vectorise to — so a perf number without its tier is not a number. Every tier is ENUMERATED and `native` only selects one of them; a number filed under host-specific codegen is reproducible nowhere. | [docs/10-tooling-ci.md](docs/10-tooling-ci.md) |
-| `signature` builds at the DEFAULT arch, so it tests the portable arm and cannot see an ISA-gated divergence — and the NNUE kernels are `std::simd`, whose lowering the tier decides. `cargo xtask arch-determinism` is the gate that can. It blocks in CI now, but it only BENCHES the tiers its runner can execute — the hosted fleet is mixed, so the three AVX-512 rungs are usually built and not driven there. Run it locally on an AVX-512 box after touching a kernel; that is the only run that covers all five, and CI names the tiers it left unbenched rather than counting them checked. | [docs/10-tooling-ci.md](docs/10-tooling-ci.md) |
-| A cost regression is invisible to every gate in `parity`: the anchor pins the NODE count, not what a node costs. `cargo xtask perf-budget` holds the instruction count to a recorded row, and `cargo xtask budget-ab` does it against a git ref with NO stored row. **Both take `--syzygy`, and without it neither reaches the tablebase prober at all** — every bench position has more men than the shipped corpus covers, so a whole zone sat outside every cost gate; `#[inline(never)]` on the decoder is +0.90% on that axis, +0.0000% on the bench one and invisible to `signature` — both sides built, so the toolchain cancels. Neither can say a refactor emitted the SAME CODE; `cargo xtask codegen-equiv` compares the disassembly symbol by symbol, which is the only gate that answers a "no functional change" claim. All three refuse a clean checkout or a moved node count rather than reporting a comparison they did not make. | [docs/11-performance.md](docs/11-performance.md) |
-| **"Too small to measure" is a claim about the INSTRUMENT, not about the code.** The 2026-08-15 sweep filed refish's tablebase length walk as "real, and unmeasurable here" on a figure of 8.8M Ir — taken on a workload that barely probes. On one built to probe, the same line is 1,648M, 15.9% of it, and replacing it was −12.05%. Build the axis, then file the verdict. | [docs/12-references.md](docs/12-references.md) |
-| **`perf-budget` GATES startup, on its own tolerance — it did not, and that is the trap this row records.** The net load and the magic tables were measured, subtracted, printed and never judged: 1,054M instructions against a 1,512M search, 41% of a `bench` before it searches a node, and 17% of it was defect. Both axes now carry a verdict, at 0.005% for the search and 1% for startup, because one is paid per process and the other per move. `/usr/bin/time -f "%M"` is still the only instrument for peak RSS. A gate that subtracts a cost is a gate that hides it. | [docs/11-performance.md](docs/11-performance.md) |
-| "Improving" on upstream. A cleaner formulation that moves a rounding boundary moves the node count. | [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) |
-| **A defaulted trait method is a call site nobody has to write.** `InfoSink::current_move` shipped with a no-op default body, an EMPTY `if` block where the search should have called it, and a comment saying the shell did the reporting. No implementor existed, and a whole upstream `info` line was absent from the port. Grep for implementors, never for the declaration. | [docs/02-engine-search.md](docs/02-engine-search.md) |
-| Comments are **imperative mood**; never pin a number a gate computes — nor a LIST one computes. `docs-lint` holds the documented `parity` order to `gates::parity_steps`, because the page writing that list out drifted three entries in the paragraph that warned about drifting. Every other list in the set is still prose. | [docs/13-writing.md](docs/13-writing.md) |
-| **Never exercise `Threads` near its declared maximum, and check what DERIVES one.** A worker is ~15.6 MB resident here (measured: 251 MB at `Threads 1`, 362 MB at `Threads 8`), so `Threads 1024` — the option's own max — is ~16 GB, and a harness running two engines is ~32 GB. That takes down a WSL2 VM and a CI runner, and it has: both sibling ports lost one, and this box lost two in one session. The value need not be TYPED to be reached — `speedtest 1024` derived it from one argument, which is why that argument is clamped to the host's core count and not to the option's range: a ceiling that yields a legal 1024 is worse than a refusal, because it succeeds. Test this class as a PURE FUNCTION, never by driving the binary. Cover the declared bounds with the `uci` listing diff, and keep every harness at 1, 2, 8 or 16. | [docs/07-shell.md](docs/07-shell.md) |
+| The engine must run from `resources/` — it looks for its net relative to the working directory, and a run from the repo root silently finds none, falls back to the classical scaffolding, and reports a node count that looks entirely plausible. | [docs/tooling-ci.md](docs/tooling-ci.md) |
+| A measurement without a net is a measurement of a different engine. Check for the `info string NNUE evaluation using …` line before believing any node count. | [docs/engine-eval.md](docs/engine-eval.md) |
+| Release builds have `overflow-checks = false`; every intended wrap says `wrapping_*` in the source. A bare `+` that wraps in release and traps in `gate` is a bug the gate profile is there to catch. | [docs/idiomatic-rust.md](docs/idiomatic-rust.md) |
+| The default build sets no `-C target-cpu`. `cargo xtask build --arch <tier>` does, and it changes what the NNUE loops vectorise to — so a perf number without its tier is not a number. Every tier is ENUMERATED and `native` only selects one of them; a number filed under host-specific codegen is reproducible nowhere. | [docs/tooling-ci.md](docs/tooling-ci.md) |
+| `signature` builds at the DEFAULT arch, so it tests the portable arm and cannot see an ISA-gated divergence — and the NNUE kernels are `std::simd`, whose lowering the tier decides. `cargo xtask arch-determinism` is the gate that can. It blocks in CI now, but it only BENCHES the tiers its runner can execute — the hosted fleet is mixed, so the three AVX-512 rungs are usually built and not driven there. Run it locally on an AVX-512 box after touching a kernel; that is the only run that covers all five, and CI names the tiers it left unbenched rather than counting them checked. | [docs/tooling-ci.md](docs/tooling-ci.md) |
+| A cost regression is invisible to every gate in `parity`: the anchor pins the NODE count, not what a node costs. `cargo xtask perf-budget` holds the instruction count to a recorded row, and `cargo xtask budget-ab` does it against a git ref with NO stored row. **Both take `--syzygy`, and without it neither reaches the tablebase prober at all** — every bench position has more men than the shipped corpus covers, so a whole zone sat outside every cost gate; `#[inline(never)]` on the decoder is +0.90% on that axis, +0.0000% on the bench one and invisible to `signature` — both sides built, so the toolchain cancels. Neither can say a refactor emitted the SAME CODE; `cargo xtask codegen-equiv` compares the disassembly symbol by symbol, which is the only gate that answers a "no functional change" claim. All three refuse a clean checkout or a moved node count rather than reporting a comparison they did not make. | [docs/performance.md](docs/performance.md) |
+| **"Too small to measure" is a claim about the INSTRUMENT, not about the code.** The 2026-08-15 sweep filed refish's tablebase length walk as "real, and unmeasurable here" on a figure of 8.8M Ir — taken on a workload that barely probes. On one built to probe, the same line is 1,648M, 15.9% of it, and replacing it was −12.05%. Build the axis, then file the verdict. | [docs/references.md](docs/references.md) |
+| **`perf-budget` GATES startup, on its own tolerance — it did not, and that is the trap this row records.** The net load and the magic tables were measured, subtracted, printed and never judged: 1,054M instructions against a 1,512M search, 41% of a `bench` before it searches a node, and 17% of it was defect. Both axes now carry a verdict, at 0.005% for the search and 1% for startup, because one is paid per process and the other per move. `/usr/bin/time -f "%M"` is still the only instrument for peak RSS. A gate that subtracts a cost is a gate that hides it. | [docs/performance.md](docs/performance.md) |
+| "Improving" on upstream. A cleaner formulation that moves a rounding boundary moves the node count. | [docs/idiomatic-rust.md](docs/idiomatic-rust.md) |
+| **A defaulted trait method is a call site nobody has to write.** `InfoSink::current_move` shipped with a no-op default body, an EMPTY `if` block where the search should have called it, and a comment saying the shell did the reporting. No implementor existed, and a whole upstream `info` line was absent from the port. Grep for implementors, never for the declaration. | [docs/engine-search.md](docs/engine-search.md) |
+| Comments are **imperative mood**; never pin a number a gate computes — nor a LIST one computes. `docs-lint` holds the documented `parity` order to `gates::parity_steps`, because the page writing that list out drifted three entries in the paragraph that warned about drifting. Every other list in the set is still prose. | [docs/writing.md](docs/writing.md) |
+| **Never exercise `Threads` near its declared maximum, and check what DERIVES one.** A worker is ~15.6 MB resident here (measured: 251 MB at `Threads 1`, 362 MB at `Threads 8`), so `Threads 1024` — the option's own max — is ~16 GB, and a harness running two engines is ~32 GB. That takes down a WSL2 VM and a CI runner, and it has: both sibling ports lost one, and this box lost two in one session. The value need not be TYPED to be reached — `speedtest 1024` derived it from one argument, which is why that argument is clamped to the host's core count and not to the option's range: a ceiling that yields a legal 1024 is worse than a refusal, because it succeeds. Test this class as a PURE FUNCTION, never by driving the binary. Cover the declared bounds with the `uci` listing diff, and keep every harness at 1, 2, 8 or 16. | [docs/shell.md](docs/shell.md) |
 | **A value a caller supplies must be bounded where it is PARSED, not where it overflows.** `Hash`, `Threads` and `NumaPolicy` are the three that become an allocation; the CLOCK is the fourth, and it becomes arithmetic instead — UCI gives `wtime`/`winc` no range, so `go wtime 4e18 winc 4e18` reached `inc * 49` in the time manager, twenty times what an `i64` holds. `Limits::MAX_CLOCK_MS` clamps at entry and `TimeManagement::init` saturates as well, so no caller can panic the engine. `mate` is the fifth — `go mate N` stops on `2 * N`, so the DOUBLE is what must fit, and `Limits::MAX_MATE` bounds it symmetrically. `movestogo` is the counter-example worth knowing: its arithmetic was WIDENED instead, because forming the horizon's terms at `i64` is free and exact, and a clamp would have changed a search upstream defines. Test this class as a PURE FUNCTION: a reproducer that reaches option parsing has taken this box down twice. `NumaPolicy` accepts a processor list, and upstream bounds each range but not their sum — 735 bytes of input reached 2.8 GB here before the allocator gave up. `numa.rs` bounds the total; keep it bounded. | `platform/numa.rs` |
-| **A reused build is not this tree's build, and `counters` did not check.** `verify_oracle` proved the UPSTREAM half was built at the pin; nothing proved the PGO half was built from the tree in front of you, and a PGO build is expensive enough to be kept and reused for weeks. A stale one searched 316,793 nodes on the probing corpus where the tree in front of it and upstream both searched 313,744. It is refused now, by mtime against the newest source. The general form: **a differential verifies the side it does not own and forgets the side it does.** | [docs/11-performance.md](docs/11-performance.md) |
-| **A fen path that does not resolve does not fail — `bench` falls back to its built-in list.** With the tables still loaded and the "found N tables" check still green, a mistyped corpus produced a complete, plausible, entirely wrong probing measurement. Count the POSITIONS searched against the corpus, not just the tables found. | [docs/11-performance.md](docs/11-performance.md) |
+| **A reused build is not this tree's build, and `counters` did not check.** `verify_oracle` proved the UPSTREAM half was built at the pin; nothing proved the PGO half was built from the tree in front of you, and a PGO build is expensive enough to be kept and reused for weeks. A stale one searched 316,793 nodes on the probing corpus where the tree in front of it and upstream both searched 313,744. It is refused now, by mtime against the newest source. The general form: **a differential verifies the side it does not own and forgets the side it does.** | [docs/performance.md](docs/performance.md) |
+| **A fen path that does not resolve does not fail — `bench` falls back to its built-in list.** With the tables still loaded and the "found N tables" check still green, a mistyped corpus produced a complete, plausible, entirely wrong probing measurement. Count the POSITIONS searched against the corpus, not just the tables found. | [docs/performance.md](docs/performance.md) |
 | A golden must pin the ENGINE, not the runner. `info string Available processors` is the host's core count, so `filter_volatile` drops it. Anything else host-dependent belongs there too. | [crates/xtask/src/gates.rs](crates/xtask/src/gates.rs) |
-| **An oracle built by a different compiler, or without PGO, is not a comparable oracle.** rfish is rustc/LLVM; a `g++` oracle measures GCC against LLVM, and a non-PGO oracle measures upstream's own shipped recipe against something nobody runs. Build both sides with `cargo xtask oracle` / `cargo xtask pgo`, which use clang at rustc's LLVM major and train both profiles on the same `bench`. | [docs/11-performance.md](docs/11-performance.md) |
+| **An oracle built by a different compiler, or without PGO, is not a comparable oracle.** rfish is rustc/LLVM; a `g++` oracle measures GCC against LLVM, and a non-PGO oracle measures upstream's own shipped recipe against something nobody runs. Build both sides with `cargo xtask oracle` / `cargo xtask pgo`, which use clang at rustc's LLVM major and train both profiles on the same `bench`. | [docs/performance.md](docs/performance.md) |
 
 ## Performance work
 
-Read [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) (porting patterns, measurement
-discipline) and [docs/11-performance.md](docs/11-performance.md) (the seven axes, what each
+Read [docs/idiomatic-rust.md](docs/idiomatic-rust.md) (porting patterns, measurement
+discipline) and [docs/performance.md](docs/performance.md) (the seven axes, what each
 proves and what it cannot see) before proposing any optimisation. Four rules that outrank
 intuition:
 
@@ -288,7 +288,7 @@ intuition:
   malloc/free against upstream's 1.9M, at an identical node count. Hoist the collection to
   the worker and `clear()` it -- and note that the obvious fix, an inline array mirroring
   upstream's field, is measurably WORSE, because safe Rust must initialise it. See
-  [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) section 9.
+  [docs/idiomatic-rust.md](docs/idiomatic-rust.md) section 9.
 - **NPS cannot settle a few per cent on this box.** One unchanged binary read 240k-275k,
   and a cold run read 103k. Use callgrind for anything under ~10%.
 - **A bounds check is not automatically the cost, and when it is, the cost is the LENGTH
@@ -329,7 +329,7 @@ intuition:
   caller can make `None`, a `Vec` whose length never changes, a loop that will not unroll
   because of a `break`, a horizontal reduction, a compute-then-copy pair, a range slice walked
   by an iterator, two tables read under one key, a container scanned where only the CHANGED
-  elements matter. [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) sections 14, 15 and
+  elements matter. [docs/idiomatic-rust.md](docs/idiomatic-rust.md) sections 14, 15 and
   17 record thirteen such shapes, what each was worth, and the ten of the same shape that
   measured WORSE — read them before hand-optimising anything, in either zone.
 - **A cold body inlined into a hot caller costs that caller its frame on every call, even

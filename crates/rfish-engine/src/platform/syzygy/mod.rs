@@ -12,7 +12,7 @@
 //!
 //! The cost is that a table is resident in full rather than paged on demand. For the 3-to-5
 //! man sets that is megabytes; for a 7-man set it would be gigabytes, and a block cache
-//! would be needed. See `docs/05-tablebases.md`.
+//! would be needed. See `docs/tablebases.md`.
 //!
 //! Golden: `Stockfish/src/syzygy/tbprobe.cpp`.
 

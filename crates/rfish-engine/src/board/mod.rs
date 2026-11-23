@@ -5,7 +5,7 @@
 //! way — search and eval read the board; the board reads nothing back — and that is what
 //! makes perft a complete test of this zone.
 //!
-//! See `docs/01-engine-board.md`.
+//! See `docs/engine-board.md`.
 
 pub mod attacks;
 pub mod bitboard;

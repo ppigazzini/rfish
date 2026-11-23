@@ -103,9 +103,9 @@ found, then grep the class.
 | `P4`, an `int` index forcing a sign extension per use | **not attempted**, on the rule refish declines it by and this tree shares: a type is free while a value is carried and costs where many are live in one large function |
 | its whole rig-hardening series — `2fc949a3`, `b94001a3`, `2e8d17f7`, `86f63764`, `1ae7a170`, `a115486e`, `34c265b7` | **already stronger here.** `compared_something` is applied across the suite, a blank golden is refused in BOTH modes, a tier that fails to build propagates, and the deadline polls `try_wait` with the reader on its own thread |
 | `15f06b6a` + `c57c57b5`, the tablebase decode's length walk and per-length tables | ~~**real, and unmeasurable here.**~~ **RETRACTED 2026-08-18, and `15f06b6a` is TAKEN.** The verdict was true of the INSTRUMENT and false of the finding: `decompress` reads 8.8M Ir on a workload that barely probes, and on one built to probe the same walk is **1,648,117,166 Ir, 15.9%** of it. Replacing it with a verified bucket table is −12.05% at avx2 and −10.03% at sse41, +0.0000% on the bench axis. `c57c57b5` remains open. **A "too small to measure" verdict is a claim about the instrument, and this file now carries the rule: build the axis before filing one** |
-| `90d8dcb9`, decoding a weight from an eight-byte window | **REFUTED by measurement, twice.** See [08-idiomatic-rust.md](08-idiomatic-rust.md) §11 |
+| `90d8dcb9`, decoding a weight from an eight-byte window | **REFUTED by measurement, twice.** See [idiomatic-rust.md](idiomatic-rust.md) §11 |
 | its `malformed.sh` fixture set, as a deterministic test here | **built, and DROPPED.** It passed and could not be made to fail: five mutations, including removing a bounded read outright, all stayed green, because rfish refuses those files structurally a layer or two before the bounds they target. A test with no detection power is the defect the meta-gates exist to refuse. `../zfish` derived its fixture offsets from its own loader instead, which is the part worth retrying |
-| `d4324d9e` + `f1318daa` codegen equivalence, `9c26b4d6` a budget with no stored golden | **taken**, as `codegen-equiv` and `budget-ab` — see [10-tooling-ci.md](10-tooling-ci.md) |
+| `d4324d9e` + `f1318daa` codegen equivalence, `9c26b4d6` a budget with no stored golden | **taken**, as `codegen-equiv` and `budget-ab` — see [tooling-ci.md](tooling-ci.md) |
 | `perfbudget.sh --syzygy` and `perfcounters.sh --syzygy`, its `T5` — no cost gate can run a probing workload | **taken on BOTH halves**, and it is the entry that retired the row above. Every bench position has more men than the shipped corpus covers, so the decoder, the index arithmetic and the parser sat outside every cost gate here. `#[inline(never)]` on the decoder is +0.90% on the new axis, +0.0000% on the bench one and invisible to `signature` — two gates green and one red on the same tree |
 
 **A register swept once is not a register swept.** The 2026-08-15 sweep read `refish`'s
@@ -119,10 +119,10 @@ the four lines above the line refish changed.
 
 | probed, campaign 2 (entries 21–34) | verdict |
 |---|---|
-| `69c52a88` / entry 21, castling legality gated on the `UCI_Chess960` option | **taken.** Live here in the same shape, and `go perft 1` on `4k3/8/8/8/8/8/8/qR2K3 w Q` generated `e1c1` — nine moves where there are eight. See [01-engine-board.md](01-engine-board.md) |
+| `69c52a88` / entry 21, castling legality gated on the `UCI_Chess960` option | **taken.** Live here in the same shape, and `go perft 1` on `4k3/8/8/8/8/8/8/qR2K3 w Q` generated `e1c1` — nine moves where there are eight. See [engine-board.md](engine-board.md) |
 | `64e65bee` / entry 32, a duplicate castling right leaving a stale mask | **taken.** Live here; `w AB` then `a1a2` destroyed the right the b1 rook owns |
 | `6a9dd5c7` / entry 31, `movestogo` and `mate` reaching arithmetic with no room | **taken, and SPLIT.** `mate` is bounded at the parser because the stop condition doubles it; `movestogo` is not, because widening the horizon's subtraction to `i64` is free, exact and keeps upstream's behaviour. Their fix bounds the count and leaves the CAST that produces the same `mtg` from a negative clock — an arm live on both trees, and found here rather than read |
-| entry 27, the continuation-history bonus overflowing `int` | **taken, and it is the case where the port pays LESS than the branch.** Six exact repairs each cost them ~0.08%, because the UB is load-bearing for the codegen — see [02-engine-search.md](02-engine-search.md). Rust grants no such licence, so spelling the wrap is byte-identical codegen |
+| entry 27, the continuation-history bonus overflowing `int` | **taken, and it is the case where the port pays LESS than the branch.** Six exact repairs each cost them ~0.08%, because the UB is load-bearing for the codegen — see [engine-search.md](engine-search.md). Rust grants no such licence, so spelling the wrap is byte-identical codegen |
 | `07b8535a` / entry 24, `root_probe_wdl` ignoring `Syzygy50MoveRule` | **NOT taken, and it found something larger.** Upstream's own line — `if (pos.is_draw(1))` — was MISSING here altogether, so the fidelity gap was the whole test rather than the flag on it. Restored in upstream's exact form; their correction of the flag is an improvement on the golden and is inherited as a defect instead |
 | `9b163d49` / entry 23, a failed net load half-overwriting the live network | **no analogue.** `Network::load` returns a whole `Network` or an error, so there is no live object to read into and nothing to half-overwrite |
 | `96697e8a` / entry 29, a mis-sized table ending the process | **no analogue.** Nothing here maps a table or exits on one: `TbTable::new` returns an `Option` and every read is bounds-checked, so a truncated file is refused structurally |
@@ -131,7 +131,7 @@ the four lines above the line refish changed.
 | `060b4146` / entry 26, an unbounded cpu index, and `6d08acbf` / entry 28, an unbindable policy | **no analogue**, as the 2026-08-15 sweep found for the same class: there is no `CPU_ALLOC` here, the total is bounded, and there is no pinning to fail |
 | `46944a92` / entry 30, `std::exit` under a live tablebase probe | **no analogue.** Nothing unmaps a table, and the one `exit` on the shell's failure path is not reachable with workers inside a probe |
 | entry 22, a crafted LEB128 header hanging the loader | **already closed** at `c996043`, by the 2026-08-15 sweep's own second look |
-| `d657cfae`, gating the startup the budget only printed | **taken** — see [10-tooling-ci.md](10-tooling-ci.md). It closes a hole AGENTS.md carried as a trap row telling the reader to measure it by hand |
+| `d657cfae`, gating the startup the budget only printed | **taken** — see [tooling-ci.md](tooling-ci.md). It closes a hole AGENTS.md carried as a trap row telling the reader to measure it by hand |
 | `9b6ebbab` a liveness gate, `ccdd41c1` thread scaling, `e5476414` shellcheck, `662c6675`/`3bb90d38` CI pins and citations, `5c00ff7d`/`6b36496a` include and friend direction | **not taken.** The first two are wall-clock instruments this repository already refuses to put in `parity`; the rest are C++-tree properties — an include graph, a `friend`, a bash suite — that `cargo` and `clippy` make unrepresentable here, and `sync-status` already answers the citation question for the one SHA that matters |
 **A sibling's GATE SUITE is swept the same way, and the useful half is the gate with no
 analogue rather than the gate that is better.** The 2026-08-18 sweep mapped all 28 of refish's
@@ -139,7 +139,7 @@ shell gates, 7 Python harnesses and 5 C++ harnesses against this tree's 39 `xtas
 
 | probed, the gate suite | verdict |
 |---|---|
-| `reprosearch.sh` | **taken**, as `repro-search` — and it is UPSTREAM's own test, which this port had never ported. It asks the one question no gate here asked: what a COMPLETED search leaves for the next one. See [10-tooling-ci.md](10-tooling-ci.md) |
+| `reprosearch.sh` | **taken**, as `repro-search` — and it is UPSTREAM's own test, which this port had never ported. It asks the one question no gate here asked: what a COMPLETED search leaves for the next one. See [tooling-ci.md](tooling-ci.md) |
 | `perfbudget.sh`'s startup tolerance | **taken** at the previous sweep, and its first run found 28.7M — see the slider-ray commit |
 | `actionpins.sh`, an action pin that has gone stale | **taken as the workflow lockfile instead.** Every action in the workflows here runs the commit `.github/workflows/actions.lock` names for its tag, and the `actions-lock` job asks GitHub whether each tag still names that commit with `gh actions-lock --verify` — the question the gate answers, asked by GitHub's own checker, so no rate-limit handling of ours stands between it and a verdict |
 | `devcite.sh`, every cited SHA is an ANCESTOR of HEAD | **not taken, and the reason is that the shape does not transfer.** 48 SHAs are cited across `docs/` and `AGENTS.md` and **47 of them are SIBLING commits** — `../Stockfish`, `../zfish`, `../mcfish` — which resolve in another clone or in none. A reachability test against THIS repository would report 47 findings that are not defects, and a test against the sibling would skip whenever the sibling is absent, which is every CI run. What transfers is refish's own conclusion rather than its gate: **the durable form is a subject beside every SHA**, because the subject survives a rebase and is greppable. The pages here already write citations that way in the register above |
@@ -168,10 +168,10 @@ tiers:
 | `0c1a0f2d6`, shifting the eight stats divisions whose dividend cannot be negative | **TAKEN.** avx2 −0.0149%, sse41 −0.0119%. The same eight sites, the same proofs, and the same function. `cmovns` over the whole binary 126 → 110. The rewrite is NOT mechanical: `>>` binds looser than `+` where `/` binds tighter, so one site silently became `873 * pv >> (7 + hist)` and `signature` went red against an anchor that had not moved. `clippy::precedence` names every one of them and is the gate that owns the class |
 | `f529375bd`, the quiet move-count threshold | **TAKEN ON HALF, and the other half REFUTED.** Spelling `(3 + depth * depth) / (2 - improving)` as upstream's shift is −0.0226% avx2 and −0.0367% sse41 — larger here than there, because this port wrote a division by a VALUE and neither compiler can reduce that. refish also HOLDS the value across the move loop and recomputes it at the same two sites that move `depth`; that half is avx2 **+0.0111%** against sse41 −0.0312%, and worse than the shift alone on both. gcc rebuilt the expression from memory and LLVM did not, so what the hoist saves in arithmetic it pays back in a register live across the whole move loop |
 | `264952f88`, bounding the good-quiet walk by depth rather than by the product | **TAKEN, and the largest of the three.** avx2 −0.0308%, sse41 −0.0238%. Worth more here than there: `quiet_sort_limit` SATURATES — `depth` is a caller's value — so the comparison cost an overflow check on top of refish's `imul`, and the derived bound needs neither. The test that decides the stage now proves the replacement over every depth at which the product can be formed |
-| `b896b0292`, scanning the quiet sort's limit four moves at a time | **REFUTED by measurement, on both axes.** avx2 **+0.0885%**, sse41 **+0.1145%**, and the mispredicts it targets did not fall either: `init_quiets` went 311,230 → 323,996 and the program total rose. **refish gets its block for free and this port cannot.** `ExtMove` is eight bytes with `value` in the upper half, so one 256-bit load holds four of them and a mask drops the halves; `ScoredMove` has no guaranteed layout and safe Rust has no slice reinterpretation, so the vector must be BUILT from four scalar score loads. The gather costs more than the branch it removes. See [08-idiomatic-rust.md](08-idiomatic-rust.md) §17 |
+| `b896b0292`, scanning the quiet sort's limit four moves at a time | **REFUTED by measurement, on both axes.** avx2 **+0.0885%**, sse41 **+0.1145%**, and the mispredicts it targets did not fall either: `init_quiets` went 311,230 → 323,996 and the program total rose. **refish gets its block for free and this port cannot.** `ExtMove` is eight bytes with `value` in the upper half, so one 256-bit load holds four of them and a mask drops the halves; `ScoredMove` has no guaranteed layout and safe Rust has no slice reinterpretation, so the vector must be BUILT from four scalar score loads. The gather costs more than the branch it removes. See [idiomatic-rust.md](idiomatic-rust.md) §17 |
 | `949c8eebb`, picking both threat lists by index rather than by branch | **no analogue as stated.** `append_changed_indices_both` chooses between a removed and an added list twice a trip; `collect_diff` here does not have that shape at all — it marks the old set in a bitset and clears bits as the new set is read, so the two data-dependent branches it does have are a membership test, not a list choice. The technique — a flag as an index rather than as a branch — stays available and is not free in safe Rust, because a branchless push needs a cursor into a pre-sized buffer rather than `Vec::push` |
 | `3be968e97`, removing castling's rook before its king | **no analogue.** It removes 5,132 CANCELLING threat pairs a bench, which exist because refish emits a per-move delta list. This port DIFFS the recomputed feature sets, so a pair that cancels is a bit set and cleared in `collect_diff`'s bitset and never reaches a weight row |
-| `c890a5659`, generating the picker's moves into its own slots | **already done by construction.** `MovePicker::generate` writes straight into the worker's `MoveBuf`; there is no `MoveList` to copy out of, and §9 of [08-idiomatic-rust.md](08-idiomatic-rust.md) records why the buffer is owned by the worker |
+| `c890a5659`, generating the picker's moves into its own slots | **already done by construction.** `MovePicker::generate` writes straight into the worker's `MoveBuf`; there is no `MoveList` to copy out of, and §9 of [idiomatic-rust.md](idiomatic-rust.md) records why the buffer is owned by the worker |
 | `9c853540b`, bounding the conthist bonus so the clamp folds away | **answered differently, and already landed.** Upstream 47be34c5 put the same six clamps on the hot path here; c7d89ec tables `weight * multiplier` instead, and 14ce57f prices it. refish's answer needs a `u16` table to bound the product and a branch to prove the bonus small |
 | `3bb0d5a33`, `c9adca61e`, `d043c9be3`, `055e137e8` | **no analogue.** Three name frames Ubuntu's gcc guards with `-fstack-protector-strong`, which rustc does not enable and which refish's own clang binary carries none of; the fourth keeps a 2296-byte `MovePicker` off gcc's SLP vectoriser, which raises a stack object's alignment to 32 whatever the source says |
 | `2226fd0fa`, `d7162e2a4`, `faa89a353`, `56d90a5d4`, `ae8da3b9a`, `1a9a7a785` | **no analogue as written.** Intrinsic folds in the nnz bitset, a trip count gcc takes and clang does not, gcc coalescing an accumulator with its output, gcc rolling a two-trip loop, gcc's final-value pass rebuilding a pointer from a popcount, and eight out-of-line copies of a function gcc declined to inline |
@@ -183,7 +183,7 @@ is the debt a sweep incurs whenever it classifies from prose:
 | closed afterwards | how |
 |---|---|
 | `1a9a7a785`, eight out-of-line copies of the dual-magic lane gcc declined to inline | **confirmed absent, from the binary.** The question the commit asks is compiler-independent — does the most-read function in the engine survive as a call? — and only its ANSWER is gcc's. This binary carries no out-of-line slider-lookup symbol at all; the only `attacks` symbol left is `SliderTables::build`, which runs once at startup. Checked rather than assumed |
-| `b896b0292` pointing at the quiet sort, and the sort's OTHER branch | **the sibling's site is not this port's hot one, and neither is takeable.** The ladder carries 156,935 mispredicts against the limit test's 101,478. Both shapes of the replacement are refuted and together they say where the branch actually is — see [08-idiomatic-rust.md](08-idiomatic-rust.md) §17 |
+| `b896b0292` pointing at the quiet sort, and the sort's OTHER branch | **the sibling's site is not this port's hot one, and neither is takeable.** The ladder carries 156,935 mispredicts against the limit test's 101,478. Both shapes of the replacement are refuted and together they say where the branch actually is — see [idiomatic-rust.md](idiomatic-rust.md) §17 |
 
 ### What the cache and branch axis says about this port
 
@@ -205,7 +205,7 @@ an instruction count alone would have said the opposite.
 Where those mispredicts are, by symbol, from `--branch-sim=yes` over `bench 16 1 8`:
 `leb128_i16_groups` carries **57.7%** of every mispredict the process pays, and every one of
 them is at STARTUP, decoding the net. That door is already closed by measurement — §11 of
-[08-idiomatic-rust.md](08-idiomatic-rust.md) records the eight-byte-window rewrite refuted
+[idiomatic-rust.md](idiomatic-rust.md) records the eight-byte-window rewrite refuted
 twice on the instruction axis — and the branch view does not reopen it, because the instruction
 cost of the fix was the reason it was refused. The search-side mispredicts sit in `transform`,
 `propagate`, `node`, `init_quiets` and `do_move_recording`'s threat walk, in that order.
@@ -221,7 +221,7 @@ code layout rather than work removed, and either tier alone would have read as a
 
 | probed, the perf window | verdict |
 |---|---|
-| `8bc5caa2`, the halfka fold peeled to the one or two rows a ply can carry | **built and refused.** avx2 +0.1985%, sse41 −0.2577%, in two independent shapes that cost the same number — see [03-engine-eval.md](03-engine-eval.md). It is also upstream master's, and the pin crossed it |
+| `8bc5caa2`, the halfka fold peeled to the one or two rows a ply can carry | **built and refused.** avx2 +0.1985%, sse41 −0.2577%, in two independent shapes that cost the same number — see [engine-eval.md](engine-eval.md). It is also upstream master's, and the pin crossed it |
 | `fe3490cc`, the weight ROW offset carried instead of the feature number | **built and refused.** avx2 +0.1098%, sse41 −0.1745%. The scale moved into `KaIndex` so the six tile subscripts index directly and the PSQT head shifts back down; bit-exact, and the same split as the peel on the same kernel. `TpIndex` cannot take it either way — `collect_diff` marks threat features in a bitset sized by their dimension count, and scaling the index scales that bitset with it |
 | `56c6bfdd`, a conthist counter read once and scaled by one multiply | **TAKEN, on the half that transfers.** Tabling `weight * multiplier` is −233,645 at avx2 and −217,428 at sse41, both tiers the same sign. Its other half has no analogue: the counter is loaded twice because a relaxed atomic may not be folded, and these histories are plain `i16` |
 | `be9ffd90` + `11349960`, a plane asked for one bit rather than built into a mask | **REFUTED by measurement.** refish gets `bt` for `plane >> sq & 1` where gcc built the mask, and reports `gives_check` −30.8%. Writing `Bitboard::contains` that way here is avx2 −83 Ir and sse41 +1 Ir, and the binary holds the same 246 `bt` either way: LLVM canonicalises the two forms, so the win does not exist to be had |
@@ -231,12 +231,12 @@ code layout rather than work removed, and either tier alone would have read as a
 | `fecd6188`, naming the main history's row | **not taken, on its own evidence.** The body says gcc reassociates `table + colour` straight back out of the name and still spills both halves; 60 instructions per move to 59 |
 | `f75b3707`, pinning the accumulator's two inlining decisions | **no analogue as stated.** It closes gcc's LTO inliner being BISTABLE across unrelated commits. The general lesson is already this tree's practice |
 | `98b6b23c`, rolling the walks that return on their first move | **no analogue.** The cost is `-funroll-loops` computing a trip count for a counted exit and spending it on an eight-way dispatch; that flag is upstream's Makefile, and rustc passes nothing like it |
-| `c004d583`, a node's slider attacks carried from captures to quiets | **OPEN, and the only algorithmic candidate in the window.** Compiler-independent: `CAPTURE_INIT` computes every slider set and `QUIET_INIT` computes it again from the same square and occupancy, 0.512 attack computations a node on refish's census. Not attempted here, because it needs a sixteen-entry cache threaded from the picker into `generate`, and [08-idiomatic-rust.md](08-idiomatic-rust.md) §9 records that an inline array mirroring upstream's field measured WORSE in this port for the reason this one would pay too: safe Rust must initialise it |
+| `c004d583`, a node's slider attacks carried from captures to quiets | **OPEN, and the only algorithmic candidate in the window.** Compiler-independent: `CAPTURE_INIT` computes every slider set and `QUIET_INIT` computes it again from the same square and occupancy, 0.512 attack computations a node on refish's census. Not attempted here, because it needs a sixteen-entry cache threaded from the picker into `generate`, and [idiomatic-rust.md](idiomatic-rust.md) §9 records that an inline array mirroring upstream's field measured WORSE in this port for the reason this one would pay too: safe Rust must initialise it |
 | `bf8b2044`, castling rights closed under their own operations | **already done.** `CastlingRights::without` and `::union` are the operations, and the mask never leaves the type |
 | `482645af`, naming the question the bound lattice is asked | **already type-safe.** The sites here compare enumerators by name rather than ANDing integers, so the defect that motivates it — an `int` result nobody named — does not arise. Naming the predicate stays available as a readability change, not a fix |
-| `ed4d420a`, two gate defaults that silently mismeasure | **TAKEN, in the other half of the class.** Its `perfbudget.sh` stops reading options at the first positional; position cannot matter here, because every reader scans the whole vector — what was missing was any question about whether the flag was KNOWN. See [10-tooling-ci.md](10-tooling-ci.md) |
+| `ed4d420a`, two gate defaults that silently mismeasure | **TAKEN, in the other half of the class.** Its `perfbudget.sh` stops reading options at the first positional; position cannot matter here, because every reader scans the whole vector — what was missing was any question about whether the flag was KNOWN. See [tooling-ci.md](tooling-ci.md) |
 | `9f2932a7`, MAP_FAILED from a failed large-page map | **no counterpart**, and it is upstream master's `5cae0fab` — crossed when the pin advanced |
-| `3d05cca8`, `c17780e3`, `20ff69ed`, `7d6e5f77`, and the six docs commits | **no analogue.** Two C++ includes, an imported msvc lane, imported cache steps, refish's own gitignore, and prose about refish's own pages — the two that generalise (an instruction ratio is not a time claim; what the instruction axis proves) are already this tree's rules in [11-performance.md](11-performance.md) |
+| `3d05cca8`, `c17780e3`, `20ff69ed`, `7d6e5f77`, and the six docs commits | **no analogue.** Two C++ includes, an imported msvc lane, imported cache steps, refish's own gitignore, and prose about refish's own pages — the two that generalise (an instruction ratio is not a time claim; what the instruction axis proves) are already this tree's rules in [performance.md](performance.md) |
 
 **The sweep's largest finding was in this tree's own gate, not in the sibling's code.** Reading
 `ed4d420a` as a CLASS rather than as a site — which is the rule the 2026-08-15 sweep paid for —
@@ -282,10 +282,10 @@ commit:
 |---|---|
 | `db74904f`, typing `root_probe`'s two adjacent bools | **taken.** The identical hazard: two `bool`s in argument position, both inversions silent, and one of them decides whether a won position is ranked as won. `Rule50`/`RankDtz`, broken on purpose to see the compiler refuse both orders |
 | `2e484fdb`, what `LenTabMaxBits` costs on either side of 12 | **taken, and re-measured rather than quoted.** Their 22%-at-12-bits is a FIVE-man figure; the corpus here is three-man, `max_sym_len` 7 and 11, and **no bucket escapes at all** — the cap never binds on what this repository ships. Both numbers are recorded, theirs marked as theirs |
-| `43e74015`, compile-probe rows proving each new type refuses its transposition | **partly taken, and the gap is named.** The refusals were confirmed by hand, which is this tree's existing convention for the table in [09-type-design.md](09-type-design.md). What is NOT here is a GATE: `negative-control` requires a mutant to compile, so a row that must FAIL to compile needs a mode it does not have. Seven rows of that table rest on "was broken on purpose" with nothing re-running it |
-| `c39bdf1c`, what `textequal.sh` cannot prove about a signature change | **taken as documentation.** The same limit binds `codegen-equiv`: a parameter's type is part of the mangled name, so retyping one renames the symbol and the gate compares bodies by name. Recorded in [10-tooling-ci.md](10-tooling-ci.md) |
+| `43e74015`, compile-probe rows proving each new type refuses its transposition | **partly taken, and the gap is named.** The refusals were confirmed by hand, which is this tree's existing convention for the table in [type-design.md](type-design.md). What is NOT here is a GATE: `negative-control` requires a mutant to compile, so a row that must FAIL to compile needs a mode it does not have. Seven rows of that table rest on "was broken on purpose" with nothing re-running it |
+| `c39bdf1c`, what `textequal.sh` cannot prove about a signature change | **taken as documentation.** The same limit binds `codegen-equiv`: a parameter's type is part of the mangled name, so retyping one renames the symbol and the gate compares bodies by name. Recorded in [tooling-ci.md](tooling-ci.md) |
 | `057eb35a`, the cpu-add result made nodiscard | **taken**, as `#[must_use]` with a one-line reason at each of the four sites that drop it |
-| `a0234971`, naming `reduction`'s parameters | **not taken as typing, and the reason is this tree's own rule.** `reduction(improving, d, mn, delta)` carries three adjacent `i32`s and the swap is silent, but it is called from `search`, the largest function in the engine, where [09-type-design.md](09-type-design.md) says a type costs where many values are live. That is refish's own `P4` verdict on the same function, reached independently |
+| `a0234971`, naming `reduction`'s parameters | **not taken as typing, and the reason is this tree's own rule.** `reduction(improving, d, mn, delta)` carries three adjacent `i32`s and the swap is silent, but it is called from `search`, the largest function in the engine, where [type-design.md](type-design.md) says a type costs where many values are live. That is refish's own `P4` verdict on the same function, reached independently |
 | `29be37a0` bestmove with its ponder move, `f301f771` a history share, `e56eabec` bank index types, `dd4024ed` quadrant subscripts, `b17449b5` two magic layouts, `3683267f` explicit constructors | **no analogue or already held.** Four are shapes this port never had — its history block is per-worker and its quadrant is reached through named methods, not two bool subscripts — and `explicit` is a C++ conversion rule with no Rust equivalent |
 
 | probed, `SPEEDUP.md`'s deterministic-win patterns | verdict |
@@ -340,11 +340,11 @@ goes. Both are in the table above with their numbers.
 | `87a23d54`, the three list walks taken out of the state machine's table | **built and REFUSED.** Bit-exact, and **+0.0206%** at avx2. Their own figure is a clang layout effect (−1.61% under clang PGO, +0.07% under gcc) and their own claim is about indirect mispredicts, which is a sampled column here. rustc reproduces neither the layout win nor a wash, so what this tree can measure of it says worse |
 | `78115f0b`, the quiet score's flat history index and shift-form bit tests | **taken, and it is the sweep's largest single result.** The six planes were already resolved once per LIST; naming the flat `[pc][to]` element once is −0.1835% at avx2, −0.1262% at sse41 and −0.1646% warm. A plane is one contiguous run, so a two-level index carries one subscript in the addressing mode and the other in an add, six times a move. `flatten_plane` returns a fixed-size ARRAY reference, so the length is a property of the type and no read loads one |
 | its NNUE series — `8068c80f` two dot-product chains, `97bd8d68` and `9929070f` clamping after the narrowing, `f4a7835a` a memory broadcast, `fb484a13` an unroll pragma, `c415d021` a pinned broadcast | **not applicable as written, and two are language-neutral.** Four are a gcc pragma, an opaque-pointer barrier or a `restrict` scope for a compiler this port does not use. The two that are not — clamping after the narrowing, and splitting the output layer into two accumulator chains — are expressible in `std::simd`; the first is a real instruction saving and the second is explicitly a LATENCY claim its author says an instruction count cannot see, which is this tree's own rule |
-| `663f5976`, an axis that measures a warm game at a long clock's depth | **taken**, as `warm-ab` — see [11-performance.md](11-performance.md). It is the sweep's largest result and it changed a verdict on its second use |
+| `663f5976`, an axis that measures a warm game at a long clock's depth | **taken**, as `warm-ab` — see [performance.md](performance.md). It is the sweep's largest result and it changed a verdict on its second use |
 | `92b9656f`, `d4abba59`, `288179ee`, `345791bb`, `6c1274a3`, what each axis can resolve | **taken as documentation**, and re-measured rather than quoted: the startup column of seven runs over five independently built binaries spans 0.0004% here, which is what makes an instruction ratio a fact about the code |
 | `2e804530` a match ledger, `3300f1bf` naming a match's two sides, `4d6ee5a4` a CI fallback base, `5cf8ed8a`/`04885601` negative-control anchors, `6870e8d2` distinct net-mutation offsets, `d5c44fc7` a CI table gate, `6afaba9c` retrying a download | **not taken.** `match.sh` has no analogue here — it needs cutechess and a games budget this repository does not spend — and the rest are properties of a bash gate suite and four GitHub workflows whose rfish equivalents are Rust, where `clippy` refuses a broken gate at compile time |
 | its 08-19 docs reorganisation — `bd75ed8d` through `fa8b64ab` giving each page the gates that hold it, `775a279c` splitting the axes onto their own page, `e8340484` renumbering | **already here, and gated.** `docs-lint` has held every page's `## The gates` section to the tree in both directions since 2026-08-19, which is the property that block was building toward |
-| `c349f888`, an idiomatic-C++ page the sibling ports all carry | **already here** as [08-idiomatic-rust.md](08-idiomatic-rust.md), which is the page their commit says it is copying |
+| `c349f888`, an idiomatic-C++ page the sibling ports all carry | **already here** as [idiomatic-rust.md](idiomatic-rust.md), which is the page their commit says it is copying |
 
 **The 2026-08-23 second window was eleven commits and every one of them is `perf(engine)`.**
 It is the first window with no docs and no gate commit in it at all, so the sweep is a
@@ -404,7 +404,7 @@ in it.
 ## The machine
 
 What a latency or a prediction claim is reasoned from when no axis in
-[11-performance.md](11-performance.md) can take it. **A table is a prior, never a verdict**:
+[performance.md](performance.md) can take it. **A table is a prior, never a verdict**:
 it sizes what a change could buy and names the column to measure, and every rule on that page
 stands — a figure read from a table is still not a measurement of this binary.
 
@@ -442,7 +442,7 @@ stands — a figure read from a table is still not a measurement of this binary.
 
 ## Type theory and type design
 
-What [09-type-design.md](09-type-design.md) rests on. Each entry says what it is *for* here;
+What [type-design.md](type-design.md) rests on. Each entry says what it is *for* here;
 none of them is implemented as an algorithm, and where a paper describes machinery this port
 does not run, that is said.
 
@@ -453,7 +453,7 @@ does not run, that is said.
   size let a checker discharge the bound and emit no check. This is the mechanism behind
   `Box<[T; N]>` and the const-generic layer widths, with LLVM's value-range propagation
   standing in for the dependent typechecker. The effect is therefore *not* guaranteed:
-  [08-idiomatic-rust.md](08-idiomatic-rust.md) records both where it paid and where the same
+  [idiomatic-rust.md](idiomatic-rust.md) records both where it paid and where the same
   move cost instructions.
 - **Xi & Pfenning, "Dependent Types in Practical Programming", POPL 1999** —
   <https://doi.org/10.1145/292540.292560>. The language (Dependent ML) the above became.
@@ -528,7 +528,7 @@ does not run, that is said.
   generativity. Listed to record that it is **out**: its payoff is `get_unchecked`, which
   `forbid(unsafe_code)` closes, and it is a dependency the engine may not take. What crosses
   is the discipline — state the guard against the slice you index — which
-  [08-idiomatic-rust.md](08-idiomatic-rust.md) shows is worth tens of millions of instructions
+  [idiomatic-rust.md](idiomatic-rust.md) shows is worth tens of millions of instructions
   without any of the machinery.
 
 ### Typestate
@@ -579,7 +579,7 @@ discharge the in-range arguments this port currently makes in doc-comments. None
   <https://blog.polybdenum.com/2021/08/09/when-zero-cost-abstractions-aren-t-zero-cost.html>.
   Read alongside every claim above. A newtype is free in *layout* and is not always free in
   *codegen*, and this port has the measurements to prove it — see the cost rule in
-  [09-type-design.md](09-type-design.md).
+  [type-design.md](type-design.md).
 
 ## Protocol
 
@@ -612,4 +612,4 @@ the three artifacts this repository handles are not covered by the same licence 
   `crates/` names it.
 - **The network itself is not in the tree.** It is fetched at build time and gitignored, so a
   clone carries no weights and the licence question travels with the download rather than with
-  the checkout. [03-engine-eval.md](03-engine-eval.md) covers why it is a runtime input.
+  the checkout. [engine-eval.md](engine-eval.md) covers why it is a runtime input.

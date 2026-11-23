@@ -287,7 +287,7 @@ tbhits, and 29,152 instructions per node against the bench workload's 9,678, bec
 corpus the prober is the workload rather than a term in it. The counts move at every sync and
 no gate checks them, so read them off the gate's own line; it is the three-to-one RATIO that
 is the point here. A run that loaded no tables is refused rather than
-reported. See [10-tooling-ci.md](10-tooling-ci.md).
+reported. See [tooling-ci.md](tooling-ci.md).
 
 This is what the 2026-08-15 sweep's "real, and unmeasurable here" verdict on refish's
 length-walk commits was missing: the instrument, not the finding. Re-opening that question now
@@ -403,8 +403,8 @@ removed, the same seed parses 0 of them and the soak fails.
 | gate | what it proves here | owned by |
 |---|---|---|
 | `tb` | rfish's WDL verdict and DTZ distance, and the state each probe left, equal a pristine upstream build's, position by position | this page |
-| `fuzz` | mutated table bytes reach no panic — the only input here that no part of the process vouches for | [10-tooling-ci.md](10-tooling-ci.md) |
-| `perf-budget` with `--syzygy` | what the prober COSTS: the bench list never enters it, so this is the only workload that measures this zone at all | [11-performance.md](11-performance.md) |
+| `fuzz` | mutated table bytes reach no panic — the only input here that no part of the process vouches for | [tooling-ci.md](tooling-ci.md) |
+| `perf-budget` with `--syzygy` | what the prober COSTS: the bench list never enters it, so this is the only workload that measures this zone at all | [performance.md](performance.md) |
 
 ### `tb`
 

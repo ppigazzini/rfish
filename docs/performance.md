@@ -6,8 +6,8 @@ node costs. This page owns the instruments that can see cost, and the conditions
 a ratio taken with one of them means anything at all.
 
 There are seven, and they are not substitutes for each other. The pages that use their output —
-[03-engine-eval.md](03-engine-eval.md)'s ledger, [08-idiomatic-rust.md](08-idiomatic-rust.md)'s
-shapes, [05-tablebases.md](05-tablebases.md)'s probing cost — quote figures produced here.
+[engine-eval.md](engine-eval.md)'s ledger, [idiomatic-rust.md](idiomatic-rust.md)'s
+shapes, [tablebases.md](tablebases.md)'s probing cost — quote figures produced here.
 
 ## Which axis answers which claim
 
@@ -24,7 +24,7 @@ over-trusted.
 | "the hardware behaves the same" | `counters` | where the cost is per component, and the three AVX-512 tiers |
 | "it is faster" | `perf` | anything under ~10% on this box; a spread that straddles 1.000 has established no direction |
 | "it reaches its answer the same way" | `fingerprint` | a callee inlined INTO its caller, and any code the workload never reaches |
-| "both sides searched the same tree" | `signature` | cost — which is what every row above exists for ([10-tooling-ci.md](10-tooling-ci.md)) |
+| "both sides searched the same tree" | `signature` | cost — which is what every row above exists for ([tooling-ci.md](tooling-ci.md)) |
 
 Two of the seven take `--syzygy`, and it is not a refinement: the bench list never enters the
 prober, so without the flag a whole zone of the port sits outside every row here.
@@ -96,7 +96,7 @@ Five properties, each of which cost a sibling port a wrong verdict before it was
 - **Every row is keyed by an ENUMERATED tier**, and `native` resolves to one before a row is
   ever written — so a row names a build any host of that tier can reproduce. That is what
   removed the hazard ../zfish 7d4de85f refused by hand and ../mcfish 71c3fae3 first tried to
-  key around; see [10-tooling-ci.md](10-tooling-ci.md)'s tier section. The key carries the
+  key around; see [tooling-ci.md](tooling-ci.md)'s tier section. The key carries the
   tier AND its `target-cpu`, so a row written before a tier-table change is named rather than
   matched. A tier callgrind
   cannot execute — the three AVX-512 rungs — is refused for that reason and no other.
@@ -185,7 +185,7 @@ on both sides — the pin it was taken at, which is what a ratio is a fact about
 | indirect mispredicts | 0.672 |
 
 rfish retires a fifth more instructions in this zone and mispredicts **sixty per cent fewer
-branches**, which is the bucket length table in [05-tablebases.md](05-tablebases.md) showing
+branches**, which is the bucket length table in [tablebases.md](tablebases.md) showing
 up on the axis it was expected to: rfish answers a symbol length from a byte per bucket where
 upstream still walks a data-dependent loop. It is the first cache-and-branch reading this
 port has of the tablebase zone, and it is the axis `refish`'s own performance page calls its
@@ -285,7 +285,7 @@ both sides — and it is excused from every CI lane for that reason.
 whose effect depends on the move ordering a different opening produces, on a table under
 pressure at a larger `Hash`, or on contention between workers, is outside this axis as much as
 it is outside `bench`. It counts retired instructions and it is not a strength instrument:
-nothing here converts to Elo, and [12-references.md](12-references.md) records what sizing an
+nothing here converts to Elo, and [references.md](references.md) records what sizing an
 Elo run costs instead.
 
 ## `codegen-equiv` — the gate for a "no functional change" claim
@@ -527,4 +527,4 @@ that a push lane cannot afford.
 | `counters` | what the hardware did: reads, writes, D1 and icache misses, branches and their mispredicts | this page |
 | `perf` | the interleaved paired wall clock, reported as a median ratio with its spread | this page |
 | `fingerprint` | rfish still reaches its answer by CALLING what upstream calls, as often | this page |
-| `signature` | that both sides searched the same tree, without which every figure above is void | [10-tooling-ci.md](10-tooling-ci.md) |
+| `signature` | that both sides searched the same tree, without which every figure above is void | [tooling-ci.md](tooling-ci.md) |

@@ -174,7 +174,7 @@ pub(crate) fn signature(update: bool) -> Result<Outcome, String> {
 ///
 /// Local rather than part of `parity`: it builds the engine once per tier. ../mcfish carries
 /// the same check as `arch-determinism` and ran it to land its own tier expansion; this is
-/// rfish's, and `docs/08-idiomatic-rust.md` §16.4 records what it replaces — a by-hand check
+/// rfish's, and `docs/idiomatic-rust.md` §16.4 records what it replaces — a by-hand check
 /// at two tiers.
 ///
 /// **A tier is BUILT on any host and BENCHED only on a host that can execute it.** Building
@@ -1009,13 +1009,13 @@ fn is_identity(line: &str) -> bool {
 /// happens to have lying around, so a doc naming a file that only ever exists locally passes
 /// here and fails in CI — which is how the reference to the per-machine
 /// `tools/instr_budget.golden` reached `main` green.
-/// The `parity` order as `docs/10-tooling-ci.md` states it, checked against `parity` itself.
+/// The `parity` order as `docs/tooling-ci.md` states it, checked against `parity` itself.
 ///
 /// The page writes the order as one arrow-joined run of backticked step names. Anything else
 /// on the page is prose; this reads that one line and compares it to the list `parity` will
 /// actually run, in order, so an added gate cannot leave the documentation a step behind.
 fn parity_order_documented(root: &std::path::Path) -> Result<Vec<String>, String> {
-    let page = root.join("docs/10-tooling-ci.md");
+    let page = root.join("docs/tooling-ci.md");
     let text = std::fs::read_to_string(&page).map_err(|e| format!("{}: {e}", page.display()))?;
 
     // The arrow run may wrap over several lines; take the block between the heading that
@@ -1052,9 +1052,9 @@ fn parity_order_documented(root: &std::path::Path) -> Result<Vec<String>, String
 /// The list expires in BOTH directions: an exempt page that grows a section is a stale
 /// exemption, and an exemption naming a page the tree no longer has fails.
 const GATELESS_PAGES: &[(&str, &str)] = &[
-    ("docs/12-references.md", "a link list — it holds no claim of its own for a gate to bear on"),
+    ("docs/references.md", "a link list — it holds no claim of its own for a gate to bear on"),
     (
-        "docs/14-glossary.md",
+        "docs/glossary.md",
         "the vocabulary; every entry names an owner, and the owner carries the gate",
     ),
 ];
@@ -1101,11 +1101,11 @@ fn gates_routing(
     let mut pages: Vec<String> = Vec::new();
     for entry in std::fs::read_dir(&docs).map_err(|e| format!("{}: {e}", docs.display()))? {
         let name = entry.map_err(|e| e.to_string())?.file_name().to_string_lossy().into_owned();
-        // The numbered set only: README.md is the index and routes nothing itself.
+        // Every page but the index: index.md routes nothing itself.
         // The extension is compared exactly rather than case-insensitively: `.md` is this
         // set's one spelling, and `devsweep` reads the same names on the same terms.
         let is_page = std::path::Path::new(&name).extension().is_some_and(|e| e == "md");
-        if is_page && name.starts_with(|c: char| c.is_ascii_digit()) {
+        if is_page && name != "index.md" {
             pages.push(format!("docs/{name}"));
         }
     }
@@ -1245,15 +1245,10 @@ fn routing_rows(text: &str, steps: &[String]) -> Vec<(String, String)> {
     rows
 }
 
-/// `NN-name.md`, the shape every page in the set has.
+/// A bare `name.md`, the shape a link from one page of the set to another has. A link out of
+/// `docs/` — `../CONTRIBUTING.md` — carries a directory, and routes nothing.
 fn is_page_link(target: &str) -> bool {
-    let name = target.rsplit('/').next().unwrap_or(target);
-    let bytes = name.as_bytes();
-    bytes.len() > 3
-        && bytes[0].is_ascii_digit()
-        && bytes[1].is_ascii_digit()
-        && bytes[2] == b'-'
-        && std::path::Path::new(name).extension().is_some_and(|e| e == "md")
+    !target.contains('/') && std::path::Path::new(target).extension().is_some_and(|e| e == "md")
 }
 
 pub(crate) fn docs_lint() -> Result<Outcome, String> {
@@ -1310,7 +1305,7 @@ pub(crate) fn docs_lint() -> Result<Outcome, String> {
         }
     }
 
-    // The two rules `docs/13-writing.md` names as the most-broken, held mechanically.
+    // The two rules `docs/writing.md` names as the most-broken, held mechanically.
     checked += quoted_signature(&root, &files, &mut problems)?;
     checked += undocumented_steps(&root, &files, &mut problems)?;
 
@@ -1750,7 +1745,7 @@ pub(crate) fn nnue_check() -> Result<Outcome, String> {
 /// itself, which is stronger — it checks every group, every split point and every hash at once
 /// rather than the derivations someone thought to pair up.
 ///
-/// `docs/07-shell.md` has claimed the trip is byte-identical since the format was ported, and
+/// `docs/shell.md` has claimed the trip is byte-identical since the format was ported, and
 /// no command produced that claim. A page that states a fact no gate computes is the shape
 /// this tree keeps finding; this makes it a command.
 ///
@@ -1827,7 +1822,7 @@ fn internal_units_all(out: &str) -> Vec<i64> {
 /// That is not hypothetical. This directory held a `stockfish-new` from the previous pin
 /// benching 3,184,328 beside a current `stockfish` benching 2,508,687, and because the stale
 /// name sorted first, `nnue-check`, `tb` and the golden audit all adjudicated against the
-/// wrong commit while passing. `docs/10-tooling-ci.md` had recorded the trap one commit
+/// wrong commit while passing. `docs/tooling-ci.md` had recorded the trap one commit
 /// earlier and it still bit, because the stale binary was under a name nobody was looking at.
 ///
 /// A SHA is not always what upstream stamps, though, and that is why the rule is read from
@@ -2175,8 +2170,8 @@ mod tests {
 
     #[test]
     fn markdown_links_are_extracted_without_their_anchors() {
-        let line = "See [the docs](docs/README.md) and [a section](docs/x.md#here).";
-        assert_eq!(markdown_link_targets(line), vec!["docs/README.md", "docs/x.md#here"]);
+        let line = "See [the docs](docs/index.md) and [a section](docs/x.md#here).";
+        assert_eq!(markdown_link_targets(line), vec!["docs/index.md", "docs/x.md#here"]);
         assert!(markdown_link_targets("no links here").is_empty());
         // An unterminated link must not panic or run off the end.
         assert!(markdown_link_targets("[broken](unclosed").is_empty());
@@ -2208,13 +2203,13 @@ mod tests {
                 .collect();
         let page = "## The gates\n\n| Gate | Cannot see | Described in |\n|---|---|---|\n\
                     | `net-roundtrip` | whether either matches upstream — that is `nnue-check` \
-                    | [03-engine-eval.md](03-engine-eval.md) |\n\
+                    | [engine-eval.md](engine-eval.md) |\n\
                     | `perf-budget`, `budget-ab` | latency | this page |\n\
                     \nprose\n\n| a | later | table |\n|---|---|---|\n| `parity` | x | y |\n";
         assert_eq!(
             routing_rows(page, &steps),
             vec![
-                ("net-roundtrip".to_string(), "03-engine-eval.md".to_string()),
+                ("net-roundtrip".to_string(), "engine-eval.md".to_string()),
                 ("perf-budget".to_string(), String::new()),
                 ("budget-ab".to_string(), String::new()),
             ]

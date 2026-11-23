@@ -307,7 +307,7 @@ pub(crate) struct Setup {
     /// Every input a range corrected, in the order the arguments appear.
     ///
     /// Carried OUT rather than printed here: `setup` is a pure function, and a reproducer
-    /// in this class must stay drivable without an engine — `docs/07-shell.md` says why. The
+    /// in this class must stay drivable without an engine — `docs/shell.md` says why. The
     /// caller emits them beside the rest of the report.
     pub corrections: Vec<Correction>,
 }

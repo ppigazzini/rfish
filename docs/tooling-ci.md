@@ -63,28 +63,28 @@ described, which is the page whose subject it holds; `this page` means the mecha
 | Gate | Answers | Cannot see | Lane | Described in |
 |---|---|---|---|---|
 | `signature` | does the search visit the same NODES as upstream | what a node COSTS; only the default arch, so no ISA-gated divergence | `rfish_parity` | this page |
-| `perft` | does movegen enumerate the right tree | anything above movegen — it never evaluates or searches | `rfish_parity`, `rfish_perft` | [01-engine-board.md](01-engine-board.md) |
-| `golden` | does the shell still SAY what it said | whether what it says is what upstream says | `rfish_parity` | [07-shell.md](07-shell.md) |
-| `golden-audit` | is each golden what UPSTREAM produces | paths no fixture drives | `rfish_upstream_check`, and via `parity` | [07-shell.md](07-shell.md) |
-| `nnue-check` | is the network's raw output upstream's | how that output is USED once the search has it | `rfish_upstream_check`, and via `parity` | [03-engine-eval.md](03-engine-eval.md) |
-| `tb` | are the WDL and DTZ answers upstream's | what the prober COSTS, and the root RANKING — neither is a probe | `rfish_upstream_check`, and via `parity` | [05-tablebases.md](05-tablebases.md) |
+| `perft` | does movegen enumerate the right tree | anything above movegen — it never evaluates or searches | `rfish_parity`, `rfish_perft` | [engine-board.md](engine-board.md) |
+| `golden` | does the shell still SAY what it said | whether what it says is what upstream says | `rfish_parity` | [shell.md](shell.md) |
+| `golden-audit` | is each golden what UPSTREAM produces | paths no fixture drives | `rfish_upstream_check`, and via `parity` | [shell.md](shell.md) |
+| `nnue-check` | is the network's raw output upstream's | how that output is USED once the search has it | `rfish_upstream_check`, and via `parity` | [engine-eval.md](engine-eval.md) |
+| `tb` | are the WDL and DTZ answers upstream's | what the prober COSTS, and the root RANKING — neither is a probe | `rfish_upstream_check`, and via `parity` | [tablebases.md](tablebases.md) |
 | `upstream-nodes` | does the search agree node-for-node off the bench list | positions no random draw reaches | `rfish_upstream_check` | this page |
-| `fingerprint` | does rfish CALL what upstream calls, as often | what happens between the calls | `rfish_upstream_check` | [11-performance.md](11-performance.md) |
-| `net-roundtrip` | do the net reader and writer agree | whether either matches upstream's format — that is `nnue-check` | via `parity` | [03-engine-eval.md](03-engine-eval.md) |
-| `async-check` | what an INTERRUPTED search leaves | values: an interrupted search ends wherever the clock got to | via `parity` | [07-shell.md](07-shell.md) |
-| `repro-search` | what a COMPLETED search leaves for the next one | whether the node counts are RIGHT; and one thread only | via `parity` | [02-engine-search.md](02-engine-search.md) |
-| `zone-check` | does any module name a zone at or above its own | a `use` in a block comment; whether an edge is behind `cfg(test)` | via `parity` | [00-architecture.md](00-architecture.md) |
+| `fingerprint` | does rfish CALL what upstream calls, as often | what happens between the calls | `rfish_upstream_check` | [performance.md](performance.md) |
+| `net-roundtrip` | do the net reader and writer agree | whether either matches upstream's format — that is `nnue-check` | via `parity` | [engine-eval.md](engine-eval.md) |
+| `async-check` | what an INTERRUPTED search leaves | values: an interrupted search ends wherever the clock got to | via `parity` | [shell.md](shell.md) |
+| `repro-search` | what a COMPLETED search leaves for the next one | whether the node counts are RIGHT; and one thread only | via `parity` | [engine-search.md](engine-search.md) |
+| `zone-check` | does any module name a zone at or above its own | a `use` in a block comment; whether an edge is behind `cfg(test)` | via `parity` | [architecture.md](architecture.md) |
 | `lane-coverage` | does every step run somewhere, or say why not | whether the lane that runs it actually asserts anything | via `parity` | this page |
-| `fixture-coverage` | is every fixture classified and every property presented | whether the fixture exercises the property WELL | via `parity` | [07-shell.md](07-shell.md) |
-| `docs-lint` | dead links, absent paths, a number or a LIST a gate computes, and every page carrying the gates that hold it | whether a claim is TRUE — only whether it is checkable | `rfish_parity` | [13-writing.md](13-writing.md) |
-| `unsafe-lint` | is the workspace forbid still in place | nothing else; it is one property | `rfish_parity` | [00-architecture.md](00-architecture.md) |
+| `fixture-coverage` | is every fixture classified and every property presented | whether the fixture exercises the property WELL | via `parity` | [shell.md](shell.md) |
+| `docs-lint` | dead links, absent paths, a number or a LIST a gate computes, and every page carrying the gates that hold it | whether a claim is TRUE — only whether it is checkable | `rfish_parity` | [writing.md](writing.md) |
+| `unsafe-lint` | is the workspace forbid still in place | nothing else; it is one property | `rfish_parity` | [architecture.md](architecture.md) |
 | `arch-determinism` | does every tier reach the anchor | tiers this host cannot execute — it names them rather than counting them checked | `rfish_parity` | this page |
 | `tsan` | does a 4-thread search race | a race no 4-thread run happens to take | `rfish_parity` | this page |
 | `sync-status` | is the golden checkout AT the pin | whether the pin is the right pin | `rfish_upstream_check` | this page |
 | `negative-control` | do the gates FAIL when they should | a gate with no row | none — local, it mutates the tree | this page |
-| `perf-budget`, `budget-ab` | what a node costs, and what startup costs | cache, branches, latency; and without `--syzygy`, the tablebase reader entirely | none — local, per-machine golden | [11-performance.md](11-performance.md) |
-| `codegen-equiv` | did the compiler emit what it emitted before | anything that changes a SIGNATURE: retyping a parameter renames the symbol, and it matches bodies by name | none — local, needs a working tree | [11-performance.md](11-performance.md) |
-| `counters` | cache and branch behaviour against upstream | where the cost is, per component; and AVX-512 tiers | none — local, needs an oracle and a PGO build | [11-performance.md](11-performance.md) |
+| `perf-budget`, `budget-ab` | what a node costs, and what startup costs | cache, branches, latency; and without `--syzygy`, the tablebase reader entirely | none — local, per-machine golden | [performance.md](performance.md) |
+| `codegen-equiv` | did the compiler emit what it emitted before | anything that changes a SIGNATURE: retyping a parameter renames the symbol, and it matches bodies by name | none — local, needs a working tree | [performance.md](performance.md) |
+| `counters` | cache and branch behaviour against upstream | where the cost is, per component; and AVX-512 tiers | none — local, needs an oracle and a PGO build | [performance.md](performance.md) |
 | `fuzz` | does hostile input reach a panic | anything the generator does not produce | `rfish_fuzz` | this page |
 | `test` | do the unit and property suites hold, under the gate profile where `debug_assert!` and `overflow-checks` are ON | anything only a whole search reaches | `rfish_parity` | this page |
 | `fmt`, `clippy` | is the source the shape the toolchain agrees on | every property below the surface, which is all of them | `rfish_parity` | this page |
@@ -100,7 +100,7 @@ A gate whose lane is "none" is excused in `lane-coverage` with a reason, and the
 capability or cost — never that nobody got round to it.
 
 **`perf-budget`, `budget-ab`, `codegen-equiv` and `counters` are the cost axes, and their
-mechanics are [11-performance.md](11-performance.md)'s.** They answer a different question
+mechanics are [performance.md](performance.md)'s.** They answer a different question
 from everything else on this page — not whether the engine is right but what it costs — and
 the conditions a ratio needs before it means anything are stated there once, beside the
 instruments that need them.
@@ -566,7 +566,7 @@ lane, ../zfish with its own targets — and rfish lacked it until the decoder ha
 shipped as verified. It found six panics on its first afternoon, and a seventh on the nightly
 lane three days later — the residue of one of the six, which had been bounded against the
 wrong half of the field it validated. The list, and the rule that decided between refusing
-and clamping each one, are in [docs/05-tablebases.md](05-tablebases.md). **That seventh is
+and clamping each one, are in [docs/tablebases.md](tablebases.md). **That seventh is
 the argument for the schedule**: it was reachable from a corrupt file on the day the lane went
 green, and no gate in `parity` looks at a file nobody wrote a case for.
 

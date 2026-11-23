@@ -6,7 +6,7 @@ be confused:
 - **Section 1 is Stockfish's vocabulary.** Upstream owns the word; the entry says which
   symbol carries it here. It does not teach the concept — a page in this set describes what
   this codebase does, and the domain reference is a link in
-  [12-references.md](12-references.md).
+  [references.md](references.md).
 - **Section 2 is this repository's vocabulary.** None of it appears in the Stockfish source,
   and upstream is not obliged to agree with any of it.
 - **Section 3 is the words that mean two things here.** Each entry is a disambiguation
@@ -21,9 +21,9 @@ and not find it.
 Audience: all contributors.
 
 Every entry names the file, symbol or step that owns it, and none quotes a number a gate
-computes. For how one search flows see [00-architecture.md](00-architecture.md); for what a
-step proves see [10-tooling-ci.md](10-tooling-ci.md); for what a quantity denotes see
-[09-type-design.md](09-type-design.md).
+computes. For how one search flows see [architecture.md](architecture.md); for what a
+step proves see [tooling-ci.md](tooling-ci.md); for what a quantity denotes see
+[type-design.md](type-design.md).
 
 ## 1. Upstream's word, and what carries it here
 
@@ -34,7 +34,7 @@ Grep the symbol if a citation misses; the owners move faster than the definition
 | **bench** | the fixed script the anchor is a fact about: `BENCH_ENTRIES` in [`../crates/rfish/src/bench.rs`](../crates/rfish/src/bench.rs), which is upstream's `Defaults` entry for entry. An entry is not always a FEN — a `setoption` line is executed and changes how the entries after it parse — and reordering the list moves the number as surely as changing the search does |
 | **the bench signature** | the node total that run prints, asserted by `cargo xtask signature`. The *number* lives in `tools/signature.golden` and in no page; `docs-lint` refuses a page that quotes it |
 | **node** | one execution of a node body — `SearchWorker::node`, generic over `NodeKind`, for alpha-beta, and `SearchWorker::qsearch`, generic over `QuiescentKind`, for quiescence. **Not** a NUMA node; see Section 3 |
-| **depth** | a plain `i32`, deliberately. A depth-scaled product feeds six different codomains, so a newtype would need six output types and therefore needs none — [09-type-design.md](09-type-design.md) states the rule |
+| **depth** | a plain `i32`, deliberately. A depth-scaled product feeds six different codomains, so a newtype would need six output types and therefore needs none — [type-design.md](type-design.md) states the rule |
 | **`Value`** | the search's score domain, and a real type rather than a typedef. Its algebra is a torsor: `Value - Value` is an `i32` **margin**, `Value ± i32` translates, and there is no `Value + Value`, so the three places that genuinely sum two scores each say `Value::new` at the line where that is decided |
 | **key** | seven distinct spaces, one type each — `PosKey`, `TtKey`, `PawnKey`, `MaterialKey`, `MinorKey`, `NonPawnKey`, `MoveKey`. `PosKey::for_tt` is the only conversion between two of them and the only place the halfmove clock is mixed in, which is the "key identity" bug class no perft can see |
 | **the root, PV, MultiPV** | the root move list is `RootMove` records in [`../crates/rfish-engine/src/state/mod.rs`](../crates/rfish-engine/src/state/mod.rs); the shell's `InfoSink` prints one `info` line per PV line, and `MultiPV` is how many it has |
@@ -76,7 +76,7 @@ wins.
 | **the fingerprint** | `cargo xtask fingerprint`, which asks what no value gate can: not whether rfish computes upstream's numbers but whether it gets there by **calling what upstream calls, as often**. `tools/fingerprint_groups.tsv` names the groups, and records which symbols are deliberately NOT gated because upstream inlines them under LTO and a call count is inlining-immune only at the callee |
 | **the budget** | `cargo xtask perf-budget`, which holds a tier's absolute retired-instruction count to a row in `tools/instr_budget.golden` — the cost regression `signature` cannot see, since the anchor pins the node count and not what a node costs. The golden is gitignored and per-machine. It **subtracts startup from the search figure and gates it as a second axis**, at 1% against the search's 0.005%, because one is paid per process and the other per move — so the net load and the magic build are measured rather than merely excluded. `--syzygy` swaps in a workload that reaches the tablebase reader, which the bench list never does; Section 3 for the other budget |
 | **rig fault** | a verdict that the comparison **did not happen**: an empty corpus, both sides blank, a mutation whose `find` string has rotted, a timeout, a `go perft 1` that reads other than the start position's 20 root moves. It is neither a pass nor a failure, and it is reported instead of a verdict — crediting a gate for an experiment that never finished is worse than not running it. `runner::compared_something` is the refusal |
-| **the ledger** | the measurement sections of [08-idiomatic-rust.md](08-idiomatic-rust.md) and [03-engine-eval.md](03-engine-eval.md), read as the record of what has already been measured — including the shapes that measured WORSE. [13-writing.md](13-writing.md) exempts them from the no-history rule for that reason: a measurement is a fact about the tree, so it is written as the rule a reader applies now |
+| **the ledger** | the measurement sections of [idiomatic-rust.md](idiomatic-rust.md) and [engine-eval.md](engine-eval.md), read as the record of what has already been measured — including the shapes that measured WORSE. [writing.md](writing.md) exempts them from the no-history rule for that reason: a measurement is a fact about the tree, so it is written as the rule a reader applies now |
 | **sibling** | `../zfish` (Zig) and `../mcfish` (C23): peer ports of the same golden. **Neither is a source and neither is behind the other**; a finding in one is a hypothesis about this tree, to be probed here before it is fixed here, and a measurement never transfers because what a sibling's language pays for a construct says nothing about what Rust pays |
 | **sweep** | driving one question across a whole class rather than fixing the instance in front of you — every named path, every include of a symbol, every sibling commit in a window. A **sibling sweep** is the special case, and its output includes the commits NOT taken with the reason, so the next sweep does not re-open them. A gate's own pass over its inputs is the word's other use; see Section 3 |
 | **the internal surface** | the second documentation surface, which `.gitignore` excludes so a clone does not carry it. A shipped file must not name its LOCATION — the reference dangles for every reader but its author — and `docs-lint` sweeps the whole index for that, since an ignored path is exempt from the path check by design |
@@ -112,7 +112,7 @@ that are worse than absent.
 | **characterization test** | pins *current* behaviour, and is explicitly not a correctness claim | every `tools/*.golden`. One re-derived from rfish proves only that rfish still agrees with itself — which is exactly how a `bestmove` printed with no ponder move stayed green for as long as the golden existed |
 | **metamorphic relation** | a property relating two runs, rather than a pinned value | `net-roundtrip`: write the resident net out, and require the bytes back, so the format reader and writer are one order stated twice. `arch-determinism`: five tiers, one anchor. `repro-search`: the same two positions twice in one process across a `ucinewgame`, which pins nothing and catches anything the reset misses |
 | **implicit oracle** | needs no reference, because some outcomes are wrong on their face | the `gate` profile's `debug_assert!` and overflow checks, the TSan and valgrind lanes, and all three fuzz harnesses, where the finding is the panic |
-| **mutation testing** | inject the defect, and require the check to go red | `cargo xtask negative-control` is the automated form, one representative mutant per gate; the by-hand one is step 4 of "Adding a type" in [09-type-design.md](09-type-design.md), and the "seen to fail" evidence a gate's commit body carries |
+| **mutation testing** | inject the defect, and require the check to go red | `cargo xtask negative-control` is the automated form, one representative mutant per gate; the by-hand one is step 4 of "Adding a type" in [type-design.md](type-design.md), and the "seen to fail" evidence a gate's commit body carries |
 | **lost test** | a test that exists and is in no suite the build runs | a case in no `fixture_properties.tsv` row, and an `xtask` step in no lane. A source FILE cannot be lost here: Rust does not compile what no `mod` declares, so the compiler is that audit and the sibling ports' wired/unwired distinction has no counterpart |
 | **false pass** | a run that passed because it compared **less**, not because more was right | `runner::compared_something`, the blank-side refusals in `golden` and `golden-audit`, and `fuzz` asserting its soak actually ran rather than reading an exit status `cargo test` calls success over zero tests |
 | **negative control** | a run against the **defective** tree that must show the defect, proving the check can fail at all | `cargo xtask negative-control`, which mutates the engine once per gate, requires that gate to exit non-zero, restores from a `Drop` guard, and ends by running `signature` green. A gate that has never fired is not a gate |

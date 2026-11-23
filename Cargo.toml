@@ -38,7 +38,7 @@ rfish-engine = { path = "crates/rfish-engine" }
 # `deny`) so no module can re-enable it with a local `#[allow]`. Everything the
 # C++ does with raw pointers -- the TT cluster array, the accumulator stack, the
 # Syzygy table mapping, the shared search state -- is expressed with slices,
-# indices, atomics and scoped threads instead. See docs/08-idiomatic-rust.md.
+# indices, atomics and scoped threads instead. See docs/idiomatic-rust.md.
 unsafe_code = "forbid"
 unreachable_pub = "warn"
 missing_debug_implementations = "warn"
@@ -75,7 +75,7 @@ verbose_bit_mask = "allow"
 # real work -- `unpack_meta(meta, slot)` on the transposition probe's hottest
 # loop, `pieces.swap(i, j)` in the Syzygy reorder, a self-referential write in
 # the pairs decoder -- so the rewrite is noise where it compiles at all. It is
-# also the wrong DIRECTION here: docs/08-idiomatic-rust.md section 17 measures
+# also the wrong DIRECTION here: docs/idiomatic-rust.md section 17 measures
 # indexing fixed-width rows as 19.3M instructions BETTER than range-slicing and
 # zipping them.
 needless_range_loop = "allow"

@@ -34,7 +34,7 @@ on top. §15.4 has the measurement and the two traps that come with it.
 
 **What it bought.** The lifetime question does not arise. `Position` is `Clone` and can be
 sent to another thread, which is what makes the Lazy-SMP design in
-[04-multithreading.md](04-multithreading.md) express itself in `std::thread::scope`.
+[multithreading.md](multithreading.md) express itself in `std::thread::scope`.
 
 **The trap it introduced.** `st()` and `st_mut()` borrow `self`, so a method that reads the
 state and then mutates the board cannot hold the reference across the mutation. The fix is
@@ -235,7 +235,7 @@ it is the comparison the toolchain pin answers: §12's vectorisation subsection 
 record what governs the lowering here and why the sibling written against Zig's `@Vector`
 sits where it does. **The residual is an addressing and dispatch cost, not an arithmetic
 one** — §17 and §18 are the shapes that moved it, and
-[03-engine-eval.md](03-engine-eval.md) carries the per-tier ratio and what remains of the gap.
+[engine-eval.md](engine-eval.md) carries the per-tier ratio and what remains of the gap.
 
 So the constraint's cost on this axis is **measured, not open**. What is still open is how
 much of the remainder is reachable at all; do not cite this section for a number, cite the
@@ -355,7 +355,7 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | Replacing the insertion sorts' ladder with a partition point and a shift | **Refuted on the instruction axis, in BOTH shapes, bit-exact — and the pair LOCATES the mispredicting branch.** The ladder's line carries 156,935 of this port's mispredicts, half again the 101,478 on the limit test the sibling attacks, so it looked like the better target. `partition_point` plus `copy_within` halves them — `init_quiets` 311,230 → **158,649** — and costs **+0.5541% at avx2 and +0.3444% at sse41**. Replacing the `memmove` with a counted shift, to buy the branch win without the call, is worse on BOTH axes: +0.9124% and +0.6444%, and the mispredicts come straight back at 297,016. **So the branch was never the score comparison — it is the shift loop's EXIT, whose trip count is unpredictable however the condition is spelled.** Only a `memmove` removes it, by having no loop at all, and for the one-to-three-entry shifts these sorts perform the call costs more than the prediction it buys. To remove this branch you must remove the loop, and removing the loop costs more than the branch. |
 | Testing the quiet sort's limit four moves at a time with `std::simd` | **Refuted, on BOTH axes, bit-exact.** ../Stockfish `refish` `b896b0292` replaces a per-move `value >= limit` branch — 34% taken, the band no predictor can learn — with one `vpcmpgtd` and a mask walk, and measures −0.0589% to −0.1681% across its four compiler cells. Here it is **+0.0885% at avx2 and +0.1145% at sse41**, and the mispredicts it aims at did not fall: `init_quiets` went 311,230 → 323,996. **The block is free there and cannot be here.** `ExtMove` is eight bytes with `value` in the upper half, so a single 256-bit load holds four of them and `0xAA` drops the halves carrying the move; `ScoredMove` has no guaranteed layout and safe Rust has no way to view a `&[ScoredMove]` as `&[i32]`, so the vector has to be BUILT from four scalar score loads. **A SIMD filter over an array of STRUCTS needs a safe reinterpretation of that array; without one the gather costs more than the branch it removes.** |
 | `std::simd` / `stdarch` intrinsics for the NNUE kernels | **Rejected by constraint**, not by measurement — nightly and `unsafe` respectively. Not a measurement result; do not cite it as one. |
-| Comparing autovectorised NNUE kernels against upstream's intrinsics | **Now worth doing.** The accumulator no longer dominates the way it did; see `docs/03-engine-eval.md` for the current split. |
+| Comparing autovectorised NNUE kernels against upstream's intrinsics | **Now worth doing.** The accumulator no longer dominates the way it did; see `docs/engine-eval.md` for the current split. |
 | Recomputing the NNUE accumulator per evaluation | **Superseded, with a measurement.** Diffing the recomputed feature sets is 1.48x faster at a bit-identical node count. Do not go back without beating 21.2 s of CPU on the depth-11 bench. |
 | Optimising the classical evaluation | **Pointless.** It runs only when no net is on disk, and it has a deletion date. |
 | `memmap2` for the Syzygy tables | **Rejected.** The crate's soundness contract cannot be met (a table file can be truncated under the map), and positioned reads behind a block cache give what the mapping actually provides. |
@@ -371,7 +371,7 @@ Keep this list current. Re-deriving a dead idea costs a session.
 | Fusing move scoring into generation, because "the siblings have no `generate_append`" | **The PREMISE was false.** mcfish's `score_list()` calls `generate_captures`/`generate_quiets`/`generate_evasions` to build the whole list and then walks it to fill `out[i].value` — exactly rfish's shape. It only looks fused because it is one static function that callgrind folds into `nextMove`. The picker-zone gap is inside the generation loops, not in the pass structure. See §15.6. |
 | Making `Bitboard::iter` borrow instead of copy | **Rejected by design.** Iterating by value is what lets a loop mutate the board it came from, which is upstream's `while (b) pop_lsb(b)` over a local with the local made explicit. |
 | Rewriting the feature transformer's fold and transform in `std::simd` | **Not worth attempting, from the disassembly.** Both already emit upstream's kernel shape — `vpaddw`/`vpsubw`/`vpmovsxbw` in the fold, `vpminsw`/`vpmullw`/`vpsrlw`/`vpackuswb` in the transform — over 136 and 156 `%ymm` operands. Explicit vectors would transcribe what LLVM emits. See §12 — and §17.1, where the ADDRESSING around those same loops was worth 11.6M without touching a kernel. |
-| Upstream's per-move accumulator delta | **Falsified, with a measurement, after being BUILT.** Bit-exact — the anchor and `nnue-check` both held — and it loses: recording costs 85.7M on every `do_move` and the fast path fires on **11%** of evaluations, so it saves 0.47M. The board-zone half is kept and tested; see `docs/03-engine-eval.md`. |
+| Upstream's per-move accumulator delta | **Falsified, with a measurement, after being BUILT.** Bit-exact — the anchor and `nnue-check` both held — and it loses: recording costs 85.7M on every `do_move` and the fast path fires on **11%** of evaluations, so it saves 0.47M. The board-zone half is kept and tested; see `docs/engine-eval.md`. |
 | Decoding a LEB128 weight from an eight-byte WINDOW instead of byte by byte, mirroring ../Stockfish's `refish` `90d8dcb9` | **Falsified, with a measurement, twice.** The idea is sound and pays THERE: a continuation bit is a property of the weight, not of the loop, so one `u64` load, a continuation mask and one `trailing_zeros` replace a branch per byte. Here the byte loop is already the shape §9 and §14 left it — walking the OUTPUT with the cursor in registers — at **27 Ir per value against upstream's 30.6**, and the shipped net averages 1.28 bytes per value, so the "few" the window saves on barely exists. Per-value guard: startup 1,077.6M → **1,345.7M**. Guard hoisted and the length arithmetic cheapened: **1,380.1M**, and worse still because the enlarged body stopped inlining into `leb128_i16_groups`, costing the register residency that rewrite had bought. The acceptance test refish states for its own family predicts this: *if the change still does work per item, the work it adds on every item must be smaller than the work it removes on the few.* There was no prohibition left for the window to remove. |
 | Making `diff_apply`'s membership tests branchless | **Falsified, with a measurement.** Storing every element and advancing the count by the predicate removes 2.11M conditional mispredicts (2.187 → **1.896** of upstream's) and costs **+62.7M instructions** and **+37.4M data writes**. The branchy form stores only the rare kept element; the branchless one stores every element of BOTH sets. See §13 for why the premise was wrong. |
 
@@ -459,7 +459,7 @@ Disassembled, the avx2 oracle holds zero `vpdpbusd`; that instruction is VNNI an
 at `x86-64-vnni512`. At avx2 upstream runs 72 `vpmaddubsw` and 76 `vpmaddwd`, and rfish runs
 42 `vpmaddwd` and no `vpmaddubsw`. Neither needs `unsafe`. What rfish is missing is the
 `u8`x`i8` form: its kernel widens the weights to `i16` first, so it moves half the lanes per
-instruction and pays the widening. See `docs/03-engine-eval.md`. The paragraph below is kept
+instruction and pays the widening. See `docs/engine-eval.md`. The paragraph below is kept
 because its measurements stand, but read its premise as false at the tier measured here.
 
 Upstream's first affine layer is one `vpdpbusd` per four input bytes. There is no way to
@@ -492,7 +492,7 @@ instructions and ../mcfish 0.877, against rfish's 1.667 — and ../zfish is a SA
 with no PGO. A constraint both ports also satisfy cannot be what costs this one 827M
 instructions. What separates them is that both siblings implement upstream's per-move
 accumulator delta and rfish recomputes the feature sets every evaluation. See
-[03-engine-eval.md](03-engine-eval.md) for the four-way table and the source evidence.
+[engine-eval.md](engine-eval.md) for the four-way table and the source evidence.
 
 **Explicit `std::simd` in the feature transformer is NOT an open lead.** It is the largest
 search-time block in the engine — `fold_into` at 190M and `transform` at 148M over
@@ -535,7 +535,7 @@ SEARCH better than upstream does. The excess is all in the evaluation.
 **The `Bitboard::iter` row is the design, not the loop.** `while bb != 0 { pop_lsb }` is what
 upstream writes too; rfish simply runs it far more, because it rebuilds the threat set every
 evaluation where upstream delta-updates. That row moves when the per-move delta lands and not
-before — see `docs/03-engine-eval.md`.
+before — see `docs/engine-eval.md`.
 
 **The `diff_apply` rows look like the textbook case for branchless code, and going branchless
 loses badly.** Writing the element unconditionally and advancing the count by the predicate —
@@ -807,7 +807,7 @@ variant, which is where three of the results above came from.
 
 ## 16. What the sibling ports learned, and which of it crosses into Rust
 
-`../mcfish/docs/08-idiomatic-c.md` and `../zfish/docs/08-idiomatic-zig.md` are the same
+`../mcfish/docs/idiomatic-c.md` and `../zfish/docs/idiomatic-zig.md` are the same
 document as this one, written for C23 and for Zig. Reading both is worth an afternoon,
 because the three ports hit different walls: **the walls are a property of the toolchain,
 not of the engine.** What follows is only the part that crosses into Rust — with the ones
@@ -1156,7 +1156,7 @@ tile and deletes a `resize` that restates the type — is **+6.1M WORSE**.
 a length LOAD removed from a scalar walk. The fold's tile loop is eight iterations of
 register-held vector work; making the count constant lets LLVM unroll it fully, and the code
 size costs more than the eight compares saved. Instruction-cache pressure is the counter this
-port is already worst on (`docs/03-engine-eval.md`), so an unroll has to be measured against
+port is already worst on (`docs/engine-eval.md`), so an unroll has to be measured against
 it rather than assumed free.
 
 ### 18.3 Store the halves your consumers need separately
@@ -1246,7 +1246,7 @@ caring** — disassemble the narrow kernels, not the wide ones.
 
 ### 18.8 Measure the constant the argument rests on
 
-The sparse layer's doc comment and `docs/03-engine-eval.md` both said "roughly 40% of the
+The sparse layer's doc comment and `docs/engine-eval.md` both said "roughly 40% of the
 inputs non-zero", and the entire case against a group-of-four kernel rests on it. Counted with
 an instrumented build: **9,551,893 non-zero inputs over 62,975 evaluations — 151.7 of 1024,
 14.8%.** Nearly three times too high, and never measured.
@@ -1485,12 +1485,12 @@ is always whatever freedom the type takes away.
 
 Every shape on this page is a claim about COST, and the anchor is blind to all of them: it
 pins the node count and says nothing about what a node costs. The instruments that can see
-one are [11-performance.md](11-performance.md)'s, and the rows below are the ones a shape is
+one are [performance.md](performance.md)'s, and the rows below are the ones a shape is
 argued on.
 
 | gate | what it proves here | owned by |
 |---|---|---|
-| `perf-budget`, `budget-ab` | what the shape costs, in retired instructions, against a recorded row or against a git ref | [11-performance.md](11-performance.md) |
-| `codegen-equiv` | that a reformulation emitted the SAME CODE — the only gate that answers a "no functional change" claim | [11-performance.md](11-performance.md) |
-| `signature` | that the shape did not move the tree, without which every figure above describes a different engine | [10-tooling-ci.md](10-tooling-ci.md) |
-| `test` | the wrapping this page relies on, under the gate profile where `overflow-checks` is ON and a bare `+` that wraps in release traps instead | [10-tooling-ci.md](10-tooling-ci.md) |
+| `perf-budget`, `budget-ab` | what the shape costs, in retired instructions, against a recorded row or against a git ref | [performance.md](performance.md) |
+| `codegen-equiv` | that a reformulation emitted the SAME CODE — the only gate that answers a "no functional change" claim | [performance.md](performance.md) |
+| `signature` | that the shape did not move the tree, without which every figure above describes a different engine | [tooling-ci.md](tooling-ci.md) |
+| `test` | the wrapping this page relies on, under the gate profile where `overflow-checks` is ON and a bare `+` that wraps in release traps instead | [tooling-ci.md](tooling-ci.md) |

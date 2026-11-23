@@ -69,7 +69,7 @@ recursion**, or unmake restores a stale value.
 
 The state chain is owned by the position rather than pointed at through caller stack frames:
 the current state is a field, and every earlier one sits in a `Vec<StateInfo>` behind it. See
-[08-idiomatic-rust.md](08-idiomatic-rust.md) §1 for what that costs and buys, and §15.4 for
+[idiomatic-rust.md](idiomatic-rust.md) §1 for what that costs and buys, and §15.4 for
 why the split falls where it does.
 
 `StateInfo`'s fields divide into two groups, exactly as upstream's do:
@@ -110,7 +110,7 @@ Two things about it are easy to port wrong:
 
 - **`swap` is a running MARGIN against the threshold, not a score.** It is the material the
   side to move is ahead by if the exchange stops here, which is why the value it holds is an
-  `i32` difference rather than a `Value` — see [09-type-design.md](09-type-design.md) on what
+  `i32` difference rather than a `Value` — see [type-design.md](type-design.md) on what
   subtracting two of an affine quantity produces.
 - **The special move types are answered by fiat, not by replay.** A promotion, an en-passant
   capture or a castling move does not have a material effect a one-square swap-off models, so
@@ -138,7 +138,7 @@ otherwise be a missed draw many plies down, in one game out of many.
 
 The table is the one structure in this zone that **cannot** be `const`: it is keyed by slider
 attacks, and those come from magics searched at first use. It is a `LazyLock` for that reason
-and no other — see [00-architecture.md](00-architecture.md) on why nothing here has a startup
+and no other — see [architecture.md](architecture.md) on why nothing here has a startup
 hook.
 
 ## `movegen.rs` — the generators
@@ -222,7 +222,7 @@ threat and pawn-pair features a move creates and destroys, into a caller-owned
 **The evaluation does not use it**, and that is a measured decision rather than an unfinished
 one: patching the accumulator from the delta fires on a minority of evaluations and loses to
 diffing the recomputed feature SETS, which is correct by construction.
-[03-engine-eval.md](03-engine-eval.md) carries the numbers and the four things that decided
+[engine-eval.md](engine-eval.md) carries the numbers and the four things that decided
 it. Keep the recording working — the decision is about the accumulator, not about the board
 zone — and read that page before proposing to consume it again.
 
@@ -231,8 +231,8 @@ zone — and read that page before proposing to consume it again.
 | gate | what it proves here | owned by |
 |---|---|---|
 | `perft` | move generation is right, in both castling dialects | this page |
-| `fuzz` | make then unmake restores the position exactly, and no legal list holds a duplicate | [10-tooling-ci.md](10-tooling-ci.md) |
-| `signature` | the board through a real search, where a movegen ORDER change moves the node count without moving a perft total | [10-tooling-ci.md](10-tooling-ci.md) |
+| `fuzz` | make then unmake restores the position exactly, and no legal list holds a duplicate | [tooling-ci.md](tooling-ci.md) |
+| `signature` | the board through a real search, where a movegen ORDER change moves the node count without moving a perft total | [tooling-ci.md](tooling-ci.md) |
 
 ### `perft`
 
@@ -248,4 +248,4 @@ whose Zobrist key goes wrong and comes back right generates the same moves and r
 same total. Neither can the anchor, which is a fixed position list. What does see it is the
 board half of `fuzz`: it checks make-then-unmake per MOVE, so a category-specific fault is
 attributed to the move that caused it, and it unwinds a whole line back to the position it
-started from. The invariant table in [10-tooling-ci.md](10-tooling-ci.md) is the set.
+started from. The invariant table in [tooling-ci.md](tooling-ci.md) is the set.

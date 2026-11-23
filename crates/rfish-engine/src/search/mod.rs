@@ -1,7 +1,7 @@
 //! The search zone: the transposition table, the histories, the move picker, the time
 //! manager, and the alpha-beta search itself.
 //!
-//! See `docs/02-engine-search.md`.
+//! See `docs/engine-search.md`.
 
 /// A randomised walk that drives the real search. See the module docs for why it is a
 /// seeded PRNG rather than libFuzzer.

@@ -54,7 +54,7 @@ worse than an absent one — it tells a reader to hold the wrong invariant.
 in the tier table. A list that drifts by one entry reads exactly like one that has not. Name
 the function or the file that owns the list beside it.
 
-**And this rule was broken by the page that states it.** `10-tooling-ci.md` wrote the `parity`
+**And this rule was broken by the page that states it.** `tooling-ci.md` wrote the `parity`
 order out, in the same paragraph as a sentence telling the reader that prose cannot be gated,
 and the list then drifted by three entries while nobody noticed — which is precisely what the
 sentence predicts and precisely why predicting it is not enough. `docs-lint` now reads that
@@ -76,9 +76,9 @@ of date the day after it is written. The before-and-after belongs in the commit 
 which is the durable per-task record. A doc states what is true **now**.
 
 **Two ledgers are exempt, and only the parts that are ledgers.**
-[08-idiomatic-rust.md](08-idiomatic-rust.md) is one end to end: §11 lists the dead ideas so
+[idiomatic-rust.md](idiomatic-rust.md) is one end to end: §11 lists the dead ideas so
 they are not re-derived, and §§13–18 record what measured and what each shape was worth.
-[03-engine-eval.md](03-engine-eval.md) is exempt only **below** its "The measurement ledger"
+[engine-eval.md](engine-eval.md) is exempt only **below** its "The measurement ledger"
 heading; everything above that line describes the evaluation as it is and is bound by this
 rule like any other page. That split is the exemption's whole point — a ledger that grows
 upward through a description leaves a reader who wants to know how the thing works reading a
@@ -92,7 +92,7 @@ reader applies now, and let the number be the evidence.
 `std::arch` one is an `unsafe fn`; use `std::simd`, which needs no `unsafe` block" does not.
 
 **Cut anything that does not help implement or verify.** Background a reader could get from
-Stockfish's own wiki belongs in [12-references.md](12-references.md) as a link. Length is not
+Stockfish's own wiki belongs in [references.md](references.md) as a link. Length is not
 thoroughness; it is where rot hides. This binds a generated page exactly as it binds a
 hand-written one — match the length to what the change needs, and add no section that exists
 to look complete: a summary restating the section above it, a recap of what a gate prints, a
@@ -108,21 +108,21 @@ lands, and nobody knows which claim broke better than the person who broke it.
 
 | page | owns | temperature |
 | --- | --- | --- |
-| [00-architecture.md](00-architecture.md) | the three crates, five zones, the dependency direction | warm — the crate boundary is checked by the compiler, so it moves rarely |
-| [01-engine-board.md](01-engine-board.md) | `crates/rfish-engine/src/board/` | hot |
-| [02-engine-search.md](02-engine-search.md) | `crates/rfish-engine/src/search/` | hot — the addressing is rfish's own, and per-node work is where the campaigns land |
-| [03-engine-eval.md](03-engine-eval.md) | `crates/rfish-engine/src/eval/` and the measurement ledger | hot — the classical term is scaffolding awaiting deletion, and the NNUE numbers move with every perf commit |
-| [04-multithreading.md](04-multithreading.md) | Lazy-SMP, the worker set, the best-move vote | warm |
-| [05-tablebases.md](05-tablebases.md) | `crates/rfish-engine/src/platform/syzygy/` | warm — the prober is ported and gated; the open items are table DATA, not code |
-| [06-platform.md](06-platform.md) | `crates/rfish-engine/src/platform/` | warm — NUMA pinning is impossible here, not pending |
-| [07-shell.md](07-shell.md) | `crates/rfish/src/` | warm |
-| [08-idiomatic-rust.md](08-idiomatic-rust.md) | the Rust patterns, the falsified list, the measured shapes | cold as prose, append-only as a ledger |
-| [09-type-design.md](09-type-design.md) | the value domain, its algebra, and the boundary of what it promises | warm — a type added without a row here makes the page wrong |
-| [10-tooling-ci.md](10-tooling-ci.md) | `cargo xtask` steps, the tiers, `.github/workflows/` | hot — a step added here is a page edit there |
-| [11-performance.md](11-performance.md) | the six cost axes and what each is blind to | hot — every measured figure on it is a property of one toolchain on one box |
-| [12-references.md](12-references.md) | external links | cold |
+| [architecture.md](architecture.md) | the three crates, five zones, the dependency direction | warm — the crate boundary is checked by the compiler, so it moves rarely |
+| [engine-board.md](engine-board.md) | `crates/rfish-engine/src/board/` | hot |
+| [engine-search.md](engine-search.md) | `crates/rfish-engine/src/search/` | hot — the addressing is rfish's own, and per-node work is where the campaigns land |
+| [engine-eval.md](engine-eval.md) | `crates/rfish-engine/src/eval/` and the measurement ledger | hot — the classical term is scaffolding awaiting deletion, and the NNUE numbers move with every perf commit |
+| [multithreading.md](multithreading.md) | Lazy-SMP, the worker set, the best-move vote | warm |
+| [tablebases.md](tablebases.md) | `crates/rfish-engine/src/platform/syzygy/` | warm — the prober is ported and gated; the open items are table DATA, not code |
+| [platform.md](platform.md) | `crates/rfish-engine/src/platform/` | warm — NUMA pinning is impossible here, not pending |
+| [shell.md](shell.md) | `crates/rfish/src/` | warm |
+| [idiomatic-rust.md](idiomatic-rust.md) | the Rust patterns, the falsified list, the measured shapes | cold as prose, append-only as a ledger |
+| [type-design.md](type-design.md) | the value domain, its algebra, and the boundary of what it promises | warm — a type added without a row here makes the page wrong |
+| [tooling-ci.md](tooling-ci.md) | `cargo xtask` steps, the tiers, `.github/workflows/` | hot — a step added here is a page edit there |
+| [performance.md](performance.md) | the six cost axes and what each is blind to | hot — every measured figure on it is a property of one toolchain on one box |
+| [references.md](references.md) | external links | cold |
 | this page | the rules | cold |
-| [14-glossary.md](14-glossary.md) | the vocabulary, in four tiers | warm — every entry names an owner, and a rename dates it |
+| [glossary.md](glossary.md) | the vocabulary, in four tiers | warm — every entry names an owner, and a rename dates it |
 
 Cold does not mean unowned. It means the claim outlives a release, so when it *is* wrong it
 has usually been wrong for a long time.
@@ -151,7 +151,7 @@ tell a translated line from an invented one.
 **Keep the integer-semantics comments.** Where a line relies on wrapping, on a truncation, or
 on C++'s signed-to-unsigned conversion, that note is the whole reason it looks the way it
 does — and release builds here set `overflow-checks = false`, so every intended wrap says
-`wrapping_*` and the comment says why. See [08-idiomatic-rust.md](08-idiomatic-rust.md) §7.
+`wrapping_*` and the comment says why. See [idiomatic-rust.md](idiomatic-rust.md) §7.
 
 **No history, no meta.** Not "was a `Vec`", not "changed in the delta campaign", not "the
 following block does". A comment describes the code as it is, to someone who has never seen
@@ -193,8 +193,8 @@ a tier the runner could not execute is unbenched rather than checked. A performa
 carries its `--arch` tier and its instrument, or it is not a figure.
 
 **Record what was falsified, not only what landed.** The rows in
-[08-idiomatic-rust.md](08-idiomatic-rust.md) §11 and in
-[03-engine-eval.md](03-engine-eval.md)'s ledger come from commit bodies. An attempt that
+[idiomatic-rust.md](idiomatic-rust.md) §11 and in
+[engine-eval.md](engine-eval.md)'s ledger come from commit bodies. An attempt that
 measured worse is a result; deleting it means the next person spends the same day on it.
 
 **One logical change per commit.** A commit touching three modules cannot be bisected when

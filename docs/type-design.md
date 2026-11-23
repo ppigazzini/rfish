@@ -5,13 +5,13 @@ chess or in the search has a structure*, and the structure is what the type carr
 states that structure — what each family denotes, which algebra it obeys, why it has that
 shape rather than another — and closes with the boundary: what these types do not promise.
 
-[08-idiomatic-rust.md](08-idiomatic-rust.md) is the neighbouring page. It records how a C++
+[idiomatic-rust.md](idiomatic-rust.md) is the neighbouring page. It records how a C++
 construct becomes a Rust one and what each translation measured; this one records what the
 resulting values *mean*.
 
 ## The premise: a type is a proof that travels
 
-The port forbids `unsafe` everywhere ([00-architecture.md](00-architecture.md)), and that
+The port forbids `unsafe` everywhere ([architecture.md](architecture.md)), and that
 changes what the type system is for. In a project that permits `unsafe`, a proven-in-range
 index has two payoffs — the compiler folds the check, or you write `get_unchecked` and take
 the win by assertion. rfish has only the first. **The types are not a safety net over an
@@ -21,7 +21,7 @@ So the design rule throughout is: when the code knows something, put it where th
 see it. A doc-comment saying "this index is always below 64" is a proof that has evaporated. A
 `Square` is the same proof, still there at every call site.
 
-The theory each family rests on is collected in [12-references.md](12-references.md) under
+The theory each family rests on is collected in [references.md](references.md) under
 "Type theory and type design", with what each citation is for. This page assumes it.
 
 ## What this buys
@@ -314,7 +314,7 @@ index, and can the compiler tell?*
 - **`StackIx`** — a slot in the search stack. This is the port's own addressing: where
   upstream walks a `Stack*` pointer, rfish carries an index, because a pointer does not
   survive borrow checking while `&mut self` is live
-  ([08-idiomatic-rust.md](08-idiomatic-rust.md)). That makes it the one piece of addressing no
+  ([idiomatic-rust.md](idiomatic-rust.md)). That makes it the one piece of addressing no
   upstream diff can check, which is precisely why it earns a type. The lookback is `back(n)`
   rather than `-`, so walking back up the line is a named operation; `pre_root(i)` is separate
   because the sentinel slots below the base hold no node.
@@ -336,7 +336,7 @@ index, and can the compiler tell?*
 Where a bound can be a *compile-time constant* rather than a type, it is: `Box<[T; N]>` for
 the search stack and the reduction table, `propagate<const N>` in the layers. Same idea one
 level down — a length the compiler knows folds the check — and
-[08-idiomatic-rust.md](08-idiomatic-rust.md) records both where it paid and where it did not.
+[idiomatic-rust.md](idiomatic-rust.md) records both where it paid and where it did not.
 
 ## The sentinel split, and illegal states
 
@@ -429,7 +429,7 @@ protection is at the call boundary, where the two slice pairs are arguments.
 are invisible to perft: C++'s signed-to-unsigned conversion changing a division from
 truncating to flooring; two generators emitting the same set in a different *order*; a key
 that omits the halfmove clock past move 14; a state update that "obviously" belongs and does
-not. [08-idiomatic-rust.md](08-idiomatic-rust.md) owns those.
+not. [idiomatic-rust.md](idiomatic-rust.md) owns those.
 
 **A niche.** `Option<Square>` is two bytes, not one. Giving `Square` a niche needs either a
 64-variant enum — whose construction sits on `Bitboard::pop_lsb`, the hottest line in the
@@ -459,7 +459,7 @@ Two practical consequences:
   regressing the other.
 - **When a type split forces a loop to be rewritten, measure the split and the rewrite
   separately.** They are different changes with different justifications, and the rewrite is
-  usually the whole movement. [10-tooling-ci.md](10-tooling-ci.md) has the instruments,
+  usually the whole movement. [tooling-ci.md](tooling-ci.md) has the instruments,
   including how to get release codegen with symbols so a diff has something to attribute to.
 
 ## Adding a type
@@ -486,6 +486,6 @@ a mutant here fails to build, which is the mechanism working.
 
 | gate | what it proves here | owned by |
 |---|---|---|
-| `test` | the conversions, the saturating arithmetic and the sentinel splits at their boundaries, where the type system stops and a value check starts | [10-tooling-ci.md](10-tooling-ci.md) |
-| `signature` | that an encoding change did not move the tree — the check on every "this is only a retyping" claim | [10-tooling-ci.md](10-tooling-ci.md) |
-| `codegen-equiv` | that the retyping cost nothing, with the standing caveat that a changed SIGNATURE renames the symbol and the gate then compares no body at all | [11-performance.md](11-performance.md) |
+| `test` | the conversions, the saturating arithmetic and the sentinel splits at their boundaries, where the type system stops and a value check starts | [tooling-ci.md](tooling-ci.md) |
+| `signature` | that an encoding change did not move the tree — the check on every "this is only a retyping" claim | [tooling-ci.md](tooling-ci.md) |
+| `codegen-equiv` | that the retyping cost nothing, with the standing caveat that a changed SIGNATURE renames the symbol and the gate then compares no body at all | [performance.md](performance.md) |

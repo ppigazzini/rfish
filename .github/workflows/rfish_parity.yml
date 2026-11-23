@@ -2,14 +2,14 @@ name: rfish parity
 
 # Every lane below runs a gate that also exists locally, and nothing local is weaker than
 # what runs here: a contributor who sees a green `cargo xtask parity` should not be
-# surprised by the merge gate. See docs/10-tooling-ci.md.
+# surprised by the merge gate. See docs/tooling-ci.md.
 #
 # Every third-party action is pinned BY COMMIT SHA, with the tag in a trailing comment. A
 # tag is a mutable pointer -- the owner can move `v7` to anything -- so a tag-pinned action is
 # an unreviewed dependency that can change under a merge gate. These are the same pins the
 # sibling ports (`../zfish`, `../mcfish`) and `../valgebra` carry, so a bump is decided once
 # and applied across all four. The toolchain is not an action at all: every lane installs it
-# through `.github/actions/setup-rust`, which runs rustup itself. See docs/10-tooling-ci.md.
+# through `.github/actions/setup-rust`, which runs rustup itself. See docs/tooling-ci.md.
 
 on:
   push:
@@ -346,11 +346,11 @@ jobs:
   # would fail on its first line for a reason no contributor could act on. The toolchain
   # requirement is now a PIN rather than a floor -- `rust-toolchain.toml` names one dated
   # nightly and every lane above reads it from there -- and a floor lane tests nothing a
-  # pin does not already fix. See docs/10-tooling-ci.md.
+  # pin does not already fix. See docs/tooling-ci.md.
 
   # NO cross-build lane. It ran `cargo check --target` for aarch64-unknown-linux-gnu and
   # x86_64-pc-windows-gnu to catch a `cfg` creeping into engine code, and the `test` matrix
   # above already compiles AND tests the engine natively on aarch64 (macOS) and on Windows.
   # The engine's only platform conditionals are `cfg!(windows)` (the SyzygyPath separator)
   # and x86 `target_feature`s, and each reads the same on windows-gnu as on the Windows row
-  # and on aarch64-linux as on the macOS row. See docs/10-tooling-ci.md.
+  # and on aarch64-linux as on the macOS row. See docs/tooling-ci.md.

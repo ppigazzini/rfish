@@ -11,7 +11,7 @@ Golden: `Stockfish/src/tt.cpp`, `history.h`, `movepick.cpp`, `timeman.cpp`, `sco
 Atomics, `Relaxed`, keeping upstream's race and dropping the undefined behaviour. The
 32-byte cluster layout and the cluster-count arithmetic are upstream's to the byte, because
 the count decides which positions collide. See
-[08-idiomatic-rust.md](08-idiomatic-rust.md) §2.
+[idiomatic-rust.md](idiomatic-rust.md) §2.
 
 `probe` returns a `TTProbe` that is **also the write handle**: it carries the cluster and
 the slot the replacement policy already chose, so the policy runs once per position rather
@@ -131,7 +131,7 @@ Main search: transposition move → good captures → killers and counter → qu
 captures. In check: every evasion, captures first. Quiescence outside check: captures and
 promotions only.
 
-The picker **holds no borrows** — see [08-idiomatic-rust.md](08-idiomatic-rust.md) §4. That
+The picker **holds no borrows** — see [idiomatic-rust.md](idiomatic-rust.md) §4. That
 is the one place the borrow checker changed the shape of a type rather than its
 implementation.
 
@@ -406,11 +406,11 @@ reach.
 | gate | what it proves here | owned by |
 |---|---|---|
 | `repro-search` | what a COMPLETED search leaves for the next one: node counts repeat across `ucinewgame`, at twenty budgets | this page |
-| `signature` | the search visits upstream's nodes over the bench list | [10-tooling-ci.md](10-tooling-ci.md) |
-| `upstream-nodes` | the same, node for node, on positions no fixed list contains | [10-tooling-ci.md](10-tooling-ci.md) |
-| `async-check` | an INTERRUPTED search still answers `stop`, `ponderhit` and `quit` | [07-shell.md](07-shell.md) |
-| `golden` | `timeman.uci`: a time-managed search stops where upstream's does, under `nodestime` | [07-shell.md](07-shell.md) |
-| `tsan` | a four-thread search does not race on the table or the counters | [10-tooling-ci.md](10-tooling-ci.md) |
+| `signature` | the search visits upstream's nodes over the bench list | [tooling-ci.md](tooling-ci.md) |
+| `upstream-nodes` | the same, node for node, on positions no fixed list contains | [tooling-ci.md](tooling-ci.md) |
+| `async-check` | an INTERRUPTED search still answers `stop`, `ponderhit` and `quit` | [shell.md](shell.md) |
+| `golden` | `timeman.uci`: a time-managed search stops where upstream's does, under `nodestime` | [shell.md](shell.md) |
+| `tsan` | a four-thread search does not race on the table or the counters | [tooling-ci.md](tooling-ci.md) |
 
 ### `repro-search` — what a COMPLETED search leaves for the next one
 

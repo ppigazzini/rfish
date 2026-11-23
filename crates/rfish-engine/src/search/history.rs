@@ -54,7 +54,7 @@ pub fn piece_to_index(pc: Piece, to: Square) -> usize {
 ///
 /// The result is a fixed-size ARRAY reference rather than a slice: the length is then a
 /// property of the type, and an index a caller has bounded is one the compiler can discharge
-/// without loading a length. See [08-idiomatic-rust.md]'s rule about stating a guard against
+/// without loading a length. See [idiomatic-rust.md]'s rule about stating a guard against
 /// the slice actually indexed.
 #[inline(always)]
 #[must_use]

@@ -160,12 +160,12 @@ Each line is doing something specific, and none of them is a scale factor:
   game rather than about the network.
 - **The clamp keeps the value strictly inside the tablebase band.** An evaluation must never
   be mistaken for a tablebase verdict or a mate; those are three distinct kinds of score and
-  [02-engine-search.md](02-engine-search.md) keeps them that way.
+  [engine-search.md](engine-search.md) keeps them that way.
 
 **The two heads are summed in `Network::evaluate` and nowhere else.** `Add<Value>` between
 them is deliberately absent, so the one place where two components become one score is
 written out rather than falling out of an operator — see
-[09-type-design.md](09-type-design.md).
+[type-design.md](type-design.md).
 
 `cargo xtask nnue-check` compares the raw network output, **above** this blend. That is the
 right boundary for it: the blend is arithmetic on integers this repository can read off the
@@ -205,7 +205,7 @@ are where it is spent.
 **Which kernels are written in it is a measurement, not a policy.** Where an ordinary loop
 over fixed-size arrays already emits upstream's instruction shape, it stays a loop and LLVM
 vectorises it under `-C target-cpu`; an explicit rewrite of one such fold cost +177M and was
-reverted. [08-idiomatic-rust.md](08-idiomatic-rust.md) §8 records what the constraint cost,
+reverted. [idiomatic-rust.md](idiomatic-rust.md) §8 records what the constraint cost,
 §11 carries that reverted fold with the rest of the falsified list, and §12's vectorisation
 subsection records what actually governs the lowering here.
 
@@ -237,7 +237,7 @@ cd resources && echo quit | valgrind --tool=callgrind --callgrind-out-file=/dev/
 
 **−20.0% overall, and −63 MiB.** The first two rows were the same defect — a runtime-length
 slice reached by a composite index, which is
-[docs/08-idiomatic-rust.md](08-idiomatic-rust.md) §18.1's shape in its second and third zones.
+[docs/idiomatic-rust.md](idiomatic-rust.md) §18.1's shape in its second and third zones.
 
 **The fourth row is the one that had no gate until it did.** Startup was measured, subtracted,
 printed and never judged, so nothing decided whether it could move; the axis added to
@@ -252,7 +252,7 @@ site looks.**
 
 What is left on this axis, in order: the net reader at ~624M and the magic build at ~270M are
 87% of what remains, and 98.4M of the whole bench process is `memset` whose allocator is not
-yet established — see [12-references.md](12-references.md).
+yet established — see [references.md](references.md).
 
 - `leb128_i16` decoded into a `vec![0i32; out.len()]` and narrowed afterwards. On the main
   weight block that is 23,068,672 entries — 92 MiB, allocated and page-faulted to be read once.
@@ -330,9 +330,9 @@ tempo bonus is added *after* taking the mover's point of view for exactly this r
 
 Everything above this line describes the evaluation as it is. Everything below it is the
 record of what the accumulator cost and what moved it, kept for the same reason
-[08-idiomatic-rust.md](08-idiomatic-rust.md) keeps its own: a falsified idea that is not
+[idiomatic-rust.md](idiomatic-rust.md) keeps its own: a falsified idea that is not
 written down is re-derived, and a measurement is a fact about the tree rather than a story
-about the week. [13-writing.md](13-writing.md) names both pages where it forbids history in
+about the week. [writing.md](writing.md) names both pages where it forbids history in
 shipped prose.
 
 Read it before proposing a change to the accumulator. The rows are the numbers any further
@@ -510,7 +510,7 @@ stops moving, check what the allocator is doing before concluding the gap is alg
 **The gap WIDENS when the comparison is made fair, and the reason is one-sided.** PGO is
 worth almost nothing to rustc here and 15% to clang, so the honest figure is the largest of
 the three, not the smallest. A number quoted from either of the first two rows understates
-where the port is; `docs/10-tooling-ci.md` records what has to be held equal, and
+where the port is; `docs/tooling-ci.md` records what has to be held equal, and
 `cargo xtask pgo` / `cargo xtask oracle` / `cargo xtask perf` are what hold it.
 
 `cargo xtask signature` against the PGO binary reproduces the golden exactly, which is the
@@ -550,7 +550,7 @@ have a time ratio and no instruction ratio.
 **The `native` row above cannot be reproduced, and is kept only as a record.** It was taken
 when `native` meant `-C target-cpu=native` on both sides, so it describes two binaries that
 were a property of this box rather than of any tier. `native` now SELECTS an enumerated tier
-(`avx512icl` here) — see `docs/10-tooling-ci.md` — so a rerun measures a differently
+(`avx512icl` here) — see `docs/tooling-ci.md` — so a rerun measures a differently
 compiled pair and the numbers are not comparable. Re-take it under a named tier before
 quoting it.
 
@@ -1035,7 +1035,7 @@ runtime-trip loop, an eight-wide fixup loop and a scalar tail, emitted twice per
 **5.85M at avx2 and 2.41M at sse41**, bit-exact. Both tiers move the same way, which is what
 separates removed work from moved code layout.
 
-**The shape is `docs/08-idiomatic-rust.md` section 17.1, and the pattern sweep had reported it
+**The shape is `docs/idiomatic-rust.md` section 17.1, and the pattern sweep had reported it
 as having zero hits in this tree** — its grep looked for a `base..base + N` range slice and
 could not see `.iter().zip()` over `split_at` halves. A sweep is only as wide as its grep.
 
@@ -1562,8 +1562,8 @@ data-shaped lead, and `StackEntry` at 72 bytes against upstream's 56 is part of 
 |---|---|---|
 | `nnue-check` | the RAW network output equals a pristine upstream build's, position by position | this page |
 | `net-roundtrip` | the format reader and the writer agree, so an order stated twice is welded | this page |
-| `signature` | how that output is USED once the search has it — which `nnue-check` cannot see | [10-tooling-ci.md](10-tooling-ci.md) |
-| `perf-budget` | what the forward pass and the accumulator COST, which no gate in `parity` can see | [11-performance.md](11-performance.md) |
+| `signature` | how that output is USED once the search has it — which `nnue-check` cannot see | [tooling-ci.md](tooling-ci.md) |
+| `perf-budget` | what the forward pass and the accumulator COST, which no gate in `parity` can see | [performance.md](performance.md) |
 
 ### `nnue-check`
 

@@ -10,7 +10,7 @@ Golden: `Stockfish/src/uci.cpp`, `ucioption.cpp`, `engine.cpp`, `benchmark.cpp`.
 The engine crate reads no standard input and writes no standard output. The shell
 implements `InfoSink` and turns the search's reports into `info` lines. The split is a
 crate boundary, so it is checked by `cargo build` — see
-[00-architecture.md](00-architecture.md).
+[architecture.md](architecture.md).
 
 `Engine::handle` takes the output stream as an argument rather than writing to `stdout`
 directly, which is what lets the whole UCI surface be tested by driving a script into a
@@ -137,7 +137,7 @@ tests, plus a field-for-field diff against the oracle with the values elided.
 
 One row is renamed and it is the port-wide reason: upstream prints `Thread binding`, rfish
 prints `Thread distribution`, because `sched_setaffinity` has no safe interface and this
-engine assigns threads to nodes without pinning them. See [06-platform.md](06-platform.md).
+engine assigns threads to nodes without pinning them. See [platform.md](platform.md).
 
 ## `uci.rs` — the transport
 
@@ -252,7 +252,7 @@ rfish says, not what upstream says, and it only ever sees a command some `.uci` 
 | `golden-audit` | what it says is what UPSTREAM says — the half a golden cannot reach | this page |
 | `fixture-coverage` | every fixture is classified and every property has a fixture that presents it | this page |
 | `async-check` | INVARIANTS on a RUNNING search: `stop`, `ponderhit` and `quit` are answered, which no golden can reach | this page |
-| `signature` | the engine behind the surface | [10-tooling-ci.md](10-tooling-ci.md) |
+| `signature` | the engine behind the surface | [tooling-ci.md](tooling-ci.md) |
 
 ### `golden`
 
@@ -274,7 +274,7 @@ existed.
 rfish is a photograph of rfish. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 It refuses a case where both sides are blank before it tallies either way, for the reason
-[10-tooling-ci.md](10-tooling-ci.md) gives under "A gate that compared nothing must not
+[tooling-ci.md](tooling-ci.md) gives under "A gate that compared nothing must not
 pass": `""` equals `""`, so two dead engines score an agreement.
 
 ### `fixture-coverage`

@@ -1,6 +1,6 @@
 //! Measurement tooling: the PGO build, a COMPARABLE oracle, and the differential.
 //!
-//! Every number in `docs/03-engine-eval.md` is a ratio against an upstream build, and a ratio
+//! Every number in `docs/engine-eval.md` is a ratio against an upstream build, and a ratio
 //! is only about the engines when everything else is held equal. Three things were not held
 //! equal before this module existed, and each one moved the answer by more than the code
 //! changes the ledger tracks:
@@ -17,7 +17,7 @@
 //!
 //! What this module does NOT do is pick the numbers. It builds comparable binaries and runs
 //! two instruments over them; the instruments disagree often, and both readings belong in a
-//! report. See `docs/10-tooling-ci.md` for which instrument settles which question.
+//! report. See `docs/tooling-ci.md` for which instrument settles which question.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -976,7 +976,7 @@ const BUDGET_GOLDEN: &str = "tools/instr_budget.golden";
 /// missed anything smaller.
 ///
 /// Against a spread of ten instructions in 1.7e9 across a from-scratch rebuild, 0.005% is
-/// ~8000x the noise and ~11x under the mutation. `docs/10-tooling-ci.md` records the run.
+/// ~8000x the noise and ~11x under the mutation. `docs/tooling-ci.md` records the run.
 const BUDGET_TOLERANCE: f64 = 0.000_05;
 
 /// How far STARTUP may move, which is not the search's tolerance and must not be.
@@ -1868,7 +1868,7 @@ fn split_compressed(rest: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// The counter rows `docs/03-engine-eval.md` publishes, in its own order.
+/// The counter rows `docs/engine-eval.md` publishes, in its own order.
 ///
 /// Callgrind's event names, paired with the label the page uses. The page's rule is that a
 /// number it publishes has to come from a COMMAND rather than from a step someone remembers

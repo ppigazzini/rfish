@@ -20,7 +20,7 @@
 //!   the topology and the policies from file reads, but `sched_setaffinity` has no
 //!   filesystem equivalent, so no worker can be pinned to the node it was assigned.
 //!
-//! See `docs/06-platform.md`.
+//! See `docs/platform.md`.
 
 pub mod numa;
 pub mod syzygy;

@@ -78,7 +78,7 @@ jobs:
               echo '```'
               echo ""
               echo "Porting is human-gated. Land ONE upstream commit per commit and check"
-              echo "each against upstream built at THAT commit -- see docs/10-tooling-ci.md."
+              echo "each against upstream built at THAT commit -- see docs/tooling-ci.md."
             else
               echo "Up to date."
             fi

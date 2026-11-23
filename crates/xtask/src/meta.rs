@@ -162,7 +162,7 @@ const CROSSINGS: &[CrossingEdge] = &[
         from: "search",
         to: "platform",
         file: "search/worker.rs",
-        reason: "the worker holds a `TableRegistry` and names its types directly. Upstream inverts this edge with a seam and this port does not, so it is structural rather than incidental — and it is the one the hand-written inventory in docs/00-architecture.md did not carry until this gate found it",
+        reason: "the worker holds a `TableRegistry` and names its types directly. Upstream inverts this edge with a seam and this port does not, so it is structural rather than incidental — and it is the one the hand-written inventory in docs/architecture.md did not carry until this gate found it",
     },
 ];
 
@@ -170,7 +170,7 @@ const CROSSINGS: &[CrossingEdge] = &[
 ///
 /// **`cargo` cannot answer this.** The crate boundary is checked by the compiler, but this
 /// graph is inside ONE crate and a cycle between modules of one crate builds fine. So the
-/// direction was a property a reviewer maintained, and `docs/00-architecture.md` said so:
+/// direction was a property a reviewer maintained, and `docs/architecture.md` said so:
 /// it carried a hand-written inventory of what crosses, with the note that a fourth edge
 /// would be noticed by nobody. There was already a fourth.
 ///
@@ -774,7 +774,7 @@ const MUTANTS: &[Mutant] = &[
         // own copy, that a list which drifts reads exactly like one that has not — and it had
         // drifted by three entries with nothing to catch it.
         label: "the documented parity order loses a gate",
-        file: "docs/10-tooling-ci.md",
+        file: "docs/tooling-ci.md",
         find: "`lane-coverage` → `zone-check` →",
         replace: "`lane-coverage` →",
         gate: "docs-lint",
@@ -785,7 +785,7 @@ const MUTANTS: &[Mutant] = &[
         // while every page that routes a gate there still points at it. Both halves fire —
         // the missing section, and the dangling pointer from the far page.
         label: "a page loses the gates section other pages route to",
-        file: "docs/05-tablebases.md",
+        file: "docs/tablebases.md",
         find: "## The gates",
         replace: "## The checks",
         gate: "docs-lint",

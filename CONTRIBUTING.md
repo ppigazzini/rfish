@@ -16,7 +16,7 @@ enforces it. A patch that adds `unsafe`, or that adds `#[allow(unsafe_code)]` to
 around the forbid, is not accepted — not for performance, not "just for this one kernel".
 
 If a construct seems to need it, the answer is a different construct. Every such case so
-far has had one, and [docs/08-idiomatic-rust.md](docs/08-idiomatic-rust.md) records what it
+far has had one, and [docs/idiomatic-rust.md](docs/idiomatic-rust.md) records what it
 was.
 
 ## Faithfulness
