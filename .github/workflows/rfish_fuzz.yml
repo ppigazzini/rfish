@@ -129,8 +129,12 @@ jobs:
 
       # No seed pinned on the schedule: each night walks positions the last one did not,
       # which is the entire reason to run this repeatedly. The step PRINTS the seed it chose,
-      # and a failure is replayed by dispatching this workflow with it.
+      # and a failure is replayed by dispatching this workflow with it. The budget reaches
+      # the command through the environment, as the seed does: a dispatch input spliced
+      # into `run:` would execute as shell, while a quoted variable is one argument.
       - name: Fuzz
         env:
           RFISH_FUZZ_SEED: ${{ github.event.inputs.seed }}
-        run: cargo xtask fuzz ${{ github.event.inputs.seconds || '600' }} ${{ matrix.harness }}
+          FUZZ_SECONDS: ${{ github.event.inputs.seconds || '600' }}
+          FUZZ_HARNESS: ${{ matrix.harness }}
+        run: cargo xtask fuzz "$FUZZ_SECONDS" "$FUZZ_HARNESS"

@@ -465,10 +465,12 @@ Every lane, which is what the file has rather than the ones worth mentioning:
 | Lane (job id) | Displayed as | Runs |
 |---|---|---|
 | `lint` | Format, clippy and the unsafe gate | `fmt`, `clippy`, `unsafe-lint`, `docs-lint` |
+| `zizmor` | Workflow audit (zizmor) | `uvx zizmor==1.33.0 .github/`, online audits included |
 | `test` | Linux x86-64 / macOS aarch64 / Windows x86-64 test | `cargo xtask test` on three platforms |
 | `parity` | Linux x86-64 parity | `net`, `tb-fetch`, `perft`, `golden`, `signature` on Linux |
 | `tsan-race` | Linux TSan race gate | `net`, then a four-thread search under ThreadSanitizer |
 | `valgrind` | Linux valgrind memcheck | `net`, `build`, then the binary under memcheck |
+| `arch-determinism` | Every tier builds, and every tier the runner can execute benches the anchor | `net`, then `arch-determinism --host-tiers` |
 | `cross-build` | Cross-build (`<target>`) | `cargo check` for `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-gnu` |
 
 `cross-build` **checks rather than builds**, and the reason is worth keeping: the runner has
@@ -690,8 +692,9 @@ The lane is gone (above), and with it the only place the two could disagree.
 pinned by commit with its tag in a trailing comment, and the comment is true only while the
 tag stays where the pin was taken. A toolchain action that publishes one moving tag —
 `dtolnay/rust-toolchain` moves `v1` on every upstream change — parts from its comment at the
-next upstream commit. `zizmor`'s `ref-version-mismatch` audit reports that drift, and no
-lane here runs it, so the drift is silent. `.github/actions/setup-rust` runs what such an
+next upstream commit. `zizmor`'s `ref-version-mismatch` audit reports that drift, and the
+`zizmor` lane runs it on every push (below), but only once the tag has moved: the drift is
+caught after the fact, not prevented. `.github/actions/setup-rust` runs what such an
 action runs: `rustup toolchain install` with the minimal profile, the components and targets
 a lane names, and a retry for the one failure the release server produces while it
 publishes, then `rustup default`, with incremental compilation off. The runner carries
@@ -700,6 +703,15 @@ drift. Lanes name it as `$/.github/actions/setup-rust`, the form `zizmor`'s
 `self-repository` audit asks for.
 `no_lane_installs_its_toolchain_through_a_third_party_action` in `crates/xtask/src/meta.rs`
 fails on a toolchain installed by any third-party action, under `cargo xtask test`.
+
+**The workflows are audited like the code.** Every checkout sets `persist-credentials:
+false` — no job pushes, and every clone here is of a public repository — and no `${{ }}`
+expression is spliced into a `run:` script: a dispatch input reaches its command through
+`env:`, as the fuzz lane's budget and seed do. The `zizmor` job holds both, and the SHA pins,
+with `uvx zizmor==1.33.0 .github/` and the job token for the online audits; the version is
+pinned so a zizmor release cannot redden an unchanged tree. `.github/dependabot.yml` proposes
+action updates weekly, seven days after a release, the setting zizmor's
+`dependabot-cooldown` audit reads.
 
 **The toolchain is read with `sed`, not `grep -oP`.** `-P` is a GNU extension. macOS ships
 BSD grep, which rejects the flag outright, and Git Bash on Windows is frequently built

@@ -6,9 +6,9 @@ description: Install the pinned Rust toolchain with rustup, which every hosted r
 # only while the tag stays where the pin was taken. A toolchain action that
 # publishes one moving tag, as `dtolnay/rust-toolchain` does with `v1`, moves it
 # on every upstream change, so the pin parts from its comment at the next
-# upstream commit and no lane here notices. What such an action runs for these lanes is the rustup
-# command below: no tag to drift, and no third-party commit between the runner
-# and the compiler.
+# upstream commit, and the `zizmor` lane notices only after it has. What such an
+# action runs for these lanes is the rustup command below: no tag to drift, and
+# no third-party commit between the runner and the compiler.
 # `no_lane_installs_its_toolchain_through_a_third_party_action` in
 # `crates/xtask/src/meta.rs` holds every workflow to it.
 

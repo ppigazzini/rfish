@@ -1379,8 +1379,9 @@ mod tests {
     ///
     /// A third-party action is pinned by commit with its tag in a trailing comment, and a
     /// toolchain action that publishes one moving tag leaves that comment false at its next
-    /// upstream commit. No lane audits the pin, so the drift is silent. Hold every workflow to the local
-    /// wrapper, and the wrapper to running rustup and no action of its own.
+    /// upstream commit. The `zizmor` lane reports that drift only once the tag has moved, so
+    /// hold every workflow to the local wrapper, and the wrapper to running rustup and no
+    /// action of its own.
     #[test]
     fn no_lane_installs_its_toolchain_through_a_third_party_action() {
         let root = workspace_root();

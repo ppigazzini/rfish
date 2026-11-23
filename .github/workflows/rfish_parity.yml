@@ -67,6 +67,28 @@ jobs:
       - run: cargo xtask unsafe-lint
       - run: cargo xtask docs-lint
 
+  # The workflows themselves, statically: template injection, persisted credentials,
+  # over-broad permissions and unpinned actions. The token lets zizmor resolve each pinned
+  # SHA against its tag comment (the online audits, `ref-version-mismatch` among them) beside
+  # the static ones. The version is pinned, as ../valgebra pins it, so a zizmor release
+  # cannot redden a tree nothing changed.
+  zizmor:
+    name: Workflow audit (zizmor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.9"
+          enable-cache: false
+      - name: Audit the workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uvx zizmor==1.33.0 .github/
+
   test:
     # Named per ROW rather than per runner label, as ../zfish's native-os lane is: the label
     # says which image GitHub boots, and the architecture it boots on is the thing a reader
