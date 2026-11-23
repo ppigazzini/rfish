@@ -38,7 +38,7 @@ jobs:
     steps:
       # Full history: `git rev-list <pin>..<master>` needs the pinned commit to be present,
       # and a shallow checkout may not carry it.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -112,8 +112,8 @@ jobs:
       - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: Swatinem/rust-cache@v2.9.3
+      - uses: actions/cache@v6.1.0
         with:
           path: resources/*.nnue
           key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
@@ -122,7 +122,7 @@ jobs:
       # would pin the partial set until the fetcher next changed.
       - name: Restore the Syzygy tables
         id: tbcache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             resources/syzygy
@@ -141,7 +141,7 @@ jobs:
         run: cargo xtask tb-fetch 5
       - name: Save the Syzygy tables
         if: steps.tbfetch.outcome == 'success' && steps.tbcache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@v6.1.0
         with:
           path: |
             resources/syzygy

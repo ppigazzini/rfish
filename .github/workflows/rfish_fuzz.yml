@@ -70,7 +70,7 @@ jobs:
             name: Tablebase parse fuzz (bounded)
             tables: true
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Read the pinned toolchain
@@ -86,10 +86,10 @@ jobs:
       - uses: $/.github/actions/setup-rust
         with:
           toolchain: ${{ steps.rt.outputs.channel }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@v2.9.3
       # The net is a runtime input and the search harness evaluates with it, so a run without
       # one would be fuzzing the classical fallback and reporting it as the engine.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache@v6.1.0
         with:
           path: resources/*.nnue
           key: nnue-${{ hashFiles('crates/rfish-engine/src/eval/nnue/mod.rs') }}
@@ -106,7 +106,7 @@ jobs:
       - name: Restore the Syzygy tables
         id: tbcache
         if: matrix.tables
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             resources/syzygy
@@ -120,7 +120,7 @@ jobs:
         run: cargo xtask tb-fetch
       - name: Save the Syzygy tables
         if: matrix.tables && steps.tbfetch.outcome == 'success' && steps.tbcache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@v6.1.0
         with:
           path: |
             resources/syzygy

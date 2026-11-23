@@ -1377,11 +1377,11 @@ mod tests {
 
     /// No lane installs its toolchain through a third-party action.
     ///
-    /// A third-party action is pinned by commit with its tag in a trailing comment, and a
-    /// toolchain action that publishes one moving tag leaves that comment false at its next
-    /// upstream commit. The `zizmor` lane reports that drift only once the tag has moved, so
-    /// hold every workflow to the local wrapper, and the wrapper to running rustup and no
-    /// action of its own.
+    /// A third-party action runs the commit the workflow lockfile names for its tag, and a
+    /// toolchain action that publishes one moving tag falls off that commit at its next
+    /// upstream commit, failing the `actions-lock` lane until somebody relocks. Hold every
+    /// workflow to the local wrapper, and the wrapper to running rustup and no action of its
+    /// own.
     #[test]
     fn no_lane_installs_its_toolchain_through_a_third_party_action() {
         let root = workspace_root();
