@@ -15,7 +15,11 @@ position, `cargo xtask tb` does the same for the WDL verdict and the DTZ distanc
 `cargo xtask signature` holds the bench node total to upstream's own. What is missing is
 thread PINNING, which `std` exposes no API for — [docs/platform.md](docs/platform.md)
 says why that is blocked rather than pending. Run `cargo xtask parity` for the current state
-of every gate, and see [docs/](docs/index.md) for what each zone does.
+of every gate, and see [docs/](docs/index.md) for what each zone does, published at
+<https://ppigazzini.github.io/rfish/> with
+[`llms.txt`](https://ppigazzini.github.io/rfish/llms.txt) (a manifest of the pages) and
+[`llms-full.txt`](https://ppigazzini.github.io/rfish/llms-full.txt) (their full text) per the
+[llmstxt.org](https://llmstxt.org) convention.
 
 ## Why safe Rust
 

@@ -1,0 +1,134 @@
+site_name: rfish
+site_description: "A port of the Stockfish chess engine in 100% safe Rust, bit-exact to upstream: the same bench node signature and the same bestmove."
+site_url: https://ppigazzini.github.io/rfish/
+repo_url: https://github.com/ppigazzini/rfish
+repo_name: ppigazzini/rfish
+copyright: "rfish is free software under the GNU General Public License v3, as Stockfish is."
+
+# The pages are built from site-src/, which `tools/site.py` writes from docs/: the same
+# pages, with each link that leaves docs/ pointed at its file on GitHub. Run it first.
+docs_dir: site-src
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.footer
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+# The order a reader meets the pages in. A page added is a line here and a line of the
+# llmstxt sections below, whose text is the page's Owns cell in the docs/index.md table;
+# `tools/site.py` refuses the three apart.
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Engine:
+      - Board: engine-board.md
+      - Search: engine-search.md
+      - Evaluation: engine-eval.md
+      - Multithreading: multithreading.md
+      - Tablebases: tablebases.md
+  - Runtime:
+      - Platform: platform.md
+      - Shell: shell.md
+  - Practice:
+      - Idiomatic Rust: idiomatic-rust.md
+      - Type design: type-design.md
+      - Performance: performance.md
+  - Tooling and CI: tooling-ci.md
+  - Reference:
+      - References: references.md
+      - Writing these docs: writing.md
+      - Glossary: glossary.md
+
+# Every check the builder makes on a link and on the nav, raised to a warning so that --strict
+# fails the build on it: a page or an anchor a link names that does not exist, a page under
+# docs/ that no nav entry lists, and a link the builder cannot read as one to a page.
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  # A diagram is a `mermaid` block, text the page carries: the theme loads Mermaid on a page
+  # holding one and draws it in the site's palette, light or dark, and GitHub draws the same
+  # block.
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  # A heading's anchor is the one GitHub gives it, so a `page.md#anchor` link resolves on the
+  # site and on GitHub alike: an em dash between two words leaves both spaces as hyphens.
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
+
+plugins:
+  - search
+  # Machine-readable view of the site: /llms.txt (a manifest mirroring the nav) and
+  # /llms-full.txt (the full content of every page it lists).
+  - llmstxt:
+      markdown_description: >-
+        rfish is a port of the Stockfish chess engine to 100% safe Rust: `unsafe_code` is
+        forbidden for the whole workspace, and the engine crate has no dependencies. It is a
+        bit-exact clone, reproducing upstream's bench node signature with the same NNUE
+        evaluation, Syzygy tablebases and Lazy-SMP threading. These pages are its developer
+        documentation: the architecture, each zone of the engine, the Rust patterns the port
+        rests on, and the `cargo xtask` gates and CI that hold it to upstream.
+      full_output: llms-full.txt
+      sections:
+        Home:
+          - index.md: "What the documentation set is, the page that owns each zone of the source, why a doc changes in the commit that changes its code, and the two documentation surfaces."
+        Architecture:
+          - architecture.md: "the zone split, the crate boundary, the dependency direction"
+        Engine:
+          - engine-board.md: "`crates/rfish-engine/src/board/` — types, bitboards, attacks, position, movegen"
+          - engine-search.md: "`crates/rfish-engine/src/search/` — TT, histories, move picker, search, time"
+          - engine-eval.md: "`crates/rfish-engine/src/eval/` — the NNUE forward pass and the classical fallback"
+          - multithreading.md: "`crates/rfish-engine/src/platform/threads.rs` — Lazy-SMP without a pool"
+          - tablebases.md: "`crates/rfish-engine/src/platform/syzygy/` — the Syzygy prober"
+        Runtime:
+          - platform.md: "`crates/rfish-engine/src/platform/` — the worker set, the NUMA topology, the prober, and what is deliberately absent"
+          - shell.md: "`crates/rfish/src/` — UCI transport, options, benchmark"
+        Practice:
+          - idiomatic-rust.md: "the pattern-by-pattern translation, and the measurement laws"
+          - type-design.md: "the value domain: what each type means, why it has that shape, and what it does not promise"
+          - performance.md: "the six cost axes, what each proves and what it cannot see"
+        Tooling and CI:
+          - tooling-ci.md: "`cargo xtask`, the gates and CI — the instruments that say whether the engine is RIGHT"
+        Reference:
+          - references.md: "upstream, Rust and UCI sources this port is checked against"
+          - writing.md: "how to write a comment and a doc page here"
+          - glossary.md: "the words this set uses without stopping to define them"

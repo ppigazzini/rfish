@@ -27,6 +27,10 @@ __pycache__/
 .ruff_cache/
 .ty_cache/
 
+# The site: tools/site.py writes site-src/ from docs/, and zensical builds it into site/.
+/site-src/
+/site/
+
 # Profiler and memcheck output from the local-only tools in tools/ (see
 # docs/tooling-ci.md). `perf_callgrind.sh` writes into the CURRENT directory
 # unless OUT= names one, and that file is routinely larger than the whole

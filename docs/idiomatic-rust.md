@@ -1145,7 +1145,7 @@ table[offset + idx] = references[i];     // against table.len(), which is not si
 **A guard proves nothing about a slice it is not stated against.** Reslicing to exactly the
 length the guard names is what turns a runtime test into a compile-time one, and it is free.
 
-### 18.2 `Box<[T; N]>` is not automatically better than `Vec<T>`
+### 18.2 A boxed `[T; N]` is not automatically better than a `Vec`
 
 The search stack moved from `Vec<T>` to `Box<[T; N]>` for **−16.0M** (§14.2) and the ply stack
 followed it. Applying the same to the accumulator — `Side::acc` as `Box<[i16; L1]>`, which
@@ -1327,7 +1327,7 @@ nobody wrote. Look for it wherever a state machine's setup arm and its steady-st
 in one function.
 
 **And the counter-rule from the same session: `#[inline(never)]` is a claim about CALL
-FREQUENCY, not about size.** [§18.2](#182-boxtn-is-not-automatically-better-than-vect) is the
+FREQUENCY, not about size.** [§18.2](#182-a-boxed-t-n-is-not-automatically-better-than-a-vec) is the
 mirror image, where forcing a shape on a loop that was already register-resident cost 6.1M.
 The test is whether the outlined body runs on a different schedule from its caller, and here
 it is once per stage against once per move.

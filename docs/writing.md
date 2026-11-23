@@ -12,6 +12,19 @@ place a shipped fact lives. And a shipped file must not name that surface's LOCA
 `cargo xtask docs-lint` sweeps the whole index for it, because the path check next to it
 cannot: an ignored path is exempt there by design.
 
+**The set is published** at <https://ppigazzini.github.io/rfish/>, with `llms.txt` and
+`llms-full.txt` for a reader that is not a browser. Zensical builds it from `mkdocs.yml`, and
+the `rfish site` workflow deploys it on each push to `main`. A page added is a row of the
+index table, a line of the `nav` in the same place, and a line of the `llmstxt` sections, the
+last the page's Owns cell in that table; `tools/site.py` refuses the three apart, then copies
+the pages to `site-src/` with each link that leaves `docs/` pointed at its file on GitHub,
+since the site holds only the pages. Locally:
+
+```sh
+uv sync --group docs
+uv run --no-sync python tools/site.py && uv run --no-sync zensical serve
+```
+
 ## The rules
 
 Each one is here because breaking it shipped a defect in this project or in a sibling.

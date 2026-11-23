@@ -432,7 +432,7 @@ and Windows. Nothing in CI is a gate that does not exist locally, and nothing lo
 weaker than CI — a contributor who runs `cargo xtask parity` and sees green should not be
 surprised by the merge gate.
 
-The four workflow files are named for the port and then for what they gate, as `../zfish`'s
+The workflow files are named for the port and then for what they gate, as `../zfish`'s
 are: **the file name and the displayed name are read in a list of four repositories' runs**,
 and `CI` says only that a repository has some. Job names carry the platform for the same
 reason — a red `test` says nothing a reader can act on, where `macOS aarch64 test` names the
@@ -526,6 +526,12 @@ item rather than on anything to do with sanitizers.
 
 `rfish_perft.yml` is a nightly gate: the merge lane's perft table stops at depths that keep a
 push fast, and a movegen bug past those depths would sail through every one.
+
+`rfish_site.yml` builds the documentation site on a push to `main` or `github_ci`, and a push
+to `main` deploys it to GitHub Pages. `tools/site.py` refuses an `llms.txt` manifest apart
+from the nav or the index table and writes `site-src/`, then `zensical build --strict` builds
+it, failing on a dead link, a missing anchor or a page off the nav ([writing.md](writing.md)).
+It runs no `cargo xtask` step, so `lane-coverage` has nothing to read in it.
 
 `rfish_upstream_check.yml` is a third workflow, weekly rather than on push. It fetches
 upstream's master and reports how many commits the pin in `tools/upstream/UPSTREAM_BASE` is

@@ -19,8 +19,8 @@ Each owns a zone of the source and is the live claim about it.
 | [shell.md](shell.md) | `crates/rfish/src/` — UCI transport, options, benchmark | the UCI surface and options |
 | [idiomatic-rust.md](idiomatic-rust.md) | the pattern-by-pattern translation, and the measurement laws | anyone translating a construct, or hand-optimising one |
 | [type-design.md](type-design.md) | the value domain: what each type means, why it has that shape, and what it does not promise | anyone adding a type or changing an encoding |
-| [tooling-ci.md](tooling-ci.md) | `cargo xtask`, the gates and CI — the instruments that say whether the engine is RIGHT | anyone adding or running a gate |
 | [performance.md](performance.md) | the six cost axes, what each proves and what it cannot see | anyone measuring a refactor or an optimisation |
+| [tooling-ci.md](tooling-ci.md) | `cargo xtask`, the gates and CI — the instruments that say whether the engine is RIGHT | anyone adding or running a gate |
 | [references.md](references.md) | upstream, Rust and UCI sources this port is checked against | all developers |
 | [writing.md](writing.md) | how to write a comment and a doc page here | anyone writing prose about this code |
 | [glossary.md](glossary.md) | the words this set uses without stopping to define them | all contributors |
