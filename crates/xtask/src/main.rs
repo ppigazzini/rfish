@@ -3,7 +3,8 @@
 //! `cargo xtask <step>` is the single entry point for every build and every gate. There is
 //! no Makefile and no shell driver: the gates are Rust, in the workspace, type-checked and
 //! clippy-linted by the same CI lane that checks the engine — so a gate cannot rot in a way
-//! the compiler would have caught.
+//! the compiler would have caught. The one shell script is the oracle's, which every port
+//! shares; see `oracle.rs`.
 //!
 //! **Check a gate's EXIT CODE, never a piped fragment.** `cargo xtask parity | tail -1`
 //! reads `0` from `tail` while the gate is red. That has laundered red gates in both
@@ -18,6 +19,7 @@ mod fuzz;
 mod gates;
 mod meta;
 mod net;
+mod oracle;
 mod perf;
 mod runner;
 

@@ -149,51 +149,11 @@ jobs:
             resources/syzygy5
           key: syzygy-3man-kpvkp-5man-${{ hashFiles('crates/xtask/src/net.rs') }}
 
-      # The oracle must be built AT THE PIN, in ../Stockfish/src, because that is where every
-      # differential gate looks for it -- and `find_oracle` checks the SHA upstream stamps
-      # into `id name`, so a build of master would be REJECTED rather than silently compared
-      # against. Checking out the pin is therefore load-bearing, not tidiness.
-      - name: Build the oracle at the pin
-        run: |
-          set -euo pipefail
-          git clone https://github.com/official-stockfish/Stockfish.git ../Stockfish
-          git -C ../Stockfish checkout --detach "$(tr -d '[:space:]' < tools/upstream/UPSTREAM_BASE)"
-          # Upstream embeds the net at build time; it is the same file `cargo xtask net`
-          # already fetched, so copy rather than download it twice.
-          cp resources/*.nnue ../Stockfish/src/
-          make -C ../Stockfish/src -j"$(nproc)" build ARCH=x86-64-avx2
-          ../Stockfish/src/stockfish uci < /dev/null | head -n 1
-
-      # Assert the checkout the step above just made is the one every gate below will compare
-      # against. `--detach <pin>` can only be wrong quietly -- a fetch that did not carry the
-      # commit, a pin edited without its partner -- and then each differential compares rfish
-      # against source it has already ported past while reporting agreement.
-      - run: cargo xtask sync-status
-
-      # The evaluation, the tablebase probes, the UCI surface and the search, in that order:
-      # each answers a question the others cannot.
-      - run: cargo xtask nnue-check
-      - run: cargo xtask tb
-      - run: cargo xtask golden-audit
-      - run: cargo xtask upstream-nodes --positions 25 --depth 8
-
-      # The call-count fingerprint: not "does rfish compute upstream's numbers" but "does it
-      # get there by calling what upstream calls, as often". Every check above compares
-      # VALUES and each passes over a state divergence that happens not to move one; this
-      # found two on its first run. It needs an oracle AND valgrind, and it is ~50x slower
-      # than the bench it profiles, which is why it lives here and not in `parity`.
-      #
-      # `cargo xtask oracle` builds its own tree beside the workspace, stamped with the SHA
-      # it was extracted at -- the step below refuses to measure against an oracle that is
-      # not at the pin, so this is not a duplicate of the build above.
-      - name: Install valgrind
-        run: sudo apt-get update && sudo apt-get install -y valgrind
-
-      # `oracle` is `make profile-build COMP=clang`, so it needs clang++ AND the
-      # llvm-profdata that merges the raw profile clang writes -- both at rustc's LLVM major,
-      # or the ledger compares GCC against LLVM, or merges one LLVM's profile format with
-      # another's. The runner image ships neither at that major, so the step SKIPPED and
-      # exited 2, and the fingerprint behind it never ran at all.
+      # The oracle is built `COMP=clang`, and `cargo xtask oracle` builds it with a profile,
+      # so this needs clang++, the `ld.lld` its LTO link takes by that name, AND the
+      # llvm-profdata that merges the raw profile -- all at rustc's LLVM major, or the ledger
+      # merges one LLVM's profile format with another's. The runner image ships none of them
+      # at that major.
       #
       # Derive the major from rustc rather than pinning one here: `rust-toolchain.toml` moves,
       # and a hardcoded major would go quietly stale into the loose `llvm-profdata` fallback.
@@ -226,5 +186,35 @@ jobs:
           command -v llvm-profdata >/dev/null || { echo "no llvm-profdata on the path"; exit 1; }
           echo "clang++ $got and $(command -v llvm-profdata) match rustc's LLVM $want"
 
-      - run: cargo xtask oracle --tier avx2
+      # Full history: upstream_oracle.sh archives an arbitrary pinned sha, which a shallow
+      # clone may not carry. It takes the net from resources/, which `cargo xtask net`
+      # filled, and installs the build only if it benches upstream's own `Bench:`.
+      - name: Clone the golden beside the workspace
+        run: git clone https://github.com/official-stockfish/Stockfish.git ../Stockfish
+      - name: Build the pristine upstream oracle at the pin
+        run: bash tools/upstream/upstream_oracle.sh
+
+      # Assert the golden carries the pin. A clone that did not fetch the commit, or a pin
+      # edited without its partner, would otherwise be noticed only by the build above.
+      - run: cargo xtask sync-status
+
+      # The evaluation, the tablebase probes, the UCI surface and the search, in that order:
+      # each answers a question the others cannot.
+      - run: cargo xtask nnue-check
+      - run: cargo xtask tb
+      - run: cargo xtask golden-audit
+      - run: cargo xtask upstream-nodes --positions 25 --depth 8
+
+      # The call-count fingerprint: not "does rfish compute upstream's numbers" but "does it
+      # get there by calling what upstream calls, as often". Every check above compares
+      # VALUES and each passes over a state divergence that happens not to move one; this
+      # found two on its first run. It needs an oracle AND valgrind, and it is ~50x slower
+      # than the bench it profiles, which is why it lives here and not in `parity`.
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
       - run: cargo xtask fingerprint --tier avx2
+
+      # Nothing below measures a cost here. This proves the COST variant still builds, so the
+      # command every ratio in the docs starts from does not rot between measurements.
+      - run: cargo xtask oracle --tier avx2

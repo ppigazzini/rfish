@@ -9,12 +9,14 @@ Upstream's own `Bench:` for that commit is what `tools/signature.golden` holds â
 difference. Neither number is written here, because it is a number a gate should compute:
 
 ```sh
-cd ../Stockfish && git checkout "$(cat ../rfish/tools/upstream/UPSTREAM_BASE)"
-make -j build ARCH=x86-64-avx2 && ./stockfish bench
+$(tools/upstream/upstream_oracle.sh --verify) bench
 ```
 
-`cargo xtask sync-status` asserts that this checkout is actually AT the pin before anything
-is compared against it. See [CONTRIBUTING.md](../../CONTRIBUTING.md), "One number, and what a
+`upstream_oracle.sh` is the same file in every port, and all of them share its builds in
+`../.upstream-oracle`: change it in all of them or in none. It archives the pin out of
+`../Stockfish` and does not touch that checkout.
+
+`cargo xtask sync-status` asserts that the golden is not BEHIND the pin. See [CONTRIBUTING.md](../../CONTRIBUTING.md), "One number, and what a
 diff against it means".
 
 ## Syncing

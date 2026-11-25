@@ -24,6 +24,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::oracle::Variant;
 use crate::runner::{Outcome, cargo, node_total};
 use crate::{capture, have, resources_dir, run, workspace_root};
 
@@ -415,9 +416,8 @@ fn cargo_build(flags: &str, target_dir: &Path, spine: bool) -> Result<(), String
 
 /// Build an upstream oracle that is comparable to rfish: clang, PGO, LTO, matched tier.
 ///
-/// The tree is extracted from `../Stockfish` at `tools/upstream/UPSTREAM_BASE` with
-/// `git archive`, which reads the object store and touches neither that repository's working
-/// tree nor its index — a checkout or a worktree there would be a side effect on the golden.
+/// The build is the shared script's, as a variant of its own beside the reference every
+/// correctness gate uses.
 ///
 /// `--spine` replaces the body of `Eval::evaluate` with the same material sum the engine's
 /// `eval-material` feature installs. Both sides must carry the SAME formula or the trees
@@ -431,72 +431,78 @@ pub(crate) fn oracle(args: &[&str]) -> Result<Outcome, String> {
     if profdata_tool().is_err() {
         return Ok(Outcome::Skipped("no llvm-profdata for the oracle's PGO phase".to_string()));
     }
-    let src_repo = workspace_root().parent().map(|p| p.join("Stockfish")).unwrap_or_default();
-    if !src_repo.join(".git").exists() {
-        return Ok(Outcome::Skipped(format!("no upstream clone at {}", src_repo.display())));
+    if !golden_repo().join(".git").exists() {
+        return Ok(Outcome::Skipped(format!("no upstream clone at {}", golden_repo().display())));
     }
-
-    let base = upstream_base()?;
-    let dest = oracle_dir(tier, spine);
-    let _ = std::fs::remove_dir_all(&dest);
-    std::fs::create_dir_all(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
-
-    println!("oracle {}: extracting {base}", dest.display());
-    let tar = dest.join("upstream.tar");
-    run(Command::new("git").current_dir(&src_repo).args([
-        "archive",
-        "--format=tar",
-        "-o",
-        &tar.to_string_lossy(),
-        &base,
-    ]))?;
-    run(Command::new("tar").arg("-xf").arg(&tar).arg("-C").arg(&dest))?;
-    let _ = std::fs::remove_file(&tar);
-
-    copy_oracle_net(&dest, &src_repo)?;
-    if spine {
-        patch_material_eval(&dest.join("src/evaluate.cpp"))?;
-        patch_out_threat_scan(&dest.join("src/position.cpp"))?;
-    }
-
-    println!("oracle {}: make profile-build COMP=clang ARCH={}", dest.display(), tier.upstream);
-    run(Command::new("make")
-        .current_dir(dest.join("src"))
-        .args(["-j8", "profile-build", "COMP=clang"])
-        .arg(format!("ARCH={}", tier.upstream)))?;
-
-    stamp_oracle(&dest, &base)?;
-    println!("oracle: {}", dest.join("src/stockfish").display());
+    let patch = if spine { Some(spine_patch()?) } else { None };
+    let bin =
+        crate::oracle::build(&Variant::Cost { arch: tier.upstream, patch: patch.as_deref() })?;
+    println!("oracle: {}", bin.display());
     Ok(Outcome::Pass)
 }
 
-/// The file naming the upstream commit an oracle directory was extracted at.
-fn oracle_stamp_path(dir: &Path) -> PathBuf {
-    dir.join(".rfish-oracle-base")
+/// The oracle a cost comparison at this tier measures against, if it is built.
+fn cost_oracle(tier: &Tier, spine: bool) -> Result<Option<PathBuf>, String> {
+    let patch = if spine { Some(spine_patch()?) } else { None };
+    Ok(crate::oracle::find(&Variant::Cost { arch: tier.upstream, patch: patch.as_deref() }))
 }
 
-/// Record which commit this oracle IS, beside the tree it was built from.
-fn stamp_oracle(dir: &Path, base: &str) -> Result<(), String> {
-    let path = oracle_stamp_path(dir);
-    std::fs::write(&path, format!("{base}\n")).map_err(|e| format!("{}: {e}", path.display()))
+/// What to print when [`cost_oracle`] finds none.
+fn no_cost_oracle(tier: &Tier, spine: bool) -> Outcome {
+    let spine = if spine { " --spine" } else { "" };
+    Outcome::Skipped(format!(
+        "no oracle at the pin for tier {}; run `cargo xtask oracle --tier {}{spine}`",
+        tier.name, tier.name
+    ))
 }
 
-/// Refuse an oracle that is not at the pin this port claims to be a translation of.
+/// Where the golden lives.
+fn golden_repo() -> PathBuf {
+    workspace_root().parent().map(|p| p.join("Stockfish")).unwrap_or_default()
+}
+
+/// Write the spine harness as a patch against the pin, and name the file.
 ///
-/// **This caught a real one.** The oracle directory is built once and reused, and it lives
-/// OUTSIDE the repository, so advancing `UPSTREAM_BASE` leaves it untouched and nothing about
-/// its filename changes. After the `c5aef2bf1` sync the avx2 oracle here was still the
-/// `23cf5d82` tree — it benched 3184328 where the pin benches 2508687 — and every measurement
-/// taken against it was a comparison with an upstream this port is not a translation of.
-///
-/// The instruction differential would eventually have caught it, because it compares node
-/// counts before quoting a ratio. Eventually is the problem: that check only runs when
-/// callgrind does, so at `--tier native`, or on a box without valgrind, the wall-clock A/B ran
-/// against the wrong binary and reported a ratio with no warning at all. `../zfish` stamps its
-/// oracle by SHA for the same reason (`54dc460c`).
+/// The script builds a patch under a key of its own, taken from the patch's bytes, so the
+/// bytes must not vary between a build and the lookups after it: every `git diff` setting
+/// that could vary them is fixed here.
+fn spine_patch() -> Result<PathBuf, String> {
+    let base = upstream_base()?;
+    let dir = workspace_root().join("target/oracle-spine");
+    let _ = std::fs::remove_dir_all(&dir);
+    for file in ["evaluate.cpp", "position.cpp"] {
+        let mut show = Command::new("git");
+        show.current_dir(golden_repo()).arg("show").arg(format!("{base}:src/{file}"));
+        let text = capture(&mut show)?;
+        for side in ["a", "b"] {
+            let src = dir.join(side).join("src");
+            std::fs::create_dir_all(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+            let path = src.join(file);
+            std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+    }
+    patch_material_eval(&dir.join("b/src/evaluate.cpp"))?;
+    patch_out_threat_scan(&dir.join("b/src/position.cpp"))?;
+
+    // `git diff --no-index` exits 1 when the sides differ, which here they always do.
+    let diff = Command::new("git")
+        .current_dir(&dir)
+        .args(["-c", "core.quotePath=true", "-c", "diff.algorithm=myers"])
+        .args(["diff", "--no-index", "--no-ext-diff", "--no-color", "--no-prefix"])
+        .args(["--full-index", "--unified=3", "a", "b"])
+        .output()
+        .map_err(|e| format!("git diff: {e}"))?;
+    if diff.status.code() != Some(1) || diff.stdout.is_empty() {
+        return Err(format!("the spine patch came out empty: {}", diff.status));
+    }
+    let path = dir.join("spine.patch");
+    std::fs::write(&path, &diff.stdout).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(path)
+}
+
 /// Refuse a measured binary older than the source it is supposed to be a build of.
 ///
-/// **The oracle's identity was checked and this side's was not.** `verify_oracle` proves the
+/// **The oracle's identity was checked and this side's was not.** The oracle's key proves the
 /// upstream half was built at the pin; nothing proved the PGO half was built from the tree in
 /// front of you, and a PGO build is expensive enough that it is naturally kept and reused. A
 /// stale one produced 316,793 nodes on the probing corpus where the tree in front of it and
@@ -526,29 +532,6 @@ fn verify_fresh(bin: &Path, what: &str, rebuild: &str) -> Result<(), String> {
             "the {what} at {} is older than the sources it is meant to be a build of, so every \
              ratio would describe code that is no longer here; {rebuild}",
             bin.display()
-        ));
-    }
-    Ok(())
-}
-
-fn verify_oracle(dir: &Path, tier: &Tier) -> Result<(), String> {
-    let want = upstream_base()?;
-    let path = oracle_stamp_path(dir);
-    let rebuild = format!("rebuild it with `cargo xtask oracle --tier {}`", tier.name);
-    let Ok(got) = std::fs::read_to_string(&path) else {
-        return Err(format!(
-            "the oracle at {} carries no {} stamp, so which upstream it is cannot be \
-             established; {rebuild}",
-            dir.display(),
-            path.file_name().unwrap_or_default().to_string_lossy()
-        ));
-    };
-    let got = got.trim();
-    if got != want {
-        return Err(format!(
-            "the oracle at {} was built at {got}, and the pin is {want}. Comparing against it \
-             measures this port against an upstream it is not a translation of; {rebuild}",
-            dir.display()
         ));
     }
     Ok(())
@@ -589,46 +572,12 @@ fn same_net(ours: &Path, our_dir: &Path, theirs: &Path, their_dir: &Path) -> Res
     Ok(())
 }
 
-/// Where an oracle of this tier and kind lives: beside the repository, never inside it.
-fn oracle_dir(tier: &Tier, spine: bool) -> PathBuf {
-    let kind = if spine { "spine" } else { "nnue" };
-    let name = format!(".rfish-oracle-{}-{kind}", tier.name);
-    workspace_root().parent().map_or_else(|| PathBuf::from(&name), |p| p.join(&name))
-}
-
 /// The upstream SHA this port is a translation of.
 fn upstream_base() -> Result<String, String> {
     let path = workspace_root().join("tools/upstream/UPSTREAM_BASE");
     std::fs::read_to_string(&path)
         .map(|s| s.trim().to_string())
         .map_err(|e| format!("{}: {e}", path.display()))
-}
-
-/// Put the net the extracted tree names beside its sources, so the build can embed it.
-///
-/// The nets are not in upstream's object store — `make net` downloads them — so they are
-/// copied from whichever tree on this box already has one: the upstream clone first, then
-/// this repository's `resources/`.
-fn copy_oracle_net(dest: &Path, src_repo: &Path) -> Result<(), String> {
-    let header = dest.join("src/evaluate.h");
-    let text =
-        std::fs::read_to_string(&header).map_err(|e| format!("{}: {e}", header.display()))?;
-    let name = text
-        .lines()
-        .find_map(|l| l.strip_prefix("#define EvalFileDefaultName "))
-        .and_then(|v| v.split('"').nth(1))
-        .ok_or("the oracle's evaluate.h names no default net")?
-        .to_string();
-
-    for dir in [src_repo.join("src"), resources_dir()] {
-        let from = dir.join(&name);
-        if from.is_file() {
-            let to = dest.join("src").join(&name);
-            std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", to.display()))?;
-            return Ok(());
-        }
-    }
-    Err(format!("{name} is on neither the upstream clone nor resources/; fetch it first"))
 }
 
 /// Replace the body of `Eval::evaluate` with the ports' material sum.
@@ -729,7 +678,6 @@ pub(crate) fn perf(args: &[&str]) -> Result<Outcome, String> {
 
     let suffix = if spine { format!("{}-spine", tier.name) } else { tier.name.to_string() };
     let ours = workspace_root().join("target/pgo-use").join(&suffix).join("release/stockfish");
-    let theirs = oracle_dir(tier, spine).join("src/stockfish");
     if !ours.is_file() {
         return Ok(Outcome::Skipped(format!(
             "no PGO build at {}; run `cargo xtask pgo --tier {}{}`",
@@ -738,19 +686,8 @@ pub(crate) fn perf(args: &[&str]) -> Result<Outcome, String> {
             if spine { " --spine" } else { "" }
         )));
     }
-    if !theirs.is_file() {
-        return Ok(Outcome::Skipped(format!(
-            "no oracle at {}; run `cargo xtask oracle --tier {}{}`",
-            theirs.display(),
-            tier.name,
-            if spine { " --spine" } else { "" }
-        )));
-    }
+    let Some(theirs) = cost_oracle(tier, spine)? else { return Ok(no_cost_oracle(tier, spine)) };
     let their_dir = theirs.parent().map(Path::to_path_buf).unwrap_or_default();
-    // BEFORE either instrument, and unconditionally: the node-count check inside the
-    // instruction differential is the only other thing that would notice, and it does not run
-    // at every tier.
-    verify_oracle(&oracle_dir(tier, spine), tier)?;
     // The spine pair evaluates with a stubbed material eval on both sides, so neither loads a
     // net and there is nothing to match.
     if !spine {
@@ -1684,16 +1621,11 @@ pub(crate) fn fingerprint(args: &[&str]) -> Result<Outcome, String> {
     if !have("valgrind") {
         return Ok(Outcome::Skipped("valgrind is not installed".to_string()));
     }
-    let dir = oracle_dir(tier, false);
-    let theirs = dir.join("src/stockfish");
-    if !theirs.is_file() {
-        return Ok(Outcome::Skipped(format!(
-            "no oracle at {}; run `cargo xtask oracle --tier {}`",
-            theirs.display(),
-            tier.name
-        )));
-    }
-    verify_oracle(&dir, tier)?;
+    let Some(theirs) = crate::gates::find_oracle() else {
+        return Ok(Outcome::Skipped(
+            "no upstream binary; run tools/upstream/upstream_oracle.sh".to_string(),
+        ));
+    };
     let their_dir = theirs.parent().map(Path::to_path_buf).unwrap_or_default();
 
     // The `profiling` profile, NOT `release`: release strips symbols, and a profile whose
@@ -1911,19 +1843,16 @@ pub(crate) fn counters(args: &[&str]) -> Result<Outcome, String> {
 
     let suffix = if spine { format!("{}-spine", tier.name) } else { tier.name.to_string() };
     let ours = workspace_root().join("target/pgo-use").join(&suffix).join("release/stockfish");
-    let theirs = oracle_dir(tier, spine).join("src/stockfish");
-    for (what, p, how) in [("PGO build", &ours, "pgo"), ("oracle", &theirs, "oracle")] {
-        if !p.is_file() {
-            return Ok(Outcome::Skipped(format!(
-                "no {what} at {}; run `cargo xtask {how} --tier {}{}`",
-                p.display(),
-                tier.name,
-                if spine { " --spine" } else { "" }
-            )));
-        }
+    if !ours.is_file() {
+        return Ok(Outcome::Skipped(format!(
+            "no PGO build at {}; run `cargo xtask pgo --tier {}{}`",
+            ours.display(),
+            tier.name,
+            if spine { " --spine" } else { "" }
+        )));
     }
+    let Some(theirs) = cost_oracle(tier, spine)? else { return Ok(no_cost_oracle(tier, spine)) };
     let their_dir = theirs.parent().map(Path::to_path_buf).unwrap_or_default();
-    verify_oracle(&oracle_dir(tier, spine), tier)?;
     verify_fresh(
         &ours,
         "PGO build",

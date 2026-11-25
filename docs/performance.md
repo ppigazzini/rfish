@@ -191,7 +191,7 @@ upstream still walks a data-dependent loop. It is the first cache-and-branch rea
 port has of the tablebase zone, and it is the axis `refish`'s own performance page calls its
 open question.
 
-**It also found a hole in this gate.** `verify_oracle` proved the upstream half was built at
+**It also found a hole in this gate.** The oracle's identity proved the upstream half was built at
 the pin and nothing proved rfish's own half was built from the tree in front of you — a PGO
 build is expensive, so it is naturally kept and reused. A stale one searched 316,793 nodes on
 the probing corpus where the tree in front of it and upstream both searched 313,744, and the
@@ -378,13 +378,13 @@ against a clang one at all, where a cost claim has to argue attribution first. c
 simulates rather than samples, so the answer is deterministic — which matters on a box where
 NPS cannot settle a few per cent.
 
-It is **not** immune at the caller, and that limit is load-bearing: upstream inlines
-`gives_check`, `see_ge` and `undo_move` into its search templates under LTO, so its symbol
-counts omit every inlined site. Those three are therefore NOT gated, and
-`tools/fingerprint_groups.tsv` records why with the numbers. The proof needs no second
-measurement: upstream reports `do_move` 163345 and `undo_move` 68736 over the same bench, and
-every do_move in a search is undone, so 94609 of its undo_moves were inlined away. Gating
-them would assert that two compilers inline identically, which is not a fact about this port.
+It is **not** immune at the caller, and that limit is load-bearing: a symbol a compiler inlines
+at some of its call sites counts only the rest. That is why upstream's side is the shared
+reference, clang without a profile — PGO inlines `gives_check`, `see_ge` and `undo_move` into
+upstream's search templates, and the reference keeps all three as calls. One function is still
+out of reach, `update_quiet_histories`, and `tools/fingerprint_groups.tsv` records it with the
+numbers beside the callee that carries the claim instead. Gating a partly inlined symbol would
+assert that two compilers inline identically, which is not a fact about this port.
 
 **The same limit cuts on rfish's side, where a refactor trips it exactly like a compiler
 change would.** Two rows named entry points that stopped surviving as symbols, and the weekly
@@ -406,20 +406,16 @@ exits 1 naming both.
 It is ~50x slower than the bench it profiles, so it stays out of `parity` and runs in the
 weekly lane, which already builds an oracle.
 
-## An oracle must be stamped, and the pair must share a net
+## An oracle is keyed by what it is, and the pair must share a net
 
-`cargo xtask oracle` writes the upstream SHA it extracted into `.rfish-oracle-base` beside the
-tree, and `perf` and `fingerprint` refuse an oracle whose stamp is not `UPSTREAM_BASE`.
+`cargo xtask oracle` builds through
+[`../tools/upstream/upstream_oracle.sh`](../tools/upstream/upstream_oracle.sh), the script
+every port shares, as a variant of its own: clang, PGO, the tier's `ARCH`, and the spine
+patch under `--spine`. A build is keyed by commit, compiler, ARCH, make target and patch, so
+one left from another pin is a different directory and `perf` and `counters` do not find it.
 
-**This caught a real one.** The oracle directory is built once, reused, and lives OUTSIDE the
-repository, so advancing the pin leaves it untouched and nothing about its filename changes.
-After the `c5aef2bf1` sync the avx2 oracle here was still the `23cf5d82` tree — it benched
-3184328 where the pin benches the anchor — and every measurement taken against it compared this
-port to an upstream it is not a translation of. The instruction differential would eventually
-have noticed, because it compares node counts before quoting a ratio; eventually is the
-problem, since that check only runs when callgrind does, so at `--tier native` or on a box
-without valgrind the wall-clock A/B ran against the wrong binary and reported a ratio with no
-warning at all.
+`fingerprint` compares call counts rather than cost, so it drives the reference oracle the
+correctness gates use and not the cost variant.
 
 Both commands also refuse a pair that loaded **different nets**, for the same reason both
 sibling ports added that check: a node count is a property of the net as much as of the

@@ -3,7 +3,9 @@
 `cargo xtask <step>` is the single entry point for every build and every gate. There is no
 Makefile and no shell driver: the gates are Rust, in the workspace, type-checked and
 clippy-linted by the same CI lane that checks the engine — so a gate cannot rot in a way
-the compiler would have caught.
+the compiler would have caught. The one exception is
+[`../tools/upstream/upstream_oracle.sh`](../tools/upstream/upstream_oracle.sh), which builds
+the upstream oracle: every port carries the same file, so it cannot be Rust.
 
 `cargo xtask help` lists every step.
 
@@ -402,14 +404,11 @@ Each of these would otherwise produce a green gate over a wrong engine:
   spell. Each still earns a commit that advances the pin and says why nothing else moved.
   Record them in the commit body; a reader who cannot tell "ported" from "did not apply"
   has to redo the analysis.
-- **Rebuild the oracle before trusting a differential gate, and CHECK ITS STAMP.** A binary
-  left over from the previous pin compares the new engine against the old upstream while
-  reporting a clean pass. Writing that down was not enough: one commit later the same trap
-  caught this repository anyway, because `../Stockfish/src` also held a **`stockfish-new`**
-  from the old pin, that name sorted first, and every differential gate quietly adjudicated
-  against the wrong commit. `find_oracle` now reads the short SHA upstream stamps into
-  `id name` and refuses anything that is not `UPSTREAM_BASE`. Trust the stamp, never the
-  filename or the timestamp.
+- **The oracle is found by commit, never by filename or timestamp.** A binary left over from
+  the previous pin compares the new engine against the old upstream while reporting a clean
+  pass. `tools/upstream/upstream_oracle.sh` keys a build by the commit it was made from and
+  installs it only once it benches that commit's own `Bench:`, so a differential gate finds
+  the pin's build or finds none.
 - **A golden cannot see a divergence from upstream, so ADJUDICATE it.** `cargo xtask
   golden-audit` drives upstream through the same cases and diffs. It found three real
   differences the goldens had been recording as correct for as long as they existed.
@@ -554,9 +553,7 @@ one fixed list, the goldens pin fixed scripts and `nnue-check` pins a fixed FEN 
 position reached by random legal play appears in none of them. Until this job existed all four
 ran only when someone remembered to run them.
 
-The oracle for that job is built AT THE PIN, in `../Stockfish/src`, because that is where the
-gates look and because `find_oracle` checks the SHA — a build of master is rejected rather
-than silently compared against.
+The oracle for that job is `tools/upstream/upstream_oracle.sh`'s default build at the pin: the gates look for that commit and no other.
 
 ### The fuzz lane
 

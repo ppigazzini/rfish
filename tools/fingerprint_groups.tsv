@@ -55,6 +55,18 @@
 #             `AccumulatorStack::evaluate`. rfish's own entry cannot carry the row yet: it
 #             counts 35666, so rustc still inlines it somewhere.
 #
+# The sixth moved UPSTREAM'S SIDE TO ANOTHER BUILD: the oracle's default, clang without a
+# profile, in place of a PGO one.
+#
+#   evaluate      the reference inlines `Eval::evaluate` and keeps
+#                 `NetworkArchitecture::propagate`, the same callee rfish's side already read.
+#   do_move       it keeps the one-argument `Position::do_move` as a call, 130 of them, each
+#                 reaching the form that does the work; the row names that form alone.
+#   update_quiet  it inlines `update_quiet_histories`; `update_all` and `update_cont`, the
+#                 caller and the callee, survive whole on both sides and replace it.
+#   undo_move, gives_check, see_ge   were not gated, because PGO inlined them into upstream's
+#                 search templates. The reference keeps them, so they are rows now.
+#
 # WHAT THIS IS FOR. Every other differential in this tree compares values: the bench anchor,
 # the goldens, nnue-check, upstream-nodes. Each passes over a state divergence that happens
 # not to move a number on the positions it drives. Two real defects were found by this and by
@@ -73,33 +85,17 @@
 movepick_next	MovePicker::next_move|MovePicker>::next_move
 search_node	Worker::search<|SearchWorker>::node::
 qsearch	Worker::qsearch<|SearchWorker>::qsearch
-evaluate	Eval::evaluate(|nnue::LayerStack>::propagate
+evaluate	NetworkArchitecture::propagate(|nnue::LayerStack>::propagate
 nnue_network	AccumulatorStack::evaluate(|FeatureTransformer>::transform
-update_quiet	update_quiet_histories|SearchWorker>::update_quiet
-do_move	Position::do_move(|Position>::do_move_recording
+update_all	::update_all_stats(|SearchWorker>::update_all_stats
+update_cont	::update_continuation_histories(|SearchWorker>::update_continuation_histories
+do_move	Position::do_move(Stockfish::Move, bool|Position>::do_move_recording
+undo_move	Position::undo_move|Position>::undo_move
+gives_check	Position::gives_check|Position>::gives_check
+see_ge	Position::see_ge|Position>::see_ge
 legal	Position::legal(|Position>::legal
 
-# NOT GATED, and the reason is measured rather than assumed.
-#
-# A call count is inlining-immune at the CALLEE -- it does not care how the callee was
-# reached -- but only while the callee itself survives as a symbol on both sides. Upstream is
-# clang with `-flto=full` plus PGO, and it inlines these three INTO the search templates, so
-# its symbol counts omit every inlined site. rfish keeps them as calls.
-#
-# The proof is internal to upstream's own profile and needs no second measurement: upstream
-# reports do_move 163345 and undo_move 68736 over the same bench. Every do_move in a search is
-# undone, so upstream's true undo_move count IS 163345 and the symbol is short by 94609 --
-# those calls were inlined away. rfish reports 163331, which is the number a consistent count
-# looks like. Gating these would assert that two compilers inline identically, which is not a
-# fact about this port.
-#
-#   undo_move	Position::undo_move|Position>::undo_move        upstream 68736, rfish 163331
-#   gives_check	Position::gives_check|Position>::gives_check    upstream 88990, rfish 317545
-#   see_ge	Position::see_ge|Position>::see_ge             upstream 89522, rfish 202943
-#
-# If a future change gives upstream a non-inlined symbol for any of them -- or gives rfish an
-# `#[inline(never)]` reason of its own -- move the row up rather than leaving it here.
-#
-# `legal` WAS the fourth, when it was the per-move pin test upstream inlined into its search.
-# Upstream 400c23f97 folded it into `pseudo_legal`, and the gated row above is that merged
-# test: it validates a move from the transposition table, and it survives whole on both sides.
+# NOT GATED: `update_quiet_histories`. Upstream's symbol reads 2217 against rfish's 26360 at
+# `bench 16 1 8` because the reference inlines it at most of its call sites, so a row would
+# assert that two compilers inline identically, which is not a fact about this port. Its
+# callee carries the claim: `update_cont` is 40565 on both sides.
