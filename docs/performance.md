@@ -417,6 +417,26 @@ one left from another pin is a different directory and `perf` and `counters` do 
 `fingerprint` compares call counts rather than cost, so it drives the reference oracle the
 correctness gates use and not the cost variant.
 
+**An oracle's callgrind profile is taken once.** It is deterministic, so
+[`../tools/upstream/oracle_profile.sh`](../tools/upstream/oracle_profile.sh) leaves it beside
+the binary, and `fingerprint`, `perf` and `counters` read it and profile only rfish. The
+probing workload is not cached: its argument is a file, and a path does not name the file's
+content.
+
+**Hardware counters are not kept.** Cycles, IPC, real cache misses and time are comparable only
+inside one interleaved run, so
+[`../tools/upstream/oracle_counters.py`](../tools/upstream/oracle_counters.py) runs the oracle
+once a round and pairs every binary in it with that reading. rfish takes part in the clang run
+alone: it has no gcc build, and the script refuses a binary whose compiler is not the oracle's.
+
+```sh
+tools/upstream/oracle_counters.py --arch x86-64-avx2 --pgo \
+    rfish=target/pgo-use/avx2/release/stockfish
+```
+
+It cannot see a tier or a profile. `--arch` and `--pgo` name the oracle's, and a binary built
+otherwise measures the build.
+
 Both commands also refuse a pair that loaded **different nets**, for the same reason both
 sibling ports added that check: a node count is a property of the net as much as of the
 

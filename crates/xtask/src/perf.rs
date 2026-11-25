@@ -746,6 +746,10 @@ fn instruction_differential(
 /// concurrently in a fleet and a shared scratch name has silently clobbered one side's
 /// output in the sibling ports.
 fn callgrind_search_ir(bin: &Path, cwd: &Path) -> Result<(u64, u64), String> {
+    if let Some((out, log)) = crate::oracle::profile(bin, &DIFF_BENCH)? {
+        let total = callgrind_total(&out)?;
+        return Ok((total.saturating_sub(startup_ir(bin, cwd, false)?), node_total(&log)?));
+    }
     let out = std::env::temp_dir().join(format!("rfish-cg-{}.out", scratch_key(bin)));
     let mut cmd = Command::new("valgrind");
     cmd.current_dir(cwd)
@@ -1343,6 +1347,9 @@ fn scratch_key(bin: &Path) -> String {
 
 /// The instructions a `quit`-only run costs: the net parse, the magic tables, the zero-fill.
 fn startup_ir(bin: &Path, cwd: &Path, probing: bool) -> Result<u64, String> {
+    if !probing && let Some((out, _)) = crate::oracle::profile(bin, &["--startup"])? {
+        return callgrind_total(&out);
+    }
     let out = std::env::temp_dir().join(format!("rfish-cg-quit-{}.out", scratch_key(bin)));
     let mut child = Command::new("valgrind")
         .current_dir(cwd)
@@ -1734,24 +1741,32 @@ fn sum_matching(counts: &[(String, u64)], patterns: &str) -> (u64, usize) {
 /// caller-independent quantity, which is exactly what survives the two compilers laying the
 /// code out differently.
 fn callgrind_calls(bin: &Path, cwd: &Path, label: &str) -> Result<Vec<(String, u64)>, String> {
-    println!("fingerprint: profiling {label} under callgrind (slow)");
-    let out =
-        std::env::temp_dir().join(format!("rfish-fingerprint-{label}-{}.out", std::process::id()));
-    let text = capture_both(
-        Command::new("valgrind")
-            .current_dir(cwd)
-            .args(["--tool=callgrind", "--cache-sim=no", "--branch-sim=no"])
-            .arg(format!("--callgrind-out-file={}", out.display()))
-            .arg(bin)
-            .arg("bench")
-            .args(DIFF_BENCH),
-    )?;
+    let shared = crate::oracle::profile(bin, &DIFF_BENCH)?;
+    let (out, text, ours) = if let Some((out, text)) = shared {
+        (out, text, false)
+    } else {
+        println!("fingerprint: profiling {label} under callgrind (slow)");
+        let out = std::env::temp_dir()
+            .join(format!("rfish-fingerprint-{label}-{}.out", std::process::id()));
+        let text = capture_both(
+            Command::new("valgrind")
+                .current_dir(cwd)
+                .args(["--tool=callgrind", "--cache-sim=no", "--branch-sim=no"])
+                .arg(format!("--callgrind-out-file={}", out.display()))
+                .arg(bin)
+                .arg("bench")
+                .args(DIFF_BENCH),
+        )?;
+        (out, text, true)
+    };
     // A profile of a run that never searched looks entirely plausible and is worthless.
     if !text.contains("Nodes searched") {
         return Err(format!("the {label} profile carries no bench result: it did not search"));
     }
     let profile = std::fs::read_to_string(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let _ = std::fs::remove_file(&out);
+    if ours {
+        let _ = std::fs::remove_file(&out);
+    }
 
     let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut totals: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
@@ -1912,19 +1927,25 @@ fn counter_events(
     cwd: &Path,
     probing: bool,
 ) -> Result<(HashMap<String, u64>, u64), String> {
-    let out = std::env::temp_dir().join(format!("rfish-cgd-{}.out", scratch_key(bin)));
-    let mut cmd = Command::new("valgrind");
-    cmd.current_dir(cwd)
-        .args(["--tool=callgrind", "--cache-sim=yes", "--branch-sim=yes"])
-        .arg(format!("--callgrind-out-file={}", out.display()))
-        .arg(bin);
-    // Both sides read the SAME corpus and the SAME tables: the paths in `probe_script` are
-    // absolute, and the oracle runs from its own directory because its net lives beside it.
-    let bench_out = if probing {
-        capture_piped(&mut cmd, &probe_script(&workspace_root())?)?
+    let shared = if probing { None } else { crate::oracle::profile(bin, &DIFF_BENCH)? };
+    let (out, bench_out) = if let Some(shared) = shared {
+        shared
     } else {
-        cmd.arg("bench").args(DIFF_BENCH);
-        capture_both(&mut cmd)?
+        let out = std::env::temp_dir().join(format!("rfish-cgd-{}.out", scratch_key(bin)));
+        let mut cmd = Command::new("valgrind");
+        cmd.current_dir(cwd)
+            .args(["--tool=callgrind", "--cache-sim=yes", "--branch-sim=yes"])
+            .arg(format!("--callgrind-out-file={}", out.display()))
+            .arg(bin);
+        // Both sides read the SAME corpus and the SAME tables: the paths in `probe_script` are
+        // absolute, and the oracle runs from its own directory because its net lives beside it.
+        let text = if probing {
+            capture_piped(&mut cmd, &probe_script(&workspace_root())?)?
+        } else {
+            cmd.arg("bench").args(DIFF_BENCH);
+            capture_both(&mut cmd)?
+        };
+        (out, text)
     };
     let nodes = node_total(&bench_out)?;
     let bench = callgrind_events(&out)?;
@@ -1940,6 +1961,9 @@ fn counter_events(
 
 /// The same events over a `quit`-only run: the net parse, the magic tables, the zero-fill.
 fn counter_startup(bin: &Path, cwd: &Path, probing: bool) -> Result<HashMap<String, u64>, String> {
+    if !probing && let Some((out, _)) = crate::oracle::profile(bin, &["--startup"])? {
+        return callgrind_events(&out);
+    }
     let out = std::env::temp_dir().join(format!("rfish-cgd-quit-{}.out", scratch_key(bin)));
     let mut child = Command::new("valgrind")
         .current_dir(cwd)

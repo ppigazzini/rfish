@@ -42,6 +42,25 @@ pub(crate) fn find(variant: &Variant) -> Option<PathBuf> {
     (out.status.success() && path.is_file()).then_some(path)
 }
 
+/// The callgrind profile of an oracle and the log of the run, or `None` for any other binary.
+///
+/// A profile is deterministic, so the first tree to need one leaves it beside the oracle and
+/// every other reads it. `args` are `bench`'s, or `--startup` for a run that only loads.
+pub(crate) fn profile(bin: &Path, args: &[&str]) -> Result<Option<(PathBuf, String)>, String> {
+    if !bin.parent().is_some_and(|dir| dir.join("BUILD").is_file()) {
+        return Ok(None);
+    }
+    let mut cmd = Command::new("bash");
+    cmd.current_dir(workspace_root())
+        .arg(workspace_root().join("tools/upstream/oracle_profile.sh"))
+        .arg(bin)
+        .args(args);
+    let out = PathBuf::from(capture(&mut cmd)?.trim());
+    let log = out.with_extension("out.log");
+    let text = std::fs::read_to_string(&log).map_err(|e| format!("{}: {e}", log.display()))?;
+    Ok(Some((out, text)))
+}
+
 /// The binary at the pin, built if it is absent.
 pub(crate) fn build(variant: &Variant) -> Result<PathBuf, String> {
     Ok(PathBuf::from(capture(&mut script(variant))?.trim()))
